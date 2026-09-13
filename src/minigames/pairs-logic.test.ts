@@ -4,7 +4,8 @@ import { canFlip, dealPairs, nextTurnIndex, PAIR_FACES, pickKnownIndex, remember
 describe("dealPairs", () => {
   it("deals two of each face", () => {
     const deck = dealPairs(PAIR_FACES, (max) => max - 1);
-    expect(deck).toHaveLength(PAIR_FACES.length * 2);
+    expect(PAIR_FACES).toHaveLength(18);
+    expect(deck).toHaveLength(36);
     for (const face of PAIR_FACES) {
       expect(deck.filter((card) => card.face === face)).toHaveLength(2);
     }

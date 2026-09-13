@@ -11,11 +11,11 @@ import {
   type PairFace,
 } from "./pairs-logic";
 
-const COLS = 4;
-const ROWS = 4;
-const CARD_W = 118;
-const CARD_H = 150;
-const GAP = 16;
+const COLS = 6;
+const ROWS = 6;
+const CARD_W = 108;
+const CARD_H = 88;
+const GAP = 10;
 
 class PairsGame implements MinigameInstance {
   private readonly cards: PairCard[];
@@ -115,19 +115,19 @@ class PairsGame implements MinigameInstance {
     const hoverIndex = hover ? hitCard(this.board, hover.x, hover.y) : null;
     const player = this.ctx.players[this.turn];
 
-    g.font = "600 18px Outfit, sans-serif";
+    g.font = "600 16px Outfit, sans-serif";
     g.textAlign = "left";
     g.fillStyle = "#94a3b8";
-    g.fillText("Pairs", 48, 48);
-    g.font = "700 28px Bebas Neue, sans-serif";
+    g.fillText("Pairs  6×6", 40, 28);
+    g.font = "700 26px Bebas Neue, sans-serif";
     g.fillStyle = player?.color ?? "#F4F7FB";
-    g.fillText(`${player?.name ?? "Player"}'s turn`, 48, 82);
+    g.fillText(`${player?.name ?? "Player"}'s turn`, 40, 54);
 
     this.ctx.players.forEach((seat, index) => {
-      const y = 130 + index * 36;
+      const x = 360 + index * 180;
       g.fillStyle = index === this.turn ? seat.color : "#64748b";
-      g.font = "600 18px Outfit, sans-serif";
-      g.fillText(`${seat.name}  ${this.scores[index] ?? 0}`, 48, y);
+      g.font = "600 16px Outfit, sans-serif";
+      g.fillText(`${seat.name}  ${this.scores[index] ?? 0}`, x, 48);
     });
 
     this.cards.forEach((card, index) => {
@@ -158,8 +158,8 @@ interface Slot {
 function layoutBoard(): Slot[] {
   const width = COLS * CARD_W + (COLS - 1) * GAP;
   const height = ROWS * CARD_H + (ROWS - 1) * GAP;
-  const left = GAME_WIDTH - width - 72;
-  const top = (GAME_HEIGHT - height) / 2;
+  const left = (GAME_WIDTH - width) / 2;
+  const top = GAME_HEIGHT - height - 24;
   const slots: Slot[] = [];
   for (let row = 0; row < ROWS; row += 1) {
     for (let col = 0; col < COLS; col += 1) {
@@ -189,7 +189,7 @@ function drawCard(g: CanvasRenderingContext2D, x: number, y: number, card: PairC
     g.lineWidth = 2;
     g.stroke();
     g.fillStyle = "#3EE0FF";
-    g.font = "700 28px Bebas Neue, sans-serif";
+    g.font = "700 20px Bebas Neue, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText("C5", x + CARD_W / 2, y + CARD_H / 2);
@@ -207,6 +207,7 @@ function drawCard(g: CanvasRenderingContext2D, x: number, y: number, card: PairC
 function drawFace(g: CanvasRenderingContext2D, cx: number, cy: number, face: PairFace, dim: boolean): void {
   g.save();
   g.translate(cx, cy);
+  g.scale(0.62, 0.62);
   g.strokeStyle = dim ? "#86efac" : "#0f172a";
   g.fillStyle = dim ? "#86efac" : "#0f172a";
   g.lineWidth = 4;
@@ -278,6 +279,85 @@ function drawFace(g: CanvasRenderingContext2D, cx: number, cy: number, face: Pai
       g.beginPath();
       g.arc(0, 0, 6, 0, Math.PI * 2);
       g.fill();
+      break;
+    case "heart":
+      g.beginPath();
+      g.moveTo(0, 22);
+      g.bezierCurveTo(-28, 4, -24, -22, 0, -8);
+      g.bezierCurveTo(24, -22, 28, 4, 0, 22);
+      g.fill();
+      break;
+    case "sun":
+      g.beginPath();
+      g.arc(0, 0, 12, 0, Math.PI * 2);
+      g.fill();
+      for (let i = 0; i < 8; i += 1) {
+        const a = (i * Math.PI) / 4;
+        g.beginPath();
+        g.moveTo(Math.cos(a) * 16, Math.sin(a) * 16);
+        g.lineTo(Math.cos(a) * 26, Math.sin(a) * 26);
+        g.stroke();
+      }
+      break;
+    case "plus":
+      g.fillRect(-7, -24, 14, 48);
+      g.fillRect(-24, -7, 48, 14);
+      break;
+    case "ring":
+      g.beginPath();
+      g.arc(0, 0, 22, 0, Math.PI * 2);
+      g.stroke();
+      break;
+    case "triangle":
+      g.beginPath();
+      g.moveTo(0, -24);
+      g.lineTo(24, 20);
+      g.lineTo(-24, 20);
+      g.closePath();
+      g.fill();
+      break;
+    case "square":
+      g.fillRect(-20, -20, 40, 40);
+      break;
+    case "hex":
+      g.beginPath();
+      for (let i = 0; i < 6; i += 1) {
+        const a = (Math.PI / 6) + (i * Math.PI) / 3;
+        g.lineTo(Math.cos(a) * 24, Math.sin(a) * 24);
+      }
+      g.closePath();
+      g.fill();
+      break;
+    case "arrow":
+      g.beginPath();
+      g.moveTo(0, -26);
+      g.lineTo(18, -4);
+      g.lineTo(8, -4);
+      g.lineTo(8, 26);
+      g.lineTo(-8, 26);
+      g.lineTo(-8, -4);
+      g.lineTo(-18, -4);
+      g.closePath();
+      g.fill();
+      break;
+    case "cross":
+      g.beginPath();
+      g.moveTo(-20, -20);
+      g.lineTo(20, 20);
+      g.moveTo(20, -20);
+      g.lineTo(-20, 20);
+      g.stroke();
+      break;
+    case "leaf":
+      g.beginPath();
+      g.moveTo(0, 24);
+      g.quadraticCurveTo(28, 0, 0, -26);
+      g.quadraticCurveTo(-28, 0, 0, 24);
+      g.fill();
+      g.beginPath();
+      g.moveTo(0, 20);
+      g.lineTo(0, -16);
+      g.stroke();
       break;
   }
   g.restore();

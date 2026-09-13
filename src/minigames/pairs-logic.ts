@@ -1,4 +1,23 @@
-export const PAIR_FACES = ["bolt", "swirl", "star", "drop", "flame", "moon", "gem", "eye"] as const;
+export const PAIR_FACES = [
+  "bolt",
+  "swirl",
+  "star",
+  "drop",
+  "flame",
+  "moon",
+  "gem",
+  "eye",
+  "heart",
+  "sun",
+  "plus",
+  "ring",
+  "triangle",
+  "square",
+  "hex",
+  "arrow",
+  "cross",
+  "leaf",
+] as const;
 
 export type PairFace = (typeof PAIR_FACES)[number];
 export type CardState = "down" | "up" | "matched";
