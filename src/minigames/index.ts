@@ -1,10 +1,8 @@
 import { MinigameRegistry } from "../core/registry";
-import { eyeOfTheStorm } from "./eye-of-the-storm";
-import { gustGrab } from "./gust-grab";
-import { pressureDrop } from "./pressure-drop";
-import { stormSurge } from "./storm-surge";
+import type { MinigameDefinition } from "../core/types";
 
-export const allMinigames = [stormSurge, eyeOfTheStorm, gustGrab, pressureDrop];
+/** Playable games you write or import. Leave empty until a game is ready. */
+export const allMinigames: MinigameDefinition[] = [];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();

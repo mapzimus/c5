@@ -65,9 +65,9 @@ describe("Session", () => {
 
   it("walks a chaos circuit", () => {
     const session = new Session(players());
-    session.startCircuit(["storm-surge", "gust-grab"]);
-    expect(session.currentCircuitId()).toBe("storm-surge");
-    expect(session.advanceCircuit()).toBe("gust-grab");
+    session.startCircuit(["alpha", "beta"]);
+    expect(session.currentCircuitId()).toBe("alpha");
+    expect(session.advanceCircuit()).toBe("beta");
     session.advanceCircuit();
     expect(session.circuitDone()).toBe(true);
   });

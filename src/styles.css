@@ -274,6 +274,12 @@ input {
   margin: 0 0 6px;
 }
 
+.empty {
+  margin-top: 36px;
+  max-width: 36rem;
+  padding: 24px 0;
+}
+
 footer.fine {
   margin-top: auto;
   padding-top: 28px;

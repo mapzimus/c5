@@ -75,7 +75,7 @@ export class App {
       el("h1", { class: "display", text: "Category Five" }),
       el("p", {
         class: "lede",
-        text: "A growing pile of chaotic party minigames. The board comes later. The storm is now.",
+        text: "A workshop for Category Five minigames. Brainstorm them, build them, or bring them in. The board comes later.",
       }),
       el("div", { class: "row" },
         button("Enter the storm", () => {
@@ -150,27 +150,42 @@ export class App {
   private renderHub(): void {
     const screen = this.screens.get("hub")!;
     clear(screen);
+    const games = this.registry.list();
     screen.append(
       el("p", { class: "brand", text: "Minigame collection" }),
-      el("h2", { class: "display", text: "Pick your chaos" }),
+      el("h2", { class: "display", text: "The table" }),
       el("p", {
         class: "lede",
-        text: "Play any game on its own, or run the Chaos Circuit and pile up party points. The board game layer will sit on top of this later.",
+        text: games.length === 0
+          ? "Nothing playable yet. Sketch ideas in ideas/inbox.md. Build from src/minigames/template.ts or drop a port in src/minigames/imported/, then register it in src/minigames/index.ts."
+          : "Play a registered game, or run everything back-to-back once there are two or more.",
       }),
       this.standingRow(),
     );
 
-    const cards = el("div", { class: "grid cards" });
-    const circuit = el("button", { class: "card" });
-    circuit.append(
-      el("span", { class: "tag", text: "Marathon" }),
-      el("h3", { text: "Chaos Circuit" }),
-      el("p", { text: "Play every minigame back-to-back. Highest party points wins the storm." }),
-    );
-    circuit.addEventListener("click", () => this.startCircuit());
-    cards.append(circuit);
+    if (games.length === 0) {
+      const empty = el("div", { class: "empty" });
+      empty.append(
+        el("p", { class: "kicker", text: "Empty catalog" }),
+        el("p", { class: "hint", text: "The hub only lists games you register. Pitches stay in ideas/ until then." }),
+      );
+      screen.append(empty);
+      return;
+    }
 
-    for (const game of this.registry.list()) {
+    const cards = el("div", { class: "grid cards" });
+    if (games.length >= 2) {
+      const circuit = el("button", { class: "card" });
+      circuit.append(
+        el("span", { class: "tag", text: "Marathon" }),
+        el("h3", { text: "Play all" }),
+        el("p", { text: "Run every registered minigame back-to-back. Highest party points wins." }),
+      );
+      circuit.addEventListener("click", () => this.startCircuit());
+      cards.append(circuit);
+    }
+
+    for (const game of games) {
       const card = el("button", { class: "card" });
       card.append(
         el("span", { class: "tag", text: `${game.durationMs / 1000}s` }),
@@ -220,12 +235,12 @@ export class App {
         el("span", { class: "swatch", style: `background:${player.color}` }),
         el("strong", { text: player.name }),
         el("span", { class: "hint", text: player.kind === "bot" ? "CPU" : BIND_LABELS[index]! }),
-        el("span", { text: game.id === "pressure-drop" ? "Action" : "Move" }),
+        el("span", { text: player.kind === "human" ? "Human" : "Bot" }),
       );
       controls.append(line);
     });
     screen.append(
-      el("p", { class: "brand", text: circuit ? "Chaos Circuit" : "Now serving" }),
+      el("p", { class: "brand", text: circuit ? "Play all" : "Now serving" }),
       el("h2", { class: "display", text: game.name }),
       el("p", { class: "lede", text: game.description }),
       el("p", { class: "hint", text: game.controls }),

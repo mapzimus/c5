@@ -1,35 +1,39 @@
 # Category Five
 
-C5 is a chaotic, Mario Party-style party game. This repo starts as the **minigame collection**. The board — stars, coins, and a hurricane path around the table — comes later and will sit on top of the same games.
+C5 is a chaotic, Mario Party-style party game. This repo is the **minigame workshop** — a place to brainstorm, build, and import short games. The board comes later and will sit on top of whatever lands in the catalog.
 
 The running name is **Category Five**: loud, short, a little mean, like a storm that will not stay in its lane.
 
-## Play
+There are no minigames in the catalog yet. That is on purpose.
+
+## Run the shell
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open the local Vite URL. Default roster is one human (Gale, WASD) plus three bots.
-
 ```bash
 npm test
 npm run build
 ```
 
-## What's here
+The hub will stay empty until you register a game.
 
-| Minigame | Feel | Controls |
-| --- | --- | --- |
-| **Storm Surge** | Dodge falling wreckage in a sideways wind | Move |
-| **Eye of the Storm** | Camp the shrinking calm eye | Move |
-| **Gust Grab** | Loot crates and stars, skip the lightning | Move |
-| **Pressure Drop** | Slap the action button only in the red band | Action |
+## Where things go
 
-Party points are `5 / 3 / 2 / 1` by rank. Ties share a rank. **Chaos Circuit** plays every game back-to-back and crowns whoever piled up the most points.
+| You want to… | Put it here |
+| --- | --- |
+| Brainstorm a pitch | `ideas/inbox.md` |
+| Build a game from scratch | Copy `src/minigames/template.ts`, then register it |
+| Import a game from elsewhere | `src/minigames/imported/`, wrap it, then register it |
+| Make it show up in the hub | Add the export to `allMinigames` in `src/minigames/index.ts` |
 
-### Local controls
+The hub, briefing, results, and session standings do not need to know how a game works. Launch a registered id, collect scores, pay party points (`5 / 3 / 2 / 1` by rank; ties share a rank), move on. A future board can use that same contract.
+
+`MinigameContext` hands you canvas size, the roster, keyboard input, a seeded RNG, and tiny synth SFX. Bots are players with `kind: "bot"`.
+
+### Local controls (when a game uses them)
 
 | Seat | Move | Action |
 | --- | --- | --- |
@@ -40,29 +44,13 @@ Party points are `5 / 3 / 2 / 1` by rank. Ties share a rank. **Chaos Circuit** p
 
 Escape aborts a live game.
 
-## How a minigame gets added
-
-1. Create `src/minigames/your-game.ts` that exports a `MinigameDefinition`.
-2. Implement `create(ctx)` so it returns `update`, `render`, `isFinished`, `getScores`, and `destroy`.
-3. Register it in `src/minigames/index.ts`.
-4. Keep it short (20–45s), readable at a glance, and mean in a funny way.
-
-`MinigameContext` already hands you the canvas size, the roster, keyboard input, a seeded RNG, and tiny synth SFX. Bots are just players with `kind: "bot"` — teach them a desired stick direction (or an action press) and they will sit at the table.
-
-The hub, briefing, results, and session standings do not need to know how your game works. That is the contract the future board will use too: launch a registered id, collect scores, pay party points, move on.
-
 ## Layout
 
 ```
-src/core/        engine, input, session, registry
-src/minigames/   each game is a plugin
-src/fx/          title-storm backdrop
-src/ui/          tiny DOM helpers
-src/app.ts       screens: title → roster → hub → play → results
+ideas/                 scratch notes and pitches
+src/core/              engine, input, session, registry
+src/minigames/         playable games you write
+src/minigames/imported ports and borrowed prototypes
+src/fx/                title-storm backdrop
+src/app.ts             title → roster → hub → play → results
 ```
-
-## Later
-
-- A Category Five board that picks these games as spaces / chance cards
-- Gamepads and online rooms
-- More minigames. Lots more minigames.
