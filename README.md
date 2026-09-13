@@ -1,5 +1,7 @@
 # Category Five
 
+Play: [mapzimus.github.io/c5](https://mapzimus.github.io/c5/)
+
 C5 is a chaotic, Mario Party-style party game. This repo is the **minigame collection**. The board comes later and will sit on top of the same games.
 
 The app opens on a **main menu of game cards**. Register a minigame and a card appears.
