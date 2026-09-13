@@ -124,8 +124,30 @@ input {
 }
 
 .cards {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 280px));
   margin-top: 28px;
+}
+
+.seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: stretch;
+  margin: 24px 0 8px;
+}
+
+.seats .seat {
+  width: 200px;
+  margin: 0;
+}
+
+.seats .btn {
+  padding: 8px 14px;
+}
+
+.card.empty-card {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .card {
@@ -211,6 +233,7 @@ input {
   background: #0b1220;
   border-radius: 16px;
   box-shadow: 0 20px 80px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
 }
 
 .hud-bar {

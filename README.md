@@ -1,12 +1,10 @@
 # Category Five
 
-C5 is a chaotic, Mario Party-style party game. This repo is the **minigame workshop** — a place to brainstorm, build, and import short games. The board comes later and will sit on top of whatever lands in the catalog.
+C5 is a chaotic, Mario Party-style party game. This repo is the **minigame collection**. The board comes later and will sit on top of the same games.
 
-The running name is **Category Five**: loud, short, a little mean, like a storm that will not stay in its lane.
+The app opens on a **main menu of game cards**. Register a minigame and a card appears.
 
-There are no minigames in the catalog yet. That is on purpose.
-
-## Run the shell
+## Run
 
 ```bash
 npm install
@@ -18,39 +16,20 @@ npm test
 npm run build
 ```
 
-The hub will stay empty until you register a game.
+Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot on the menu.
 
-## Where things go
+## Games
 
-| You want to… | Put it here |
+| Game | How it plays |
 | --- | --- |
-| Brainstorm a pitch | `ideas/inbox.md` |
-| Build a game from scratch | Copy `src/minigames/template.ts`, then register it |
-| Import a game from elsewhere | `src/minigames/imported/`, wrap it, then register it |
-| Make it show up in the hub | Add the export to `allMinigames` in `src/minigames/index.ts` |
+| **Pairs** | Cards start face down. Click two. A match stays and you go again. A miss flips back and the next player goes. |
 
-The hub, briefing, results, and session standings do not need to know how a game works. Launch a registered id, collect scores, pay party points (`5 / 3 / 2 / 1` by rank; ties share a rank), move on. A future board can use that same contract.
+## Add another game
 
-`MinigameContext` hands you canvas size, the roster, keyboard input, a seeded RNG, and tiny synth SFX. Bots are players with `kind: "bot"`.
+1. Copy `src/minigames/template.ts` (or drop a port in `src/minigames/imported/`).
+2. Add the export to `allMinigames` in `src/minigames/index.ts`.
+3. The main menu picks it up.
 
-### Local controls (when a game uses them)
+Pitches and half-thoughts go in `ideas/inbox.md` until they are a real game.
 
-| Seat | Move | Action |
-| --- | --- | --- |
-| P1 | WASD | Space |
-| P2 | Arrows | Enter |
-| P3 | IJKL | Right Shift |
-| P4 | TFGH | Y |
-
-Escape aborts a live game.
-
-## Layout
-
-```
-ideas/                 scratch notes and pitches
-src/core/              engine, input, session, registry
-src/minigames/         playable games you write
-src/minigames/imported ports and borrowed prototypes
-src/fx/                title-storm backdrop
-src/app.ts             title → roster → hub → play → results
-```
+`MinigameContext` hands you canvas size, the roster, keyboard + click input, a seeded RNG, and tiny synth SFX. Untimed games use `durationMs: 0` and end when `isFinished()` is true.

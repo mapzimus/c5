@@ -69,8 +69,14 @@ export class Engine {
       sfx: this.sfx,
     };
     this.instance = definition.create(context);
+    this.input.bindPointer(this.canvas, GAME_WIDTH, GAME_HEIGHT);
     this.last = performance.now();
-    this.sfx.countdown();
+    if (definition.durationMs <= 0) {
+      this.phase = "playing";
+      this.remaining = Number.POSITIVE_INFINITY;
+    } else {
+      this.sfx.countdown();
+    }
     this.raf = requestAnimationFrame(this.tick);
   }
 
@@ -78,7 +84,6 @@ export class Engine {
     const raw = (now - this.last) / 1000;
     this.last = now;
     const dt = Math.min(raw, 0.05);
-    this.input.beginFrame();
 
     if (this.phase === "countdown") {
       this.countdown -= dt;
@@ -92,15 +97,19 @@ export class Engine {
       }
     } else if (this.phase === "playing" && this.instance && this.definition) {
       this.elapsed += dt;
-      this.remaining = Math.max(0, this.definition.durationMs / 1000 - this.elapsed);
+      if (this.definition.durationMs > 0) {
+        this.remaining = Math.max(0, this.definition.durationMs / 1000 - this.elapsed);
+      }
       this.instance.update(dt);
-      if (this.remaining <= 0 || this.instance.isFinished()) {
+      const timedOut = this.definition.durationMs > 0 && this.remaining <= 0;
+      if (timedOut || this.instance.isFinished()) {
         this.finish();
       }
     }
 
     this.instance?.render(this.ctx);
     this.drawOverlay();
+    this.input.endFrame();
     if (this.phase !== "finished") {
       this.raf = requestAnimationFrame(this.tick);
     }
@@ -133,15 +142,14 @@ export class Engine {
 
   abort(): void {
     this.phase = "finished";
-    cancelAnimationFrame(this.raf);
-    this.instance?.destroy();
-    this.instance = null;
+    this.stop();
   }
 
   stop(): void {
     cancelAnimationFrame(this.raf);
     this.instance?.destroy();
     this.instance = null;
+    this.input.unbindPointer();
   }
 
   destroy(): void {

@@ -1,8 +1,9 @@
 import { MinigameRegistry } from "../core/registry";
 import type { MinigameDefinition } from "../core/types";
+import { pairs } from "./pairs";
 
-/** Playable games you write or import. Leave empty until a game is ready. */
-export const allMinigames: MinigameDefinition[] = [];
+/** Playable games. Add an export here and a card appears on the main menu. */
+export const allMinigames: MinigameDefinition[] = [pairs];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();
