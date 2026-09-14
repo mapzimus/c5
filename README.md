@@ -1,6 +1,8 @@
 # Category Five
 
-Play: [mapzimus.github.io/c5](https://mapzimus.github.io/c5/)
+Play: **https://mapzimus.github.io/c5/**
+
+That `/c5/` path is required. `https://mapzimus.github.io/` by itself is a 404.
 
 C5 is a chaotic, Mario Party-style party game. This repo is the **minigame collection**. The board comes later and will sit on top of the same games.
 
