@@ -1,34 +1,12 @@
-export const PAIR_FACES = [
-  "bolt",
-  "swirl",
-  "star",
-  "drop",
-  "flame",
-  "moon",
-  "gem",
-  "eye",
-  "heart",
-  "sun",
-  "plus",
-  "ring",
-  "triangle",
-  "square",
-  "hex",
-  "arrow",
-  "cross",
-  "leaf",
-] as const;
-
-export type PairFace = (typeof PAIR_FACES)[number];
 export type CardState = "down" | "up" | "matched";
 
 export interface PairCard {
   id: number;
-  face: PairFace;
+  face: string;
   state: CardState;
 }
 
-export function dealPairs(faces: readonly PairFace[], pickIndex: (maxExclusive: number) => number): PairCard[] {
+export function dealPairs(faces: readonly string[], pickIndex: (maxExclusive: number) => number): PairCard[] {
   const deck: PairCard[] = faces.flatMap((face, index) => [
     { id: index * 2, face, state: "down" },
     { id: index * 2 + 1, face, state: "down" },

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { canFlip, dealPairs, nextTurnIndex, PAIR_FACES, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
+import { PAIR_FACES } from "./crests";
+import { canFlip, dealPairs, nextTurnIndex, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
 
 describe("dealPairs", () => {
-  it("deals two of each face", () => {
+  it("deals two of each crest", () => {
     const deck = dealPairs(PAIR_FACES, (max) => max - 1);
     expect(PAIR_FACES).toHaveLength(18);
     expect(deck).toHaveLength(36);
@@ -23,34 +24,34 @@ describe("matching turns", () => {
   });
 
   it("only flips face-down cards", () => {
-    expect(canFlip({ id: 0, face: "star", state: "down" })).toBe(true);
-    expect(canFlip({ id: 1, face: "star", state: "up" })).toBe(false);
-    expect(canFlip({ id: 2, face: "star", state: "matched" })).toBe(false);
+    expect(canFlip({ id: 0, face: "barcelona", state: "down" })).toBe(true);
+    expect(canFlip({ id: 1, face: "barcelona", state: "up" })).toBe(false);
+    expect(canFlip({ id: 2, face: "barcelona", state: "matched" })).toBe(false);
   });
 });
 
 describe("bot memory", () => {
   it("picks the mate of the card just flipped", () => {
     const cards: PairCard[] = [
-      { id: 0, face: "star", state: "up" },
-      { id: 1, face: "bolt", state: "down" },
-      { id: 2, face: "star", state: "down" },
+      { id: 0, face: "liverpool", state: "up" },
+      { id: 1, face: "arsenal", state: "down" },
+      { id: 2, face: "liverpool", state: "down" },
     ];
     const memory = new Map<string, number[]>();
-    remember(memory, 0, "star");
-    remember(memory, 2, "star");
+    remember(memory, 0, "liverpool");
+    remember(memory, 2, "liverpool");
     expect(pickKnownIndex(cards, memory, 0)).toBe(2);
   });
 
   it("opens a remembered pair when starting a turn", () => {
     const cards: PairCard[] = [
-      { id: 0, face: "gem", state: "down" },
-      { id: 1, face: "gem", state: "down" },
-      { id: 2, face: "eye", state: "down" },
+      { id: 0, face: "boca", state: "down" },
+      { id: 1, face: "boca", state: "down" },
+      { id: 2, face: "river", state: "down" },
     ];
     const memory = new Map<string, number[]>();
-    remember(memory, 0, "gem");
-    remember(memory, 1, "gem");
+    remember(memory, 0, "boca");
+    remember(memory, 1, "boca");
     expect(pickKnownIndex(cards, memory, null)).toBe(0);
   });
 });

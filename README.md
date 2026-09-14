@@ -24,7 +24,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 
 | Game | How it plays |
 | --- | --- |
-| **Pairs** | Cards start face down. Click two. A match stays and you go again. A miss flips back and the next player goes. |
+| **Pairs** | Cards start face down. Flip two to match soccer club crests. A match stays and you go again. A miss flips back and the next player goes. |
 
 ## Add another game
 
@@ -35,3 +35,5 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 Pitches and half-thoughts go in `ideas/inbox.md` until they are a real game.
 
 `MinigameContext` hands you canvas size, the roster, keyboard + click input, a seeded RNG, and tiny synth SFX. Untimed games use `durationMs: 0` and end when `isFinished()` is true.
+
+Club crests on Pairs come from [World XI](https://github.com/mapzimus/lab) (the soccer-globe dataset). They remain trademarks of their clubs.
