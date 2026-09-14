@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Category Five — chaotic Mario Party-style minigames",
+  "homepage": "https://mapzimus.github.io/c5/",
   "type": "module",
   "scripts": {
     "dev": "vite",
