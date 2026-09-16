@@ -26,7 +26,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 
 | Game | How it plays |
 | --- | --- |
-| **Pairs** | Cards start face down. Flip two to match soccer club crests. A match stays and you go again. A miss flips back and the next player goes. |
+| **Pairs** | Cards start face down. Each round picks 18 random club crests from a World XI pool. Flip two to match. A match stays and you go again. |
 
 ## Add another game
 

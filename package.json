@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "crests": "python3 scripts/fetch-crests.py"
   },
   "engines": {
     "node": ">=20"

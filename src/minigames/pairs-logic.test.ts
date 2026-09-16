@@ -1,15 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { PAIR_FACES } from "./crests";
-import { canFlip, dealPairs, nextTurnIndex, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
+import { CRESTS, PAIR_COUNT, PAIR_FACES } from "./crests";
+import { canFlip, dealPairs, nextTurnIndex, pickFaces, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
+
+describe("crest pool", () => {
+  it("is large enough to randomize a 6x6 round", () => {
+    expect(PAIR_FACES.length).toBe(CRESTS.length);
+    expect(CRESTS.length).toBeGreaterThan(PAIR_COUNT);
+    expect(new Set(PAIR_FACES).size).toBe(PAIR_FACES.length);
+  });
+});
 
 describe("dealPairs", () => {
-  it("deals two of each crest", () => {
-    const deck = dealPairs(PAIR_FACES, (max) => max - 1);
-    expect(PAIR_FACES).toHaveLength(18);
-    expect(deck).toHaveLength(36);
-    for (const face of PAIR_FACES) {
+  it("deals two of each selected crest", () => {
+    const faces = pickFaces(PAIR_FACES, PAIR_COUNT, (max) => max - 1);
+    expect(faces).toHaveLength(PAIR_COUNT);
+    expect(new Set(faces).size).toBe(PAIR_COUNT);
+    const deck = dealPairs(faces, (max) => max - 1);
+    expect(deck).toHaveLength(PAIR_COUNT * 2);
+    for (const face of faces) {
       expect(deck.filter((card) => card.face === face)).toHaveLength(2);
     }
+  });
+
+  it("picks a different subset when the shuffle changes", () => {
+    const a = pickFaces(PAIR_FACES, PAIR_COUNT, (max) => Math.max(0, max - 1));
+    let n = 0;
+    const b = pickFaces(PAIR_FACES, PAIR_COUNT, (max) => {
+      n += 1;
+      return n % max;
+    });
+    expect(a).not.toEqual(b);
   });
 });
 

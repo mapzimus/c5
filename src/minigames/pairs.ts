@@ -1,7 +1,7 @@
 import { fillArena } from "../core/draw";
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
-import { CRESTS, PAIR_FACES } from "./crests";
-import { canFlip, dealPairs, nextTurnIndex, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
+import { CRESTS, PAIR_COUNT } from "./crests";
+import { canFlip, dealPairs, nextTurnIndex, pickFaces, pickKnownIndex, remember, type PairCard } from "./pairs-logic";
 
 const COLS = 6;
 const ROWS = 6;
@@ -22,14 +22,20 @@ class PairsGame implements MinigameInstance {
   private readonly board = layoutBoard();
 
   constructor(private readonly ctx: MinigameContext) {
-    this.cards = dealPairs(PAIR_FACES, (max) => this.ctx.rng.int(0, max - 1));
+    const faces = pickFaces(
+      CRESTS.map((crest) => crest.id),
+      PAIR_COUNT,
+      (max) => this.ctx.rng.int(0, max - 1),
+    );
+    this.cards = dealPairs(faces, (max) => this.ctx.rng.int(0, max - 1));
     this.scores = this.ctx.players.map(() => 0);
-    this.preloadLogos();
+    this.preloadLogos(new Set(faces));
   }
 
-  private preloadLogos(): void {
+  private preloadLogos(faces: Set<string>): void {
     const base = import.meta.env.BASE_URL;
     for (const crest of CRESTS) {
+      if (!faces.has(crest.id)) continue;
       const img = new Image();
       img.src = `${base}crests/${crest.file}`;
       this.logos.set(crest.id, img);

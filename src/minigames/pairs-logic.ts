@@ -6,18 +6,30 @@ export interface PairCard {
   state: CardState;
 }
 
+export function shuffleInPlace<T>(items: T[], pickIndex: (maxExclusive: number) => number): T[] {
+  for (let i = items.length - 1; i > 0; i -= 1) {
+    const j = pickIndex(i + 1);
+    const a = items[i]!;
+    items[i] = items[j]!;
+    items[j] = a;
+  }
+  return items;
+}
+
+export function pickFaces(
+  pool: readonly string[],
+  count: number,
+  pickIndex: (maxExclusive: number) => number,
+): string[] {
+  return shuffleInPlace([...pool], pickIndex).slice(0, Math.min(count, pool.length));
+}
+
 export function dealPairs(faces: readonly string[], pickIndex: (maxExclusive: number) => number): PairCard[] {
   const deck: PairCard[] = faces.flatMap((face, index) => [
     { id: index * 2, face, state: "down" },
     { id: index * 2 + 1, face, state: "down" },
   ]);
-  for (let i = deck.length - 1; i > 0; i -= 1) {
-    const j = pickIndex(i + 1);
-    const a = deck[i]!;
-    deck[i] = deck[j]!;
-    deck[j] = a;
-  }
-  return deck;
+  return shuffleInPlace(deck, pickIndex);
 }
 
 export function canFlip(card: PairCard | undefined): boolean {

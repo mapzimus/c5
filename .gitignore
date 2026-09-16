@@ -4,3 +4,5 @@ dist
 *.local
 coverage
 .vite
+__pycache__
+*.pyc
