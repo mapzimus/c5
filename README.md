@@ -26,7 +26,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 
 | Game | How it plays |
 | --- | --- |
-| **Pairs** | Cards start face down. Each round picks 18 random club crests from a World XI pool. Flip two to match. A match stays and you go again. |
+| **Pairs** | A brief peek, then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
 
 ## Add another game
 
