@@ -24,7 +24,7 @@ const ROWS = 6;
 const CARD_W = 102;
 const CARD_H = 96;
 const GAP = 8;
-const PEEK_SECONDS = 2.4;
+const PEEK_SECONDS = 5;
 const FLIP_SECONDS = 0.22;
 const HOLD_SECONDS = 0.5;
 const MATCH_LOCK = 0.34;
@@ -119,7 +119,11 @@ class PairsGame implements MinigameInstance {
 
     if (this.phase === "peek") {
       this.peekLeft -= dt;
-      if (this.peekLeft <= 0) this.beginClose();
+      const click = this.ctx.input.consumeClick();
+      const skipped =
+        this.peekLeft < PEEK_SECONDS - 0.55 &&
+        (Boolean(click) || this.ctx.input.justPressed("Space") || this.ctx.input.justPressed("Enter"));
+      if (this.peekLeft <= 0 || skipped) this.beginClose();
       return;
     }
 
@@ -381,6 +385,11 @@ class PairsGame implements MinigameInstance {
     if (this.phase === "peek" || this.phase === "closing") {
       g.fillStyle = "#FFB020";
       g.fillText("Memorize the crests", 40, 56);
+      if (this.phase === "peek") {
+        g.font = "600 14px Outfit, sans-serif";
+        g.fillStyle = "#64748b";
+        g.fillText("Click or Space to skip", 40, 78);
+      }
     } else {
       g.fillStyle = player?.color ?? "#F4F7FB";
       g.fillText(`${player?.name ?? "Player"}'s turn`, 40, 56);
@@ -596,7 +605,7 @@ export const pairs: MinigameDefinition = {
   name: "Pairs",
   tagline: "Match crests. Stack a streak.",
   description:
-    "A short peek, then take turns flipping two cards. A match stays and you go again — streaks score bigger, and the last pair is worth extra. A miss flips them back and play moves on.",
+    "A short peek (click or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, and the last pair is worth extra. A miss flips them back and play moves on.",
   durationMs: 0,
   controls: "Click two face-down cards, or WASD / arrows and Space / Enter.",
   create: (ctx) => new PairsGame(ctx),
