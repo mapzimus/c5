@@ -57,6 +57,7 @@ export class App {
   };
 
   private show(name: ScreenName): void {
+    document.body.classList.toggle("playing", name === "play");
     for (const [key, node] of this.screens) {
       node.classList.toggle("active", key === name);
     }
@@ -194,6 +195,7 @@ export class App {
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
     this.engine.start(game, this.players, (scores) => this.finishGame(scores));
+    requestAnimationFrame(() => this.engine?.fit());
   }
 
   private finishGame(scores: { playerId: string; score: number }[]): void {

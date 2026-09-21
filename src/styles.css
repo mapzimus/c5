@@ -20,9 +20,11 @@ body,
 #app {
   margin: 0;
   min-height: 100%;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--ink);
   font-family: Outfit, system-ui, sans-serif;
+  touch-action: manipulation;
 }
 
 button,
@@ -33,6 +35,7 @@ input {
 #app {
   position: relative;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 #sky {
@@ -48,11 +51,13 @@ input {
   position: relative;
   z-index: 1;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .screen {
   display: none;
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 32px clamp(20px, 4vw, 56px) 40px;
 }
 
@@ -212,6 +217,7 @@ input {
   color: var(--ink);
   border-radius: 10px;
   padding: 10px 12px;
+  font-size: 16px;
 }
 
 .swatch {
@@ -225,6 +231,8 @@ input {
   flex: 1;
   display: grid;
   place-items: center;
+  min-height: 0;
+  width: 100%;
   padding: 0;
 }
 
@@ -234,6 +242,9 @@ input {
   border-radius: 16px;
   box-shadow: 0 20px 80px rgba(0, 0, 0, 0.45);
   cursor: pointer;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 
 .hud-bar {
@@ -242,6 +253,20 @@ input {
   align-items: center;
   gap: 16px;
   padding: 16px 8px 12px;
+}
+
+#screen-play {
+  padding: 0;
+  overflow: hidden;
+}
+
+#screen-play.active {
+  height: 100dvh;
+}
+
+body.playing {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .results {
@@ -308,4 +333,66 @@ footer.fine {
   padding-top: 28px;
   color: var(--muted);
   font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .screen {
+    padding: 20px 16px 28px;
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+  }
+
+  #screen-play {
+    padding: 0;
+  }
+
+  .display {
+    font-size: clamp(44px, 18vw, 72px);
+  }
+
+  .lede {
+    font-size: 16px;
+  }
+
+  .seats {
+    flex-direction: column;
+    margin: 16px 0 8px;
+  }
+
+  .seats .seat,
+  .seats > .btn {
+    width: 100%;
+  }
+
+  .seats > .btn {
+    min-height: 48px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+    margin-top: 20px;
+  }
+
+  .card {
+    min-height: 140px;
+  }
+
+  .hud-bar {
+    padding: 8px 12px;
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
+
+  #game {
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .result {
+    grid-template-columns: 36px 1fr auto;
+    gap: 8px;
+  }
+
+  .result .hint {
+    grid-column: 2 / -1;
+  }
 }

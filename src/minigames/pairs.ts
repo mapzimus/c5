@@ -1,7 +1,8 @@
 import { fillArena } from "../core/draw";
 import { PLAYER_BINDS } from "../core/input";
-import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
+import { type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
 import { CRESTS, PAIR_COUNT } from "./crests";
+import { hitCard, layoutPairBoard, midpoint, PAIR_COLS, PAIR_ROWS, type BoardLayout } from "./pairs-layout";
 import {
   BOT_MEMORY_LIMIT,
   canFlip,
@@ -19,11 +20,6 @@ import {
   type PairCard,
 } from "./pairs-logic";
 
-const COLS = 6;
-const ROWS = 6;
-const CARD_W = 102;
-const CARD_H = 96;
-const GAP = 8;
 const PEEK_SECONDS = 5;
 const FLIP_SECONDS = 0.22;
 const HOLD_SECONDS = 0.5;
@@ -78,7 +74,8 @@ class PairsGame implements MinigameInstance {
   private phase: Phase = "peek";
   private peekLeft = PEEK_SECONDS;
   private cursor = 0;
-  private readonly board = layoutBoard();
+  private useCursor = false;
+  private cachedBoard: { w: number; h: number; players: number; layout: BoardLayout } | null = null;
 
   constructor(private readonly ctx: MinigameContext) {
     const faces = pickFaces(
@@ -167,10 +164,28 @@ class PairsGame implements MinigameInstance {
     });
   }
 
+  private board(): BoardLayout {
+    const w = this.ctx.width;
+    const h = this.ctx.height;
+    const players = this.ctx.players.length;
+    if (
+      this.cachedBoard &&
+      this.cachedBoard.w === w &&
+      this.cachedBoard.h === h &&
+      this.cachedBoard.players === players
+    ) {
+      return this.cachedBoard.layout;
+    }
+    const layout = layoutPairBoard(w, h, players);
+    this.cachedBoard = { w, h, players, layout };
+    return layout;
+  }
+
   private handleHumanInput(slot: 0 | 1 | 2 | 3): void {
     const click = this.ctx.input.consumeClick();
     if (click) {
-      const index = hitCard(this.board, click.x, click.y);
+      this.useCursor = false;
+      const index = hitCard(this.board(), click.x, click.y);
       if (index !== null) {
         this.cursor = index;
         this.tryFlip(index);
@@ -183,6 +198,7 @@ class PairsGame implements MinigameInstance {
     const right = this.pressed(slot, "right") || this.ctx.input.justPressed("ArrowRight") || this.ctx.input.justPressed("KeyD");
     const up = this.pressed(slot, "up") || this.ctx.input.justPressed("ArrowUp") || this.ctx.input.justPressed("KeyW");
     const down = this.pressed(slot, "down") || this.ctx.input.justPressed("ArrowDown") || this.ctx.input.justPressed("KeyS");
+    if (left || right || up || down) this.useCursor = true;
     if (left) this.moveCursor(-1, 0);
     else if (right) this.moveCursor(1, 0);
     else if (up) this.moveCursor(0, -1);
@@ -193,6 +209,7 @@ class PairsGame implements MinigameInstance {
       this.ctx.input.justPressed("Space") ||
       this.ctx.input.justPressed("Enter")
     ) {
+      this.useCursor = true;
       this.tryFlip(this.cursor);
     }
   }
@@ -202,7 +219,7 @@ class PairsGame implements MinigameInstance {
   }
 
   private moveCursor(dx: number, dy: number): void {
-    this.cursor = stepCursor(this.cursor, dx, dy, COLS, ROWS, (index) => canFlip(this.cards[index]));
+    this.cursor = stepCursor(this.cursor, dx, dy, PAIR_COLS, PAIR_ROWS, (index) => canFlip(this.cards[index]));
   }
 
   private parkCursor(): void {
@@ -259,7 +276,8 @@ class PairsGame implements MinigameInstance {
   private burst(aIndex: number, bIndex: number, points: number, face: string): void {
     const player = this.ctx.players[this.turn];
     const color = player?.color ?? "#3EE0FF";
-    const mid = midpoint(this.board[aIndex]!, this.board[bIndex]!);
+    const layout = this.board();
+    const mid = midpoint(layout, aIndex, bIndex);
     this.floaters.push({
       text: `+${points}`,
       x: mid.x,
@@ -300,9 +318,9 @@ class PairsGame implements MinigameInstance {
         size: 20,
       });
     }
-    for (const slot of [this.board[aIndex]!, this.board[bIndex]!]) {
-      const cx = slot.x + CARD_W / 2;
-      const cy = slot.y + CARD_H / 2;
+    for (const slot of [layout.slots[aIndex]!, layout.slots[bIndex]!]) {
+      const cx = slot.x + layout.cardW / 2;
+      const cy = slot.y + layout.cardH / 2;
       for (let i = 0; i < 10; i += 1) {
         const angle = this.ctx.rng.float(0, Math.PI * 2);
         const speed = this.ctx.rng.float(40, 160);
@@ -369,71 +387,88 @@ class PairsGame implements MinigameInstance {
 
   render(g: CanvasRenderingContext2D): void {
     fillArena(g, this.ctx.width, this.ctx.height);
+    const layout = this.board();
     const hover = this.ctx.input.hover;
-    const hoverIndex = hover ? hitCard(this.board, hover.x, hover.y) : null;
+    const hoverIndex = hover ? hitCard(layout, hover.x, hover.y) : null;
     const player = this.ctx.players[this.turn];
     const left = remainingPairs(this.cards);
     const humanTurn = player?.kind === "human" && this.phase === "play";
+    const inset = layout.narrow ? 16 : 40;
 
     g.textAlign = "left";
     g.textBaseline = "alphabetic";
-    g.font = "600 15px Outfit, sans-serif";
+    g.font = layout.narrow ? "600 13px Outfit, sans-serif" : "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, 40, 26);
+    g.fillText(
+      this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`,
+      inset,
+      layout.narrow ? 22 : 26,
+    );
 
-    g.font = "700 30px Bebas Neue, sans-serif";
+    g.font = layout.narrow ? "700 26px Bebas Neue, sans-serif" : "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
       g.fillStyle = "#FFB020";
-      g.fillText("Memorize the crests", 40, 56);
+      g.fillText("Memorize the crests", inset, layout.narrow ? 48 : 56);
       if (this.phase === "peek") {
         g.font = "600 14px Outfit, sans-serif";
         g.fillStyle = "#64748b";
-        g.fillText("Click or Space to skip", 40, 78);
+        g.fillText(layout.narrow ? "Tap to skip" : "Click or Space to skip", inset, layout.narrow ? 70 : 78);
       }
     } else {
       g.fillStyle = player?.color ?? "#F4F7FB";
-      g.fillText(`${player?.name ?? "Player"}'s turn`, 40, 56);
+      g.fillText(`${player?.name ?? "Player"}'s turn`, inset, layout.narrow ? 48 : 56);
       if (this.streak >= 2) {
         g.font = "700 16px Outfit, sans-serif";
         g.fillStyle = "#FFB020";
-        g.fillText(`Streak ×${this.streak}`, 40, 78);
+        g.fillText(`Streak ×${this.streak}`, inset, layout.narrow ? 70 : 78);
       }
     }
 
-    this.drawScores(g);
+    this.drawScores(g, layout);
 
     this.cards.forEach((card, index) => {
-      const slot = this.board[index]!;
-      const selected = humanTurn && this.cursor === index && card.state === "down";
+      const slot = layout.slots[index]!;
+      const selected = humanTurn && this.useCursor && this.cursor === index && card.state === "down";
       const hovered = hoverIndex === index && card.state === "down" && this.phase === "play";
-      this.drawCard(g, slot.x, slot.y, card, index, hovered || selected, selected);
+      this.drawCard(g, layout, slot.x, slot.y, card, index, hovered || selected, selected);
     });
 
     this.drawSparks(g);
     this.drawFloaters(g);
   }
 
-  private drawScores(g: CanvasRenderingContext2D): void {
-    const chipW = 158;
-    const chipH = 36;
-    const gap = 10;
-    const total = this.ctx.players.length * chipW + (this.ctx.players.length - 1) * gap;
-    let x = GAME_WIDTH - 36 - total;
+  private drawScores(g: CanvasRenderingContext2D, layout: BoardLayout): void {
+    const count = this.ctx.players.length;
+    const gap = layout.narrow ? 8 : 10;
+    const chipH = layout.narrow ? 32 : 36;
+    let chipW: number;
+    let x: number;
+    let y: number;
+    if (layout.narrow) {
+      const inset = 16;
+      chipW = Math.min(160, (this.ctx.width - inset * 2 - gap * (count - 1)) / count);
+      x = inset;
+      y = 86;
+    } else {
+      chipW = 158;
+      x = this.ctx.width - 36 - (count * chipW + (count - 1) * gap);
+      y = 22;
+    }
     this.ctx.players.forEach((seat, index) => {
       const active = index === this.turn && this.phase === "play";
-      roundRect(g, x, 22, chipW, chipH, 18);
+      roundRect(g, x, y, chipW, chipH, 16);
       g.fillStyle = active ? seat.color : "rgba(15, 23, 42, 0.82)";
       g.fill();
       g.strokeStyle = seat.color;
       g.lineWidth = active ? 0 : 1.5;
       if (!active) g.stroke();
-      g.font = "600 16px Outfit, sans-serif";
+      g.font = layout.narrow ? "600 13px Outfit, sans-serif" : "600 16px Outfit, sans-serif";
       g.textAlign = "left";
       g.fillStyle = active ? "#071018" : seat.color;
-      g.fillText(`${seat.name}`, x + 14, 45);
+      g.fillText(`${seat.name}`, x + 10, y + 21);
       g.textAlign = "right";
-      g.font = "700 20px Bebas Neue, sans-serif";
-      g.fillText(String(this.scores[index] ?? 0), x + chipW - 14, 46);
+      g.font = "700 18px Bebas Neue, sans-serif";
+      g.fillText(String(this.scores[index] ?? 0), x + chipW - 10, y + 22);
       x += chipW + gap;
     });
     g.textAlign = "left";
@@ -441,6 +476,7 @@ class PairsGame implements MinigameInstance {
 
   private drawCard(
     g: CanvasRenderingContext2D,
+    layout: BoardLayout,
     x: number,
     y: number,
     card: PairCard,
@@ -454,13 +490,16 @@ class PairsGame implements MinigameInstance {
     const flipScale = peeking ? 1 : flipScaleX(visual.flipT);
     const bounce = 1 + visual.bounce * 0.16;
     const lift = hover && shown === "down" ? -3 : 0;
+    const cardW = layout.cardW;
+    const cardH = layout.cardH;
+    const radius = Math.max(8, Math.round(cardW * 0.12));
 
     g.save();
-    g.translate(x + CARD_W / 2, y + CARD_H / 2 + lift);
+    g.translate(x + cardW / 2, y + cardH / 2 + lift);
     g.scale(Math.max(0.06, flipScale) * bounce, bounce);
-    g.translate(-CARD_W / 2, -CARD_H / 2);
+    g.translate(-cardW / 2, -cardH / 2);
 
-    roundRect(g, 0, 0, CARD_W, CARD_H, 12);
+    roundRect(g, 0, 0, cardW, cardH, radius);
     if (shown === "down") {
       g.fillStyle = hover ? "#1d4e63" : "#122033";
       g.fill();
@@ -468,28 +507,28 @@ class PairsGame implements MinigameInstance {
       g.lineWidth = selected ? 3 : 2;
       g.stroke();
       g.fillStyle = "#3EE0FF";
-      g.font = "700 20px Bebas Neue, sans-serif";
+      g.font = `700 ${Math.max(16, Math.round(cardW * 0.2))}px Bebas Neue, sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.fillText("C5", CARD_W / 2, CARD_H / 2);
+      g.fillText("C5", cardW / 2, cardH / 2);
     } else {
       g.fillStyle = shown === "matched" ? "#d1fae5" : "#f8fafc";
       g.fill();
       g.strokeStyle = shown === "matched" ? "#34d399" : "#cbd5e1";
       g.lineWidth = 2;
       g.stroke();
-      this.drawLogo(g, 0, 0, card.face);
+      this.drawLogo(g, 0, 0, card.face, cardW, cardH);
     }
     g.restore();
   }
 
-  private drawLogo(g: CanvasRenderingContext2D, x: number, y: number, face: string): void {
+  private drawLogo(g: CanvasRenderingContext2D, x: number, y: number, face: string, cardW: number, cardH: number): void {
     const img = this.logos.get(face);
-    const pad = 10;
-    const boxW = CARD_W - pad * 2;
-    const boxH = CARD_H - pad * 2;
-    const cx = x + CARD_W / 2;
-    const cy = y + CARD_H / 2;
+    const pad = Math.max(6, Math.round(cardW * 0.1));
+    const boxW = cardW - pad * 2;
+    const boxH = cardH - pad * 2;
+    const cx = x + cardW / 2;
+    const cy = y + cardH / 2;
     if (!img || !img.complete || img.naturalWidth === 0) {
       g.fillStyle = "#94a3b8";
       g.font = "600 11px Outfit, sans-serif";
@@ -542,42 +581,6 @@ class PairsGame implements MinigameInstance {
   destroy(): void {}
 }
 
-interface Slot {
-  x: number;
-  y: number;
-}
-
-function layoutBoard(): Slot[] {
-  const width = COLS * CARD_W + (COLS - 1) * GAP;
-  const height = ROWS * CARD_H + (ROWS - 1) * GAP;
-  const left = (GAME_WIDTH - width) / 2;
-  const top = GAME_HEIGHT - height - 20;
-  const slots: Slot[] = [];
-  for (let row = 0; row < ROWS; row += 1) {
-    for (let col = 0; col < COLS; col += 1) {
-      slots.push({
-        x: left + col * (CARD_W + GAP),
-        y: top + row * (CARD_H + GAP),
-      });
-    }
-  }
-  return slots;
-}
-
-function hitCard(board: Slot[], x: number, y: number): number | null {
-  const index = board.findIndex(
-    (slot) => x >= slot.x && x <= slot.x + CARD_W && y >= slot.y && y <= slot.y + CARD_H,
-  );
-  return index >= 0 ? index : null;
-}
-
-function midpoint(a: Slot, b: Slot): { x: number; y: number } {
-  return {
-    x: (a.x + b.x) / 2 + CARD_W / 2,
-    y: (a.y + b.y) / 2 + CARD_H / 2,
-  };
-}
-
 function shownFace(visual: Visual, state: CardState): CardState {
   if (visual.flipT > 0 && visual.flipT < 1) {
     return visual.flipT < 0.5 ? visual.from : visual.to;
@@ -605,8 +608,8 @@ export const pairs: MinigameDefinition = {
   name: "Pairs FC",
   tagline: "Match crests. Stack a streak.",
   description:
-    "A short peek (click or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, and the last pair is worth extra. A miss flips them back and play moves on.",
+    "A short peek (tap or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, and the last pair is worth extra. A miss flips them back and play moves on.",
   durationMs: 0,
-  controls: "Click two face-down cards, or WASD / arrows and Space / Enter.",
+  controls: "Tap two face-down cards, or use WASD / arrows and Space / Enter.",
   create: (ctx) => new PairsGame(ctx),
 };

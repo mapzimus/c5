@@ -34,35 +34,54 @@ export class InputManager {
     window.addEventListener("keyup", this.onKeyUp);
   }
 
+  setLogical(width: number, height: number): void {
+    this.logical = { w: width, h: height };
+  }
+
   bindPointer(canvas: HTMLCanvasElement, width: number, height: number): void {
     this.unbindPointer();
     this.canvas = canvas;
     this.logical = { w: width, h: height };
-    canvas.addEventListener("pointerdown", this.onPointerDown);
-    canvas.addEventListener("pointermove", this.onPointerMove);
+    canvas.style.touchAction = "none";
+    canvas.addEventListener("pointerdown", this.onPointerDown, { passive: false });
+    canvas.addEventListener("pointermove", this.onPointerMove, { passive: false });
+    canvas.addEventListener("pointerup", this.onPointerUp);
     canvas.addEventListener("pointerleave", this.onPointerLeave);
+    canvas.addEventListener("contextmenu", this.onContextMenu);
   }
 
   unbindPointer(): void {
     this.canvas?.removeEventListener("pointerdown", this.onPointerDown);
     this.canvas?.removeEventListener("pointermove", this.onPointerMove);
+    this.canvas?.removeEventListener("pointerup", this.onPointerUp);
     this.canvas?.removeEventListener("pointerleave", this.onPointerLeave);
+    this.canvas?.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas = null;
     this.click = null;
     this.hover = null;
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
+    if (event.cancelable) event.preventDefault();
     this.click = this.pointOnCanvas(event);
     this.hover = this.click;
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
+    if (event.pointerType === "touch" && event.cancelable) event.preventDefault();
     this.hover = this.pointOnCanvas(event);
+  };
+
+  private readonly onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === "touch") this.hover = null;
   };
 
   private readonly onPointerLeave = (): void => {
     this.hover = null;
+  };
+
+  private readonly onContextMenu = (event: Event): void => {
+    event.preventDefault();
   };
 
   private pointOnCanvas(event: PointerEvent): { x: number; y: number } {
