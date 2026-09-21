@@ -49,8 +49,77 @@ export function remember(memory: Map<string, number[]>, index: number, face: str
 
 export function forget(memory: Map<string, number[]>, index: number): void {
   for (const [face, indices] of memory) {
-    memory.set(face, indices.filter((item) => item !== index));
+    const next = indices.filter((item) => item !== index);
+    if (next.length === 0) memory.delete(face);
+    else memory.set(face, next);
   }
+}
+
+export const BOT_MEMORY_LIMIT = 8;
+export const CLOSER_BONUS = 2;
+
+/** Consecutive matches in one turn are worth 1, then 2, then 3… Last pair adds a closer bonus. */
+export function pointsForMatch(streak: number, remainingPairsAfter: number): number {
+  const combo = Math.max(1, streak);
+  return combo + (remainingPairsAfter === 0 ? CLOSER_BONUS : 0);
+}
+
+export function nextStreak(current: number, matched: boolean): number {
+  return matched ? current + 1 : 0;
+}
+
+export function remainingPairs(cards: readonly PairCard[]): number {
+  return cards.filter((card) => card.state !== "matched").length / 2;
+}
+
+/** Remember a sighting, then drop the oldest cards so the bot is fallible. */
+export function rememberCard(
+  memory: Map<string, number[]>,
+  recency: number[],
+  index: number,
+  face: string,
+  limit = BOT_MEMORY_LIMIT,
+): void {
+  remember(memory, index, face);
+  const existing = recency.indexOf(index);
+  if (existing >= 0) recency.splice(existing, 1);
+  recency.push(index);
+  while (recency.length > limit) {
+    const dropped = recency.shift();
+    if (dropped !== undefined) forget(memory, dropped);
+  }
+}
+
+export function glimpseIndices(
+  count: number,
+  take: number,
+  pickIndex: (maxExclusive: number) => number,
+): number[] {
+  const order = shuffleInPlace(
+    Array.from({ length: count }, (_, index) => index),
+    pickIndex,
+  );
+  return order.slice(0, Math.min(take, count));
+}
+
+export function stepCursor(
+  index: number,
+  dx: number,
+  dy: number,
+  cols: number,
+  rows: number,
+  open: (next: number) => boolean,
+): number {
+  if (dx === 0 && dy === 0) return index;
+  let col = index % cols;
+  let row = Math.floor(index / cols);
+  for (let step = 0; step < cols * rows; step += 1) {
+    col = (col + dx + cols) % cols;
+    row = (row + dy + rows) % rows;
+    const next = row * cols + col;
+    if (open(next)) return next;
+  }
+  return index;
 }
 
 /** First known pair, or the mate of the card just flipped, or -1 to pick at random. */
