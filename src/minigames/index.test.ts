@@ -6,6 +6,6 @@ describe("minigame catalog", () => {
     const ids = allMinigames.map((game) => game.id);
     expect(ids).toContain("pairs");
     expect(new Set(ids).size).toBe(ids.length);
-    expect(createRegistry().get("pairs").name).toBe("Pairs");
+    expect(createRegistry().get("pairs").name).toBe("Pairs FC");
   });
 });

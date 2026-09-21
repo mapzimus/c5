@@ -26,7 +26,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 
 | Game | How it plays |
 | --- | --- |
-| **Pairs** | A 5s peek (click to skip), then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
+| **Pairs FC** | A 5s peek (click to skip), then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
 
 ## Add another game
 
@@ -38,4 +38,4 @@ Pitches and half-thoughts go in `ideas/inbox.md` until they are a real game.
 
 `MinigameContext` hands you canvas size, the roster, keyboard + click input, a seeded RNG, and tiny synth SFX. Untimed games use `durationMs: 0` and end when `isFinished()` is true.
 
-Club crests on Pairs come from [World XI](https://github.com/mapzimus/lab) (the soccer-globe dataset). They remain trademarks of their clubs.
+Club crests on Pairs FC come from [World XI](https://github.com/mapzimus/lab) (the soccer-globe dataset). They remain trademarks of their clubs.

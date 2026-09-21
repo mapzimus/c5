@@ -1,4 +1,4 @@
-Crests used on Pairs cards come from the World XI / soccer-globe dataset
+Crests used on Pairs FC cards come from the World XI / soccer-globe dataset
 (https://github.com/mapzimus/lab, src/lab/world-xi), originally Wikimedia Commons
 and club/league sites.
 

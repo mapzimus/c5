@@ -379,7 +379,7 @@ class PairsGame implements MinigameInstance {
     g.textBaseline = "alphabetic";
     g.font = "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs  ·  memorize" : `Pairs  ·  ${left} left`, 40, 26);
+    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, 40, 26);
 
     g.font = "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
@@ -602,7 +602,7 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 
 export const pairs: MinigameDefinition = {
   id: "pairs",
-  name: "Pairs",
+  name: "Pairs FC",
   tagline: "Match crests. Stack a streak.",
   description:
     "A short peek (click or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, and the last pair is worth extra. A miss flips them back and play moves on.",
