@@ -27,6 +27,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 | Game | How it plays |
 | --- | --- |
 | **Pairs** | A 5s peek (click to skip), then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
+| **Parrot Flip** | Take turns flicking a pirate macaw. Land it standing. Four tosses each — most makes wins. Port of [parrot-flip](https://github.com/mapzimus/Whydah-Unit/tree/main/parrot-flip) from Whydah-Unit. |
 
 ## Add another game
 
