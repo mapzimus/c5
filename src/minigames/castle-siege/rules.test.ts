@@ -1,81 +1,88 @@
+import Matter from "matter-js";
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../core/rng";
 import {
-  SHOTS_PER_TEAM,
+  QUEUE_LENGTH,
+  SUDDEN_DEATH_AFTER,
   WIND_MAX,
-  baseCount,
-  countTotal,
-  drawPieces,
-  nextShooter,
-  outcome,
+  comboCallout,
+  dealQueue,
+  impactDamage,
+  matchWinner,
+  rollAmmo,
   rollWind,
   teamOf,
 } from "./rules";
-import { CANNONS, GROUND_Y, SiegeWorld, ZONES, makePieceBody } from "./world";
+import { SiegeWorld, ZONES } from "./world";
 
 describe("castle siege rules", () => {
-  it("draws exactly the game size, same seed same pieces", () => {
-    expect(countTotal(drawPieces(new Rng(7), 20))).toBe(20);
-    expect(countTotal(drawPieces(new Rng(7), 40))).toBe(40);
-    expect(drawPieces(new Rng(7), 40)).toEqual(drawPieces(new Rng(7), 40));
+  it("deals the same queue from the same seed", () => {
+    expect(dealQueue(new Rng(7))).toHaveLength(QUEUE_LENGTH);
+    expect(dealQueue(new Rng(7))).toEqual(dealQueue(new Rng(7)));
   });
 
-  it("uses 2 base pieces for 20 and 4 for 40", () => {
-    expect(baseCount(20)).toBe(2);
-    expect(baseCount(40)).toBe(4);
+  it("goes all bombs in sudden death", () => {
+    const rng = new Rng(1);
+    for (let i = 0; i < 20; i += 1) expect(rollAmmo(rng, SUDDEN_DEATH_AFTER)).toBe("bomb");
   });
 
-  it("keeps wind whole and inside ±max, centered near zero", () => {
+  it("keeps wind whole and inside ±max", () => {
     const rng = new Rng(3);
     const winds = Array.from({ length: 2000 }, () => rollWind(rng));
     expect(winds.every((w) => Number.isInteger(w) && Math.abs(w) <= WIND_MAX)).toBe(true);
-    const mean = winds.reduce((a, b) => a + b, 0) / winds.length;
-    expect(Math.abs(mean)).toBeLessThan(1);
   });
 
-  it("alternates seats into teams", () => {
+  it("ignores soft bumps and hurts hard hits more", () => {
+    expect(impactDamage(2, false)).toBe(0);
+    expect(impactDamage(6, false)).toBe(1);
+    expect(impactDamage(16, false)).toBeGreaterThan(impactDamage(6, false));
+    expect(impactDamage(6, true)).toBe(2);
+  });
+
+  it("alternates seats into teams and ends the match at two round wins", () => {
     expect([0, 1, 2, 3].map(teamOf)).toEqual([0, 1, 0, 1]);
+    expect(matchWinner([1, 1])).toBeNull();
+    expect(matchWinner([2, 1])).toBe(0);
+    expect(matchWinner([0, 2])).toBe(1);
   });
 
-  it("fewest standing loses", () => {
-    expect(outcome([3, 5])).toBe(1);
-    expect(outcome([4, 0])).toBe(0);
-    expect(outcome([2, 2])).toBe("draw");
-  });
-
-  it("alternates shooters until both are out of shots", () => {
-    expect(nextShooter([1, 0], 0)).toBe(1);
-    expect(nextShooter([SHOTS_PER_TEAM, SHOTS_PER_TEAM - 1], 1)).toBe(1);
-    expect(nextShooter([SHOTS_PER_TEAM, SHOTS_PER_TEAM], 1)).toBeNull();
+  it("calls out combos", () => {
+    expect(comboCallout(1)).toBeNull();
+    expect(comboCallout(2)).toBe("DOUBLE SMASH!");
+    expect(comboCallout(9)).toBe("DEMOLITION!");
   });
 });
 
 describe("castle siege world", () => {
-  it("keeps pieces resting on a base and removes pieces on the ground", () => {
+  const cx = (ZONES[1].x0 + ZONES[1].x1) / 2;
+  const run = (world: SiegeWorld, steps: number) => {
+    for (let i = 0; i < steps; i += 1) world.step(1 / 60);
+  };
+
+  it("drops pieces from the sky without hurting anything while building", () => {
     const world = new SiegeWorld();
-    const cx = (ZONES[0].x0 + ZONES[0].x1) / 2;
-    const base = makePieceBody("block", cx, 0, 0, 0, true);
-    world.snapToGround(base);
-    world.addPiece({ body: base, team: 0, kind: "block", base: true });
-    const onTop = makePieceBody("cube", cx, 0, 0, 0, false);
-    expect(world.dropFromTop(onTop)).toBe(true);
-    world.addPiece({ body: onTop, team: 0, kind: "cube", base: false });
-    const loose = makePieceBody("cube", ZONES[0].x0 + 30, GROUND_Y - 22, 0, 0, false);
-    world.addPiece({ body: loose, team: 0, kind: "cube", base: false });
-    for (let i = 0; i < 180; i += 1) world.step(1 / 60);
-    expect(world.eliminateGrounded()).toEqual([1, 0]);
-    expect(world.standing(0)).toBe(1);
-    world.destroy();
+    world.placeKing(1, cx);
+    expect(world.spawnPiece("block", cx, 1, 0)).toBe(true);
+    run(world, 180);
+    expect(world.kings[1]?.hp).toBe(3);
+    expect(world.pieces).toHaveLength(2);
+    world.destroyWorld();
   });
 
-  it("records drift in the direction the wind blows", () => {
+  it("a bomb next to the king knocks it out of HP", () => {
     const world = new SiegeWorld();
-    world.wind = 10;
-    world.fire(0, 11, -11);
-    for (let i = 0; i < 300 && world.shotPending(); i += 1) world.step(1 / 60);
-    expect(world.shots).toHaveLength(1);
-    expect(world.shots[0]!.drift).toBeGreaterThan(0);
-    expect(CANNONS[0].x).toBeLessThan(ZONES[0].x0);
-    world.destroy();
+    const king = world.placeKing(1, cx);
+    run(world, 30);
+    world.damageOn = true;
+    world.fire(0, "bomb", 0, 0);
+    const bomb = world.balls[0]!;
+    // Drop the bomb right onto the king.
+    Matter.Body.setPosition(bomb.body, { x: king.body.position.x, y: king.body.position.y - 60 });
+    Matter.Body.setVelocity(bomb.body, { x: 0, y: 2 });
+    run(world, 60);
+    const events = world.drainEvents();
+    expect(events.some((e) => e.type === "boom")).toBe(true);
+    expect(king.hp).toBeLessThan(3);
+    world.destroyWorld();
   });
 });

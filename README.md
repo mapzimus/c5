@@ -28,7 +28,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 | --- | --- |
 | **Pairs** | A 5s peek (click to skip), then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
 | **Parrot Flip** | Take turns flicking a pirate macaw. Land it standing. Four tosses each — most makes wins. Port of [parrot-flip](https://github.com/mapzimus/Whydah-Unit/tree/main/parrot-flip) from Whydah-Unit. |
-| **Castle Siege** | Two sides get the same random pieces, lay 2 base pieces, and build (live physics). Anything touching the ground after the settle is out. Then 8 wind-blown slingshot shots each. Knockout, or fewest standing loses. Ends on a wind-vs-drift scatter plot. [Spec](src/minigames/castle-siege/README.md) |
+| **Castle Siege** | Hide your king, then drop pieces to wall him in (25s). Then take turns firing random ammo (cannonball, bomb, triple shot, boulder) through the wind. Blocks crack and shatter, and 3 hits take out a king. First to 2 rounds wins. [Details](src/minigames/castle-siege/README.md) |
 
 ## Add another game
 
