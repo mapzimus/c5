@@ -42,6 +42,8 @@ export class FlickPointer {
     private readonly canvas: HTMLCanvasElement,
     private readonly logical: { w: number; h: number },
     private readonly onFlick: (vx: number, vy: number) => void,
+    /** Optional region filter in logical coords, so two flickers can share one canvas. */
+    private readonly accept?: (x: number, y: number) => boolean,
   ) {
     canvas.addEventListener("pointerdown", this.onDown);
     canvas.addEventListener("pointermove", this.onMove);
@@ -80,6 +82,12 @@ export class FlickPointer {
 
   private readonly onDown = (event: PointerEvent): void => {
     if (!this.enabled || this.dragging) return;
+    if (this.accept) {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / (rect.width || 1)) * this.logical.w;
+      const y = ((event.clientY - rect.top) / (rect.height || 1)) * this.logical.h;
+      if (!this.accept(x, y)) return;
+    }
     event.preventDefault();
     this.activePointerId = event.pointerId;
     this.pointerType = event.pointerType || "mouse";

@@ -1,5 +1,6 @@
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "../../../core/types";
 import { Callouts, Juice, loadBest, saveBest } from "../../../fx/juice";
+import { ParrotDuelGame } from "./duel";
 import { ParrotPhysics } from "./physics";
 import { FlickPointer } from "./pointer";
 import { ParrotScene, preloadParrots } from "./renderer";
@@ -357,12 +358,108 @@ class ParrotFlipGame implements MinigameInstance {
   }
 }
 
+const MODES = [
+  { id: "classic", title: "CLASSIC", line1: "Take turns.", line2: "Your flipgame rules.", x: 250, color: "#3EE0FF" },
+  { id: "duel", title: "DUEL", line1: "Two players flip at once,", line2: "split screen. Winner stays on.", x: 690, color: "#FF3D7A" },
+] as const;
+const MODE_Y = 230;
+const MODE_W = 340;
+const MODE_H = 300;
+
+/** Parrot Flip opens on a Classic / Duel choice. An all-bot table goes straight to Classic. */
+class ParrotFlipLauncher implements MinigameInstance {
+  private inner: MinigameInstance | null = null;
+  private time = 0;
+
+  constructor(private readonly ctx: MinigameContext) {
+    const humans = ctx.players.filter((p) => p.kind === "human").length;
+    if (humans === 0 || ctx.players.length < 2) this.inner = new ParrotFlipGame(ctx);
+  }
+
+  update(dt: number): void {
+    if (this.inner) {
+      this.inner.update(dt);
+      return;
+    }
+    this.time += dt;
+    const input = this.ctx.input;
+    const click = input.consumeClick();
+    let pick: "classic" | "duel" | null = null;
+    if (input.justPressed("Digit1") || input.justPressed("KeyC")) pick = "classic";
+    if (input.justPressed("Digit2") || input.justPressed("KeyD")) pick = "duel";
+    if (click) {
+      for (const mode of MODES) {
+        if (click.x >= mode.x && click.x <= mode.x + MODE_W && click.y >= MODE_Y && click.y <= MODE_Y + MODE_H) pick = mode.id;
+      }
+    }
+    if (pick) {
+      this.ctx.sfx.go();
+      this.inner = pick === "duel" ? new ParrotDuelGame(this.ctx) : new ParrotFlipGame(this.ctx);
+    }
+  }
+
+  render(g: CanvasRenderingContext2D): void {
+    if (this.inner) {
+      this.inner.render(g);
+      return;
+    }
+    const bg = g.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    bg.addColorStop(0, "#0c1628");
+    bg.addColorStop(1, "#1d3a4f");
+    g.fillStyle = bg;
+    g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    g.textAlign = "center";
+    g.fillStyle = "#F4F7FB";
+    g.font = "700 64px Bebas Neue, Impact, sans-serif";
+    g.fillText("PARROT FLIP", GAME_WIDTH / 2, 110);
+    g.font = "600 20px Outfit, sans-serif";
+    g.fillStyle = "#94a3b8";
+    g.fillText("Tap a mode", GAME_WIDTH / 2, 150);
+    MODES.forEach((mode, i) => {
+      const pulse = 1 + Math.sin(this.time * 3 + i * 1.6) * 0.015;
+      g.save();
+      g.translate(mode.x + MODE_W / 2, MODE_Y + MODE_H / 2);
+      g.scale(pulse, pulse);
+      g.fillStyle = "rgba(7,11,20,0.6)";
+      g.strokeStyle = mode.color;
+      g.lineWidth = 4;
+      g.beginPath();
+      g.roundRect(-MODE_W / 2, -MODE_H / 2, MODE_W, MODE_H, 24);
+      g.fill();
+      g.stroke();
+      g.fillStyle = mode.color;
+      g.font = "700 72px Bebas Neue, Impact, sans-serif";
+      g.fillText(mode.title, 0, -20);
+      g.fillStyle = "#F4F7FB";
+      g.font = "600 20px Outfit, sans-serif";
+      g.fillText(mode.line1, 0, 40);
+      g.fillText(mode.line2, 0, 68);
+      g.fillStyle = "#64748b";
+      g.font = "600 14px Outfit, sans-serif";
+      g.fillText(`or press ${i + 1}`, 0, 120);
+      g.restore();
+    });
+  }
+
+  isFinished(): boolean {
+    return this.inner?.isFinished() ?? false;
+  }
+
+  getScores(): { playerId: string; score: number }[] {
+    return this.inner?.getScores() ?? this.ctx.players.map((p) => ({ playerId: p.id, score: 0 }));
+  }
+
+  destroy(): void {
+    this.inner?.destroy();
+  }
+}
+
 export const parrotFlip: MinigameDefinition = {
   id: "parrot-flip",
   name: "Parrot Flip",
   tagline: "Flick the pirate parrot upright.",
-  description: `Real bottle-game rules. ${STARTING_LIVES} lives each. Every make raises the shared stake; miss and you lose that many lives. Three in a row = ON FIRE: keep flipping for bonus lives, miss for free. Last one standing wins.`,
+  description: `Real bottle-game rules. ${STARTING_LIVES} lives each. Every make raises the shared stake; miss and you lose that many lives. Three in a row = ON FIRE: keep flipping for bonus lives, miss for free. Last one standing wins. Duel mode: two players flip at once on a split screen.`,
   durationMs: 0,
-  controls: "Flick up on the parrot. Harder snap = more spin.",
-  create: (ctx) => new ParrotFlipGame(ctx),
+  controls: "Pick Classic or Duel, then flick up on the parrot. Harder snap = more spin.",
+  create: (ctx) => new ParrotFlipLauncher(ctx),
 };
