@@ -3,6 +3,7 @@ import { Rng } from "../../../core/rng";
 import {
   MAX_LIVES,
   SD_THRESHOLD,
+  GOLDEN_ODDS,
   STARTING_LIVES,
   advanceTurn,
   botFlick,
@@ -10,6 +11,7 @@ import {
   isOver,
   missWouldEliminate,
   resolveFlip,
+  rollGolden,
   scoresFromTable,
   suddenDeathLevel,
 } from "./rules";
@@ -127,5 +129,45 @@ describe("parrot flip bottle-game rules", () => {
     expect(mean).toBeGreaterThan(1500);
     expect(mean).toBeLessThan(2700);
     expect(sample.every((flick) => flick.vy < 0)).toBe(true);
+  });
+
+  it("a golden make adds 2 to the stake but still counts as one make toward the streak", () => {
+    const table = dealTable(["a", "b"]);
+    const out = resolveFlip(table, true, { golden: true });
+    expect(out.golden).toBe(true);
+    expect(out.worth).toBe(2);
+    expect(table.stake).toBe(2);
+    expect(table.seats[0]!.streak).toBe(1);
+    expect(table.seats[0]!.heatingUp).toBe(false);
+  });
+
+  it("a golden miss is just a miss", () => {
+    const table = dealTable(["a", "b"]);
+    resolveFlip(table, true);
+    const out = resolveFlip(table, false, { golden: true });
+    expect(out.golden).toBe(false);
+    expect(out.penalty).toBe(1);
+  });
+
+  it("a golden make while ON FIRE is +2 lives, capped at MAX_LIVES", () => {
+    const table = dealTable(["a", "b"]);
+    for (let i = 0; i < 3; i += 1) resolveFlip(table, true);
+    expect(resolveFlip(table, true, { golden: true }).fireGain).toBe(2);
+    expect(table.seats[0]!.lives).toBe(STARTING_LIVES + 2);
+
+    const capped = dealTable(["a", "b"], MAX_LIVES - 1);
+    for (let i = 0; i < 3; i += 1) resolveFlip(capped, true);
+    expect(resolveFlip(capped, true, { golden: true }).fireGain).toBe(1);
+    expect(capped.seats[0]!.lives).toBe(MAX_LIVES);
+    expect(capped.seats[0]!.onFire).toBe(false);
+  });
+
+  it("golden flips roll about 1 in 150 like flipgame", () => {
+    const rng = new Rng(11);
+    const n = 150_000;
+    let hits = 0;
+    for (let i = 0; i < n; i += 1) if (rollGolden(rng)) hits += 1;
+    expect(hits / n).toBeGreaterThan(0.7 / GOLDEN_ODDS);
+    expect(hits / n).toBeLessThan(1.3 / GOLDEN_ODDS);
   });
 });
