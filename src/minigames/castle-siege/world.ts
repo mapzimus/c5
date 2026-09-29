@@ -1,5 +1,5 @@
 import Matter from "matter-js";
-import { KING_HP, PIECE_SPECS, impactDamage, type Ammo, type PieceKind, type Team } from "./rules";
+import { GOLDEN_BONUS, KING_HP, PIECE_SPECS, impactDamage, isHeavy, type Ammo, type PieceKind, type Team } from "./rules";
 
 const { Engine, Events, Bodies, Body, Composite, Query } = Matter;
 
@@ -134,14 +134,16 @@ export class SiegeWorld {
       const contact = pair.collision.supports?.[0] ?? a.position;
       if (speed > 6) this.events.push({ type: "thud", x: contact.x, y: contact.y, speed });
       if (!this.damageOn) continue;
-      const heavy = (ballA ?? ballB)?.ammo === "boulder";
+      const hitter = (ballA ?? ballB)?.ammo;
+      const heavy = isHeavy(hitter);
+      const golden = hitter === "golden";
       const hitByBall = Boolean(ballA || ballB);
       for (const body of [a, b]) {
         const piece = this.pieceOf(body);
         if (!piece || piece.cooldown > 0) continue;
         // Kings are tougher to scratch: only real hits count.
         const damage = piece.kind === "king" ? (speed > 5 ? (speed > 12 || heavy ? 2 : 1) : 0) : impactDamage(speed, heavy && hitByBall);
-        if (damage > 0) this.damage(piece, damage);
+        if (damage > 0) this.damage(piece, damage + (golden && piece.kind !== "king" ? GOLDEN_BONUS : 0));
       }
     }
   };
@@ -258,9 +260,9 @@ export class SiegeWorld {
     for (const spread of spreads) {
       const cos = Math.cos(spread);
       const sin = Math.sin(spread);
-      const radius = ammo === "boulder" ? 26 : ammo === "bomb" ? 16 : ammo === "triple" ? 11 : 15;
+      const radius = ammo === "boulder" ? 26 : ammo === "golden" ? 20 : ammo === "bomb" ? 16 : ammo === "triple" ? 11 : 15;
       const body = Bodies.circle(cannon.x, cannon.y, radius, {
-        density: ammo === "boulder" ? 0.02 : 0.012,
+        density: ammo === "golden" ? 0.03 : ammo === "boulder" ? 0.02 : 0.012,
         frictionAir: 0,
         restitution: 0.25,
         collisionFilter: { category: CAT_BALL[team], mask: CAT_GROUND | CAT_TEAM[team === 0 ? 1 : 0], group: 0 },

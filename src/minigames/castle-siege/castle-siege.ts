@@ -1,5 +1,6 @@
 import type Matter from "matter-js";
 import { fillArena } from "../../core/draw";
+import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
 import type { MinigameContext, MinigameDefinition, MinigameInstance, Player } from "../../core/types";
 import {
   AMMO_LABELS,
@@ -43,7 +44,15 @@ const H = 720;
 const TRAY_Y = 612;
 const AIM_SCALE = 0.11;
 const DROP_COOLDOWN = 0.3;
-const AMMO_KINDS = Object.keys(AMMO_WEIGHTS) as Ammo[];
+/** Kinds flashed during the roll animation. Golden stays hidden so its reveal is a surprise. */
+const AMMO_KINDS = (Object.keys(AMMO_WEIGHTS) as Ammo[]).filter((ammo) => ammo !== "golden");
+const GOLD = "#FFD54A";
+const BEST_KEY = "castle-siege-combo";
+
+interface Pt {
+  x: number;
+  y: number;
+}
 
 interface TeamState {
   players: Player[];
@@ -122,6 +131,15 @@ class CastleSiege implements MinigameInstance {
   private flash = 0;
   private banner: { text: string; sub: string; color: string; life: number; total: number } | null = null;
   private hitFlash = new Map<Piece, number>();
+  private readonly juice = new Juice();
+  private readonly callouts = new Callouts();
+  /** Most enemy blocks one human shot has smashed on this device. */
+  private best = loadBest(BEST_KEY);
+
+  // Last-shot ghost: each team's previous flight path, shown while they aim.
+  private ghost: [Pt[] | null, Pt[] | null] = [null, null];
+  private trail: Pt[] = [];
+  private tracked: Matter.Body | null = null;
 
   constructor(private readonly ctx: MinigameContext) {
     const makeTeam = (team: Team): TeamState => {
@@ -197,8 +215,19 @@ class CastleSiege implements MinigameInstance {
     const callout = comboCallout(this.shotSmashed);
     const state = this.teams[this.shooter];
     state.bestCombo = Math.max(state.bestCombo, this.shotSmashed);
+    let sub = `${this.shotSmashed} blocks`;
+    if (state.human && this.shotSmashed > 0) {
+      const newBest = saveBest(BEST_KEY, this.shotSmashed);
+      if (newBest && this.shotSmashed >= 2) {
+        this.callouts.show("NEW BEST!", GOLD, { y: 0.26, size: 58, life: 1.5 });
+        this.juice.burst(W / 2, H * 0.26, [GOLD, "#FFFFFF", state.color], { count: 40, speed: 420, life: 0.9 });
+        this.ctx.sfx.win();
+      }
+      this.best = Math.max(this.best, this.shotSmashed);
+      sub += newBest ? " · NEW PERSONAL BEST" : ` · best ${this.best}`;
+    }
     if (callout) {
-      this.showBanner(callout, `${this.shotSmashed} blocks`, state.color, 1.1);
+      this.showBanner(callout, sub, state.color, 1.1);
       this.ctx.sfx.streak(this.shotSmashed);
     }
     this.shooter = other(this.shooter);
@@ -208,6 +237,8 @@ class CastleSiege implements MinigameInstance {
   private kingDown(team: Team, x: number, y: number): void {
     if (this.phase === "roundOver" || this.phase === "matchOver") return;
     const winner = other(team);
+    this.commitGhost();
+    this.juice.hitStop(0.12);
     // Both kings gone in the same moment: nobody scores, replay the round.
     const bothGone = !this.world.kings[winner] && this.teams[winner].kingPlaced;
     if (!bothGone) this.wins[winner] += 1;
@@ -252,6 +283,9 @@ class CastleSiege implements MinigameInstance {
   update(dt: number): void {
     if (this.done) return;
     this.elapsed += dt;
+    // Shared juice: hit-stop freezes the simulation (returns 0) while shake/particles keep going.
+    const sim = this.juice.update(dt);
+    this.callouts.update(dt);
     const scale = this.slowmo > 0 ? 0.3 : 1;
     this.slowmo = Math.max(0, this.slowmo - dt);
     this.shake = Math.max(0, this.shake - dt * 40);
@@ -260,15 +294,16 @@ class CastleSiege implements MinigameInstance {
       this.banner.life -= dt;
       if (this.banner.life <= 0) this.banner = null;
     }
-    this.updateJuice(dt * scale);
+    this.updateJuice(sim * scale);
 
     if (this.phase !== "matchOver") {
-      this.world.step(dt * scale);
+      this.world.step(sim * scale);
       this.handleEvents(this.world.drainEvents());
+      this.sampleTrail();
     }
 
     if (this.phase === "build") this.updateBuild(dt);
-    else if (this.phase === "siege") this.updateSiege(dt, dt * scale);
+    else if (this.phase === "siege") this.updateSiege(dt, sim * scale);
     else if (this.phase === "roundOver") {
       this.timer -= dt;
       if (this.timer <= 0) {
@@ -338,6 +373,13 @@ class CastleSiege implements MinigameInstance {
         this.turn = "aim";
         this.turnTimer = shooter.human ? 0 : 0.7 + this.ctx.rng.float(0, 0.4);
         this.ctx.sfx.collect();
+        if (this.ammo === "golden") {
+          this.callouts.show("GOLDEN SHOT!", GOLD, { life: 1.4 });
+          const c = CANNONS[this.shooter];
+          this.juice.burst(c.x, c.y - 20, [GOLD, "#FFF3B0", "#FFFFFF"], { count: 36, speed: 320, gravity: 200 });
+          this.juice.shake(0.2);
+          this.ctx.sfx.streak(6);
+        }
       }
       return;
     }
@@ -351,6 +393,7 @@ class CastleSiege implements MinigameInstance {
     if (this.turn === "flight") {
       this.turnTimer += worldDt;
       if ((this.world.ballsSettled() && this.turnTimer > 0.4) || this.turnTimer > 7) {
+        this.commitGhost();
         this.world.clearBalls();
         this.turn = "settle";
         this.turnTimer = 0;
@@ -369,8 +412,11 @@ class CastleSiege implements MinigameInstance {
       } else if (event.type === "hit") {
         const color = event.king ? "#FFD54A" : this.teams[event.team].color;
         this.burst(event.x, event.y, event.king ? 22 : 8, color, event.king ? 320 : 180, event.king ? 4 : 3);
-        this.shake = Math.max(this.shake, event.king ? 12 : 3 + event.damage * 2);
+        // Screen shake scaled by how hard the hit was.
+        this.juice.shake(event.king ? 0.45 : Math.min(0.4, 0.06 + event.damage * 0.08));
         if (event.king) {
+          this.juice.hitStop(0.14);
+          this.juice.burst(event.x, event.y, [GOLD, "#FFFFFF"], { count: 20, speed: 380, size: 5 });
           const piece = this.world.kings[event.team];
           if (piece) this.hitFlash.set(piece, 0.35);
           this.floaters.push({ text: `-${event.damage} KING`, x: event.x, y: event.y - 40, life: 1.2, color: "#FFD54A", size: 34 });
@@ -378,7 +424,10 @@ class CastleSiege implements MinigameInstance {
         }
       } else if (event.type === "break") {
         this.shards(event.x, event.y, this.teams[event.team].color, event.kind);
-        this.shake = Math.max(this.shake, 7);
+        // Debris in the block's colour, plus a beat of hit-stop so the shatter lands.
+        this.juice.burst(event.x, event.y, [this.teams[event.team].color, "#F4F7FB", "#a8a29e"], { count: 16, speed: 340, size: 5, life: 0.8, gravity: 900 });
+        this.juice.hitStop(0.06);
+        this.juice.shake(0.18);
         if (this.phase === "siege" && event.team !== this.shooter) {
           this.shotSmashed += 1;
           this.teams[this.shooter].smashed += 1;
@@ -423,6 +472,10 @@ class CastleSiege implements MinigameInstance {
 
   private fire(vx: number, vy: number): void {
     this.world.fire(this.shooter, this.ammo, vx, vy);
+    const balls = this.world.balls;
+    this.tracked = balls[Math.floor(balls.length / 2)]?.body ?? null;
+    const from = CANNONS[this.shooter];
+    this.trail = [{ x: from.x, y: from.y }];
     this.shots[this.shooter] += 1;
     this.turn = "flight";
     this.turnTimer = 0;
@@ -431,6 +484,27 @@ class CastleSiege implements MinigameInstance {
     const c = CANNONS[this.shooter];
     this.burst(c.x + Math.sign(vx) * 20, c.y - 10, 14, "#e7e5e4", 240, 4);
     this.ctx.sfx.hit();
+  }
+
+  /** Record the tracked ball's path up to its first impact (or explosion). */
+  private sampleTrail(): void {
+    if (!this.tracked) return;
+    const ball = this.world.balls.find((b) => b.body === this.tracked);
+    if (!ball) {
+      this.tracked = null;
+      return;
+    }
+    const { x, y } = ball.body.position;
+    const last = this.trail[this.trail.length - 1];
+    if (!last || Math.hypot(x - last.x, y - last.y) > 6) this.trail.push({ x, y });
+    if (ball.touched || this.trail.length > 500) this.tracked = null;
+    if (ball.ammo === "golden") this.juice.burst(x, y, [GOLD, "#FFF3B0"], { count: 1, speed: 40, size: 3, life: 0.45, gravity: 0 });
+  }
+
+  private commitGhost(): void {
+    if (this.phase === "siege" && this.trail.length > 1) this.ghost[this.shooter] = this.trail;
+    this.trail = [];
+    this.tracked = null;
   }
 
   private aimVelocity(): { vx: number; vy: number; power: number } | null {
@@ -597,7 +671,9 @@ class CastleSiege implements MinigameInstance {
     fillArena(g, W, H);
     g.save();
     if (this.shake > 0) g.translate((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake);
+    this.juice.begin(g);
     this.drawStage(g);
+    if (this.phase === "siege") this.drawGhost(g);
     for (const piece of this.world.pieces) {
       if (piece.kind === "king") this.drawKing(g, piece);
       else this.drawPiece(g, piece);
@@ -608,6 +684,7 @@ class CastleSiege implements MinigameInstance {
     if (this.phase === "build") for (const t of [0, 1] as const) this.drawHeld(g, t);
     if (this.phase === "siege") this.drawAim(g);
     this.drawFloaters(g);
+    this.juice.end(g);
     g.restore();
 
     this.drawTopBar(g);
@@ -619,6 +696,41 @@ class CastleSiege implements MinigameInstance {
     }
     if (this.phase === "matchOver") this.drawMatchOver(g);
     else if (this.banner) this.drawBanner(g);
+    this.callouts.draw(g, W, H);
+  }
+
+  /** The shooter's previous flight, faint and dotted, so they can correct their aim. */
+  private drawGhost(g: CanvasRenderingContext2D): void {
+    if (this.turn !== "aim" && this.turn !== "roll") return;
+    const path = this.ghost[this.shooter];
+    if (!path || path.length < 2) return;
+    const color = this.teams[this.shooter].color;
+    g.save();
+    g.globalAlpha = 0.38;
+    g.strokeStyle = color;
+    g.lineWidth = 3;
+    g.lineCap = "round";
+    g.setLineDash([2, 10]);
+    g.beginPath();
+    path.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)));
+    g.stroke();
+    g.setLineDash([]);
+    // Mark where it landed.
+    const end = path[path.length - 1]!;
+    g.globalAlpha = 0.55;
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(end.x - 8, end.y - 8);
+    g.lineTo(end.x + 8, end.y + 8);
+    g.moveTo(end.x + 8, end.y - 8);
+    g.lineTo(end.x - 8, end.y + 8);
+    g.stroke();
+    g.font = "600 13px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "bottom";
+    g.fillStyle = color;
+    g.fillText("LAST SHOT", end.x, end.y - 12);
+    g.restore();
   }
 
   private drawStage(g: CanvasRenderingContext2D): void {
@@ -756,13 +868,24 @@ class CastleSiege implements MinigameInstance {
   private drawBall(g: CanvasRenderingContext2D, ball: Matter.Body, ammo: Ammo, color: string): void {
     const r = ball.circleRadius ?? 15;
     const { x, y } = ball.position;
-    g.fillStyle = ammo === "bomb" ? "#111827" : ammo === "boulder" ? "#78716c" : "#e5e7eb";
-    g.strokeStyle = color;
+    g.fillStyle = ammo === "bomb" ? "#111827" : ammo === "boulder" ? "#78716c" : ammo === "golden" ? GOLD : "#e5e7eb";
+    g.strokeStyle = ammo === "golden" ? "#FFF3B0" : color;
     g.lineWidth = 3;
+    if (ammo === "golden") {
+      g.shadowColor = GOLD;
+      g.shadowBlur = 24 + Math.sin(this.elapsed * 20) * 8;
+    }
     g.beginPath();
     g.arc(x, y, r, 0, Math.PI * 2);
     g.fill();
     g.stroke();
+    g.shadowBlur = 0;
+    if (ammo === "golden") {
+      g.fillStyle = "rgba(255,255,255,0.8)";
+      g.beginPath();
+      g.arc(x - r * 0.35, y - r * 0.35, r * 0.28, 0, Math.PI * 2);
+      g.fill();
+    }
     if (ammo === "bomb") {
       g.fillStyle = Math.sin(this.elapsed * 30) > 0 ? "#FF8A3D" : "#FFE08A";
       g.beginPath();
@@ -928,16 +1051,22 @@ class CastleSiege implements MinigameInstance {
     const ammo = this.turn === "roll" ? this.rollShown : this.ammo;
     const bx = W / 2 - 130;
     const by = TRAY_Y + 14;
+    const golden = ammo === "golden" && this.turn !== "roll";
     g.fillStyle = "rgba(7,11,20,0.75)";
-    g.strokeStyle = shooter.color;
-    g.lineWidth = 3;
+    g.strokeStyle = golden ? GOLD : shooter.color;
+    g.lineWidth = golden ? 5 : 3;
+    if (golden) {
+      g.shadowColor = GOLD;
+      g.shadowBlur = 18 + Math.sin(this.elapsed * 8) * 8;
+    }
     g.beginPath();
     g.roundRect(bx, by, 260, 74, 14);
     g.fill();
     g.stroke();
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.fillStyle = this.turn === "roll" ? "#94a3b8" : "#F4F7FB";
+    g.shadowBlur = 0;
+    g.fillStyle = this.turn === "roll" ? "#94a3b8" : golden ? GOLD : "#F4F7FB";
     g.font = "700 34px Bebas Neue, Impact, sans-serif";
     g.fillText(AMMO_LABELS[ammo], W / 2, by + 28);
     g.font = "600 15px Outfit, sans-serif";
@@ -1120,7 +1249,7 @@ export const castleSiege: MinigameDefinition = {
   name: "Castle Siege",
   tagline: "Stack a fortress. Bomb their king.",
   description:
-    "Hide your king, then drop pieces from the sky to wall him in. When the timer ends, fire random ammo (cannonballs, bombs, triple shots, boulders) through the wind. Blocks crack and shatter. Three hits and a king is done. First to two rounds wins.",
+    "Hide your king, then drop pieces from the sky to wall him in. When the timer ends, fire random ammo (cannonballs, bombs, triple shots, boulders, and the rare golden ball) through the wind. Your last shot's path stays as a ghost so you can adjust. Blocks crack and shatter. Three hits and a king is done. First to two rounds wins.",
   durationMs: 0,
   controls: "Tap to place king · hold & slide, release to drop · ⟳ rotates · drag back & release to fire",
   create: (ctx) => new CastleSiege(ctx),
