@@ -1,13 +1,14 @@
 import { Rng } from "../../../core/rng";
 import type { MinigameContext, MinigameDefinition, MinigameInstance } from "../../../core/types";
 import { BOARD, COLORS, DropWorld, RADII } from "./physics";
+import { LEVELS, levelFor, levelIndex, shotClock } from "./levels";
 import { botAim } from "./rules";
 
 export const luckyDrop: MinigameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
   tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, no timer. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus, then keep going to 2048. Take turns on fresh boards; highest score wins when every board overflows.",
+  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus, then keep going to 2048. Take turns on fresh boards; highest score wins when every board overflows.",
   durationMs: 0,
   controls: "Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
   create: ctx => new LuckyDropGame(ctx),
@@ -28,6 +29,8 @@ export class LuckyDropGame implements MinigameInstance {
   private aim = 240;
   private accumulator = 0;
   private botWait = 0.9;
+  /** Seconds left before the current orb drops on its own. */
+  private shotLeft = shotClock(0);
   private intermission = 0;
   private done = false;
   private pointerId: number | null = null;
@@ -117,6 +120,7 @@ export class LuckyDropGame implements MinigameInstance {
         this.aim = 240;
         this.accumulator = 0;
         this.botWait = 0.9;
+        this.shotLeft = shotClock(0);
         this.floaters = [];
         this.rings = [];
       }
@@ -139,6 +143,12 @@ export class LuckyDropGame implements MinigameInstance {
       const right = input.isDown("ArrowRight") || input.isDown("KeyD") || input.axis(player.slot).x > 0;
       this.aim = this.world.clampAim(this.aim + (Number(right) - Number(left)) * dt * 300);
       if (this.pendingDrop || input.justPressed("Space") || input.actionPressed(player.slot)) this.drop();
+      this.shotLeft -= dt;
+      if (this.shotLeft <= 0) {
+        // Out of time: drop wherever the aim is now.
+        this.releasePointer();
+        this.drop();
+      }
       if (input.justPressed("KeyS") || (click && click.x >= SHAKE.x && click.x <= SHAKE.x + SHAKE.w &&
         click.y >= SHAKE.y && click.y <= SHAKE.y + SHAKE.h)) this.shake();
       this.pendingDrop = false;
@@ -174,7 +184,11 @@ export class LuckyDropGame implements MinigameInstance {
     }
   }
 
-  private drop(): void { if (this.world.drop(this.aim)) this.ctx.sfx.tick(); }
+  private drop(): void {
+    if (!this.world.drop(this.aim)) return;
+    this.ctx.sfx.tick();
+    this.shotLeft = shotClock(this.world.score);
+  }
   private shake(): void { if (this.world.shake()) this.ctx.sfx.hit(); }
   isFinished(): boolean { return this.done; }
   getScores(): { playerId: string; score: number }[] { return this.scores.map(score => ({ ...score })); }
@@ -205,7 +219,7 @@ export class LuckyDropGame implements MinigameInstance {
     label(g, "1   Aim, then drop an orb.", 48, 508, 18, MUTED);
     label(g, "2   Match pairs to multiply.", 48, 539, 18, MUTED);
     label(g, "3   Stay below the dotted line.", 48, 570, 18, MUTED);
-    label(g, "NO TIMER. UNLIMITED DROPS.", 48, 655, 16, LIME);
+    label(g, `LEVEL ${levelIndex(this.world.score) + 1} / ${LEVELS.length}  ·  ${levelFor(this.world.score).shot}s SHOT CLOCK`, 48, 655, 16, LIME);
 
     g.translate(BX, BY);
     g.fillStyle = "#20271b";
@@ -238,6 +252,15 @@ export class LuckyDropGame implements MinigameInstance {
       g.beginPath(); g.moveTo(x, 72); g.lineTo(x, Math.max(76, bottom)); g.stroke();
       g.setLineDash([]);
       drawOrb(g, x, 45, this.world.next, this.world.time - this.world.lastDrop < 0.48 ? 0.35 : 0.85);
+      if (player.kind === "human") {
+        // Shot clock bar across the top of the board; red for the last 1.5s.
+        const total = shotClock(this.world.score);
+        const t = Math.max(0, Math.min(1, this.shotLeft / total));
+        g.fillStyle = "#313929";
+        g.fillRect(18, 8, 444, 6);
+        g.fillStyle = this.shotLeft < 1.5 ? "#ff7a7a" : LIME;
+        g.fillRect(18, 8, 444 * t, 6);
+      }
     }
     for (const ball of this.world.balls) drawOrb(g, ball.x, ball.y, ball.tier);
     for (const ring of this.rings) {
@@ -271,7 +294,7 @@ export class LuckyDropGame implements MinigameInstance {
     drawOrb(g, 989, 123, this.world.next, 1, 34);
     label(g, "THEN", 1060, 111, 14, MUTED);
     drawOrb(g, 1146, 121, this.world.queued, 1, 23);
-    label(g, ["A small beginning.", "A lucky little head start.", "Ooh. A rare one."][this.world.next], 930, 190, 18, MUTED);
+    label(g, ["A small beginning.", "A lucky little head start.", "Ooh. A rare one.", "Big one incoming.", "A monster. Make room."][this.world.next] ?? "", 930, 190, 18, MUTED);
     label(g, "Shake things up", 930, 258, 23);
     label(g, "Six merges earn a board shake.", 930, 289, 17, MUTED);
     g.fillStyle = "#313929"; g.fillRect(930, 312, 292, 5);
@@ -281,9 +304,10 @@ export class LuckyDropGame implements MinigameInstance {
     g.beginPath(); g.roundRect(SHAKE.x, SHAKE.y, SHAKE.w, SHAKE.h, 9); g.fill();
     label(g, ready ? "SHAKE THE BOARD · S" : `CHARGING  ${this.world.charge} / 6`, 1076, 373, 19, ready ? "#1c2812" : MUTED, "center");
     label(g, "THE LUCK OF THE DROP", 930, 438, 16, MUTED);
-    ["65%", "25%", "10%"].forEach((odds, tier) => {
-      drawOrb(g, 949 + tier * 100, 478, tier, 1, 15);
-      label(g, odds, 972 + tier * 100, 484, 16);
+    levelFor(this.world.score).odds.forEach((odds, tier) => {
+      if (!odds) return;
+      drawOrb(g, 944 + tier * 60, 478, tier, 1, 15);
+      label(g, `${odds}%`, 944 + tier * 60, 510, 14, "#f0f2e9", "center");
     });
     label(g, "Make 128 for +1,000.", 930, 541, 22, COLORS[7]);
     label(g, "Collect a 1,000-point bonus.", 930, 570, 17, MUTED);

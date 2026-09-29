@@ -1,3 +1,5 @@
+import { rollTier } from "./levels";
+
 /** 1 through 2048. 2048 is the top orb and does not merge further. */
 export const RADII = [17, 23, 30, 38, 47, 57, 68, 80, 92, 104, 116, 128] as const;
 /** Making 128 pays this bonus. */
@@ -49,8 +51,8 @@ export class DropWorld {
   }
 
   private roll(): number {
-    const n = this.random();
-    return n < 0.65 ? 0 : n < 0.9 ? 1 : 2;
+    // Odds shift toward 8s and 16s as the score climbs (see levels.ts).
+    return rollTier(this.random(), this.score);
   }
 
   add(tier: number, x: number, y: number, vx = 0, vy = 0): Orb {

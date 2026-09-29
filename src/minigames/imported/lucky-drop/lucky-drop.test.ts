@@ -83,4 +83,12 @@ describe("Lucky Drop C5 adapter", () => {
     expect(bot.state.world.drops).toBeGreaterThan(0);
     bot.game.destroy();
   });
+
+  it("drops on its own when the shot clock runs out", () => {
+    const { state, tick } = setup(["human"]);
+    tick(60 * 7);
+    expect(state.world.drops).toBe(0);
+    tick(60 * 1.2);
+    expect(state.world.drops).toBe(1);
+  });
 });
