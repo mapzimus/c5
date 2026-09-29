@@ -1,18 +1,24 @@
 import { Rng } from "../../../core/rng";
 import type { MinigameContext, MinigameDefinition, MinigameInstance } from "../../../core/types";
 import { BOARD, COLORS, DropWorld, RADII } from "./physics";
+import { drawOrb, label } from "./draw";
 import { LEVELS, levelFor, levelIndex, shotClock } from "./levels";
 import { botAim } from "./rules";
 import { Callouts, Juice } from "../../../fx/juice";
+import { ModePicker } from "../../mode-picker";
+import { LuckyDropVersus } from "./versus";
 
 export const luckyDrop: MinigameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
   tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus; every size up doubles it, all the way to 4096. Take turns on fresh boards; highest score wins when every board overflows.",
+  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus; every size up doubles it, all the way to 4096. Take turns on fresh boards, or play Versus: two boards side by side on the same drops, at the same time. Highest score wins when every board overflows.",
   durationMs: 0,
-  controls: "Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
-  create: ctx => new LuckyDropGame(ctx),
+  controls: "Pick Turns or Versus · Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
+  create: ctx => new ModePicker(ctx, "LUCKY DROP", [
+    { title: "TAKE TURNS", line1: "One board, one player", line2: "at a time.", color: LIME, create: c => new LuckyDropGame(c) },
+    { title: "VERSUS", line1: "Two boards at once,", line2: "same drops. Beat their score.", color: "#FF3D7A", create: c => new LuckyDropVersus(c) },
+  ], ctx.players.length < 2 || ctx.players.every(p => p.kind === "bot")),
 };
 
 const LIME = "#c9f65b", MUTED = "#9ba395";
@@ -418,34 +424,4 @@ export class LuckyDropGame implements MinigameInstance {
     this.callouts.draw(g, this.ctx.width, this.ctx.height);
     g.restore();
   }
-}
-
-function label(g: CanvasRenderingContext2D, text: string, x: number, y: number, size: number,
-  color = "#f0f2e9", align: CanvasTextAlign = "left"): void {
-  g.fillStyle = color;
-  g.font = `600 ${size}px Outfit, sans-serif`;
-  g.textAlign = align;
-  g.textBaseline = "alphabetic";
-  g.fillText(text, x, y);
-}
-
-function drawOrb(g: CanvasRenderingContext2D, x: number, y: number, tier: number, alpha = 1, radius: number = RADII[tier]): void {
-  g.save();
-  g.globalAlpha = alpha;
-  g.fillStyle = COLORS[tier];
-  g.shadowColor = "#0b160943";
-  g.shadowBlur = 8;
-  g.shadowOffsetY = 5;
-  g.beginPath(); g.arc(x, y, radius, 0, Math.PI * 2); g.fill();
-  g.shadowColor = "transparent";
-  g.strokeStyle = "#ffffff32";
-  g.lineWidth = 2;
-  g.beginPath(); g.arc(x, y, radius - 4, 0, Math.PI * 2); g.stroke();
-  g.fillStyle = "#183021";
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  const text = String(2 ** tier);
-  g.font = `700 ${Math.max(15, Math.min(radius * 0.78, (radius * 2.6) / text.length))}px Outfit, sans-serif`;
-  g.fillText(text, x, y + 1);
-  g.restore();
 }
