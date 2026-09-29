@@ -210,3 +210,147 @@ export function scoresFromTable(table: FlipTable): { playerId: string; score: nu
     score: seat.eliminated ? (seat.outOrder ?? 0) : n + seat.lives,
   }));
 }
+
+// ---- Duel: two players flip at the same time ---------------------------------
+//
+// Same lives, stake, streaks, ON FIRE, golden flips and sudden death as the
+// classic game, resolved in rounds where both duelists flip at once:
+// - Every non-fire make adds its worth to the shared stake (both make = +2).
+// - Anyone who misses pays the stake (after this round's makes), then it resets.
+//   Both miss = both pay.
+// - ON FIRE: a make is +worth lives, a miss is free and ends the run.
+// - Both knocked out in the same round = DOUBLE KO: both come back on 1 life.
+// - 3-4 players: winner stays on; the next waiting player replaces whoever is out.
+
+export interface Duel {
+  table: FlipTable;
+  /** Seat index on the left and right half of the screen. */
+  sides: [number, number];
+  /** Waiting seat indexes, in order. */
+  queue: number[];
+}
+
+export interface DuelSideOutcome extends FlipOutcome {
+  seat: number;
+}
+
+export interface DuelRound {
+  sides: [DuelSideOutcome, DuelSideOutcome];
+  doubleKo: boolean;
+  /** Stake before it was paid and reset (0 if nobody paid). */
+  stakePaid: number;
+}
+
+export function dealDuel(playerIds: readonly string[], lives = STARTING_LIVES): Duel {
+  const table = dealTable(playerIds, lives);
+  return {
+    table,
+    sides: [0, 1],
+    queue: playerIds.map((_, i) => i).slice(2),
+  };
+}
+
+/** Would this duelist be knocked out by missing the coming round (ignoring the other's make)? */
+export function duelMissWouldEliminate(duel: Duel, side: 0 | 1): boolean {
+  const seat = duel.table.seats[duel.sides[side]];
+  if (!seat || seat.eliminated) return false;
+  const sd = suddenDeathLevel(duel.table.flips + 2);
+  const penalty = seat.onFire ? sd : duel.table.stake + sd;
+  return penalty > 0 && seat.lives - penalty <= 0;
+}
+
+/** Resolve one simultaneous round. Mutates the duel's table. */
+export function resolveDuelRound(
+  duel: Duel,
+  made: readonly [boolean, boolean],
+  meta: readonly [FlipMeta, FlipMeta] = [{}, {}],
+): DuelRound {
+  const { table } = duel;
+  table.flips += 2;
+  const sd = suddenDeathLevel(table.flips);
+  const wasOnFire = duel.sides.map((i) => table.seats[i]!.onFire);
+  const outs = duel.sides.map((seatIndex, side) => {
+    const golden = made[side]! && !!meta[side]?.golden;
+    return {
+      seat: seatIndex,
+      made: made[side]!,
+      penalty: 0,
+      fireGain: 0,
+      justIgnited: false,
+      fireEnded: false,
+      eliminated: false,
+      golden,
+      worth: golden ? 2 : 1,
+    } satisfies DuelSideOutcome;
+  }) as [DuelSideOutcome, DuelSideOutcome];
+
+  // Makes first, so the stake a misser pays includes this round's makes.
+  outs.forEach((out, side) => {
+    if (!out.made) return;
+    const seat = table.seats[out.seat]!;
+    if (wasOnFire[side]) {
+      if (!sd) {
+        const before = seat.lives;
+        seat.lives = Math.min(seat.lives + out.worth, MAX_LIVES);
+        out.fireGain = seat.lives - before;
+      }
+      if (seat.lives >= MAX_LIVES) endFire(seat);
+      return;
+    }
+    seat.streak += 1;
+    table.stake += out.worth;
+    seat.heatingUp = seat.streak === 2;
+    if (seat.streak >= 3) {
+      seat.onFire = true;
+      seat.heatingUp = false;
+      out.justIgnited = true;
+    }
+  });
+
+  const stake = table.stake;
+  let paid = false;
+  outs.forEach((out, side) => {
+    if (out.made) return;
+    const seat = table.seats[out.seat]!;
+    if (wasOnFire[side]) {
+      if (sd) out.penalty = loseLives(table, seat, sd);
+      endFire(seat);
+      out.fireEnded = true;
+      return;
+    }
+    out.penalty = loseLives(table, seat, stake + sd);
+    seat.streak = 0;
+    seat.heatingUp = false;
+    paid = true;
+  });
+  if (paid) table.stake = 0;
+
+  let doubleKo = false;
+  const [a, b] = outs.map((out) => table.seats[out.seat]!);
+  if (a!.eliminated && b!.eliminated && activeSeats(table).length === 0) {
+    // Nobody left standing: both come back on one life and it continues.
+    doubleKo = true;
+    for (const seat of [a!, b!]) {
+      seat.eliminated = false;
+      seat.outOrder = null;
+      seat.lives = 1;
+    }
+    table.outCount -= 2;
+    table.stake = 0;
+  }
+  outs.forEach((out) => (out.eliminated = table.seats[out.seat]!.eliminated));
+  return { sides: outs, doubleKo, stakePaid: paid ? stake : 0 };
+}
+
+/** Winner stays on: swap in the next waiting player for anyone knocked out. Returns the sides that changed. */
+export function advanceDuel(duel: Duel): (0 | 1)[] {
+  const changed: (0 | 1)[] = [];
+  for (const side of [0, 1] as const) {
+    if (!duel.table.seats[duel.sides[side]]!.eliminated) continue;
+    const next = duel.queue.shift();
+    if (next === undefined) continue;
+    duel.sides[side] = next;
+    changed.push(side);
+  }
+  return changed;
+}
