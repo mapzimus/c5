@@ -1,10 +1,11 @@
 import { MinigameRegistry } from "../core/registry";
 import type { MinigameDefinition } from "../core/types";
 import { pairs } from "./pairs";
+import { castleSiege } from "./castle-siege/castle-siege";
 import { parrotFlip } from "./imported/parrot-flip/parrot-flip";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip];
+export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();
