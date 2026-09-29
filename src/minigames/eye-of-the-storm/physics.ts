@@ -45,6 +45,8 @@ export interface StepEvents {
   puckHits: number;
   pegHits: number;
   wallHits: number;
+  /** Pucks that hit each other hard this step, with the impact speed. */
+  contacts: { a: Puck; b: Puck; speed: number }[];
 }
 
 export function speed(p: Puck): number {
@@ -57,13 +59,19 @@ export function isResting(p: Puck): boolean {
 
 /** Advance the world. `jitter` returns [-1, 1) and adds a little chaos to peg bounces. */
 export function stepWorld(world: World, dt: number, jitter: () => number = () => 0): StepEvents {
-  const events: StepEvents = { puckHits: 0, pegHits: 0, wallHits: 0 };
+  const events: StepEvents = { puckHits: 0, pegHits: 0, wallHits: 0, contacts: [] };
   const h = dt / SUBSTEPS;
   for (let s = 0; s < SUBSTEPS; s += 1) {
     for (const p of world.pucks) integrate(world, p, h);
     for (let i = 0; i < world.pucks.length; i += 1) {
       for (let j = i + 1; j < world.pucks.length; j += 1) {
-        if (collidePucks(world.pucks[i]!, world.pucks[j]!)) events.puckHits += 1;
+        const a = world.pucks[i]!;
+        const b = world.pucks[j]!;
+        const rel = Math.hypot(a.vx - b.vx, a.vy - b.vy);
+        if (collidePucks(a, b)) {
+          events.puckHits += 1;
+          events.contacts.push({ a, b, speed: rel });
+        }
       }
     }
     for (const p of world.pucks) {

@@ -84,3 +84,29 @@ export function botRelease(rng: Rng, pad: Point, center: Point): Point {
   const pull = rng.float(0.42, 0.56) * MAX_PULL;
   return { x: pad.x - Math.cos(angle) * pull, y: pad.y - Math.sin(angle) * pull };
 }
+
+/** Storm cells: glowing pickups that give the owner of the first puck through them an extra puck. */
+export const CELL_RADIUS = 26;
+export const CELL_LIFE_S = 7;
+export const CELL_EVERY_S: readonly [number, number] = [5, 9];
+
+export interface StormCell extends Point {
+  life: number;
+}
+
+/** Somewhere open: off the bullseye, away from pads and pegs. Null if no spot found. */
+export function placeCell(rng: Rng, width: number, height: number, pads: readonly Point[], pegs: readonly Peg[]): StormCell | null {
+  const center = { x: width / 2, y: height / 2 };
+  for (let tries = 0; tries < 100; tries += 1) {
+    const cell = { x: rng.float(120, width - 120), y: rng.float(90, height - 90), life: CELL_LIFE_S };
+    if (Math.hypot(cell.x - center.x, cell.y - center.y) < RINGS[1].radius) continue;
+    if (pads.some((pad) => Math.hypot(cell.x - pad.x, cell.y - pad.y) < PAD_RADIUS + 80)) continue;
+    if (pegs.some((peg) => Math.hypot(cell.x - peg.x, cell.y - peg.y) < peg.r + CELL_RADIUS + 20)) continue;
+    return cell;
+  }
+  return null;
+}
+
+export function touchesCell(cell: Point, puck: { x: number; y: number; r: number }): boolean {
+  return Math.hypot(cell.x - puck.x, cell.y - puck.y) < CELL_RADIUS + puck.r;
+}

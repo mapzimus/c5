@@ -1,7 +1,10 @@
 import { fillArena } from "../../core/draw";
+import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
 import type { MinigameContext, MinigameDefinition, MinigameInstance, Player } from "../../core/types";
 import { PUCK_RADIUS, isResting, stepWorld, type Puck, type World } from "./physics";
 import {
+  CELL_EVERY_S,
+  CELL_RADIUS,
   MAX_PULL,
   PAD_RADIUS,
   PUCKS_EACH,
@@ -10,9 +13,13 @@ import {
   botRelease,
   launchVelocity,
   padPositions,
+  placeCell,
+  ringPoints,
   scatterPegs,
+  touchesCell,
   scoreBoard,
   type Point,
+  type StormCell,
 } from "./rules";
 
 export const eyeOfTheStorm: MinigameDefinition = {
@@ -20,7 +27,7 @@ export const eyeOfTheStorm: MinigameDefinition = {
   name: "Eye of the Storm",
   tagline: "Everyone fires at once. Land in the eye.",
   description:
-    "Slingshot six pucks each from your corner into the eye. Center 10, middle 5, outer 2. The swirl bends shots and flips direction, pegs move every game, and anyone can knock you out. Built for a big multi-touch screen: all players shoot at the same time.",
+    "Slingshot six pucks each from your corner into the eye. Center 10, middle 5, outer 2. The swirl bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a storm cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
   durationMs: 60_000,
   controls: "Drag back from your corner pad, release to fire",
   create: (ctx) => new EyeOfTheStorm(ctx),
@@ -52,6 +59,16 @@ class EyeOfTheStorm implements MinigameInstance {
   private settled = 0;
   private time = 0;
   private scores = new Map<string, number>();
+  private readonly juice: Juice;
+  private readonly callouts = new Callouts();
+  private cell: StormCell | null = null;
+  private cellTimer: number;
+  /** puck id -> who last hit it and when, to credit knockouts. */
+  private readonly lastHit = new Map<number, { owner: string; at: number }>();
+  private readonly lastPoints = new Map<number, number>();
+  private readonly bullseyes = new Set<number>();
+  private readonly best = loadBest("eye-of-the-storm");
+  private newBestShown = false;
 
   constructor(private readonly ctx: MinigameContext) {
     const { width, height, rng } = ctx;
@@ -73,6 +90,8 @@ class EyeOfTheStorm implements MinigameInstance {
       swirl: { ...this.center, radius: 300, spin: rng.sign() * rng.float(1.2, 2) },
     };
     this.swirlTimer = rng.float(SWIRL_FLIP_MIN, SWIRL_FLIP_MAX);
+    this.juice = new Juice(() => rng.next());
+    this.cellTimer = rng.float(CELL_EVERY_S[0], CELL_EVERY_S[1]);
 
     const canvas = ctx.canvas;
     canvas.style.touchAction = "none";
@@ -82,7 +101,9 @@ class EyeOfTheStorm implements MinigameInstance {
     canvas.addEventListener("pointercancel", this.onCancel);
   }
 
-  update(dt: number): void {
+  update(realDt: number): void {
+    this.callouts.update(realDt);
+    const dt = this.juice.update(realDt);
     this.time += dt;
     this.flash = Math.max(0, this.flash - dt);
 
@@ -109,12 +130,33 @@ class EyeOfTheStorm implements MinigameInstance {
     const events = stepWorld(this.world, dt, () => this.ctx.rng.float(-1, 1));
     if (events.puckHits > 0) this.ctx.sfx.hit();
     else if (events.pegHits > 0) this.ctx.sfx.tick();
+    for (const { a, b, speed } of events.contacts) {
+      this.juice.shake(Math.min(0.45, speed / 2600));
+      this.juice.burst((a.x + b.x) / 2, (a.y + b.y) / 2, [this.colorOf(a.owner), this.colorOf(b.owner)], {
+        count: Math.min(24, 6 + Math.round(speed / 80)),
+        speed: 120 + speed * 0.25,
+        gravity: 0,
+        life: 0.45,
+      });
+      if (a.owner !== b.owner) {
+        this.lastHit.set(a.id, { owner: b.owner, at: this.time });
+        this.lastHit.set(b.id, { owner: a.owner, at: this.time });
+      }
+    }
+    this.updateMoments();
+    this.updateCell(dt);
 
     this.scores = scoreBoard(
       this.world.pucks,
       this.seats.map((s) => s.player.id),
       this.center,
     );
+    const humanTop = Math.max(0, ...this.seats.filter((s) => s.player.kind === "human").map((s) => this.scores.get(s.player.id) ?? 0));
+    if (!this.newBestShown && this.best > 0 && humanTop > this.best) {
+      this.newBestShown = true;
+      this.callouts.show("NEW BEST!", "#B8FF3D", { y: 0.2, size: 56 });
+      this.ctx.sfx.win();
+    }
 
     const allOut = this.seats.every((s) => s.left === 0);
     const still = this.world.pucks.every(isResting);
@@ -126,6 +168,8 @@ class EyeOfTheStorm implements MinigameInstance {
   }
 
   getScores(): { playerId: string; score: number }[] {
+    const humanTop = Math.max(0, ...this.seats.filter((s) => s.player.kind === "human").map((s) => this.scores.get(s.player.id) ?? 0));
+    saveBest("eye-of-the-storm", humanTop);
     return this.seats.map((s) => ({ playerId: s.player.id, score: this.scores.get(s.player.id) ?? 0 }));
   }
 
@@ -135,6 +179,69 @@ class EyeOfTheStorm implements MinigameInstance {
     canvas.removeEventListener("pointermove", this.onMove);
     canvas.removeEventListener("pointerup", this.onUp);
     canvas.removeEventListener("pointercancel", this.onCancel);
+  }
+
+  private colorOf(owner: string): string {
+    return this.seats.find((s) => s.player.id === owner)?.player.color ?? "#ffffff";
+  }
+
+  private nameOf(owner: string): string {
+    return this.seats.find((s) => s.player.id === owner)?.player.name ?? "";
+  }
+
+  /** Knockouts, bullseyes: the moments worth shouting about. */
+  private updateMoments(): void {
+    for (const puck of this.world.pucks) {
+      const points = ringPoints(puck.x, puck.y, this.center);
+      const before = this.lastPoints.get(puck.id) ?? 0;
+      this.lastPoints.set(puck.id, points);
+      const hit = this.lastHit.get(puck.id);
+      if (points < before && hit && this.time - hit.at < 1.5) {
+        this.lastHit.delete(puck.id);
+        this.callouts.show(`KNOCKOUT! ${this.nameOf(hit.owner)}`, this.colorOf(hit.owner));
+        this.juice.shake(0.35);
+        this.juice.burst(puck.x, puck.y, this.colorOf(hit.owner), { count: 30, speed: 380, gravity: 0 });
+        this.ctx.sfx.streak(4);
+      }
+      if (points === RINGS[0].points && isResting(puck)) {
+        if (!this.bullseyes.has(puck.id)) {
+          this.bullseyes.add(puck.id);
+          this.callouts.show("BULLSEYE", this.colorOf(puck.owner), { size: 72 });
+          this.juice.burst(puck.x, puck.y, [this.colorOf(puck.owner), "#FFB020", "#ffffff"], { count: 40, speed: 420, gravity: 0 });
+          this.juice.shake(0.25);
+          this.ctx.sfx.collect();
+        }
+      } else if (points !== RINGS[0].points) {
+        this.bullseyes.delete(puck.id);
+      }
+    }
+  }
+
+  /** Storm cells: shoot a puck through one for an extra puck. */
+  private updateCell(dt: number): void {
+    if (this.cell) {
+      this.cell.life -= dt;
+      const puck = this.world.pucks.find((p) => !isResting(p) && touchesCell(this.cell!, p));
+      if (puck) {
+        const seat = this.seats.find((s) => s.player.id === puck.owner);
+        if (seat) seat.left += 1;
+        this.callouts.show(`+1 PUCK ${this.nameOf(puck.owner)}`, this.colorOf(puck.owner), { y: 0.68, size: 48 });
+        this.juice.burst(this.cell.x, this.cell.y, ["#9ad9ff", "#ffffff", this.colorOf(puck.owner)], { count: 36, speed: 360, gravity: 0 });
+        this.ctx.sfx.streak(3);
+        this.cell = null;
+      } else if (this.cell.life <= 0) {
+        this.cell = null;
+      }
+      return;
+    }
+    // No new cells once everyone is out of pucks, so the round can end.
+    if (this.seats.every((s) => s.left === 0)) return;
+    this.cellTimer -= dt;
+    if (this.cellTimer <= 0) {
+      const { rng, width, height } = this.ctx;
+      this.cell = placeCell(rng, width, height, this.seats.map((s) => s.pad), this.world.pegs);
+      this.cellTimer = rng.float(CELL_EVERY_S[0], CELL_EVERY_S[1]);
+    }
   }
 
   private fire(seat: Seat, release: Point): void {
@@ -209,6 +316,7 @@ class EyeOfTheStorm implements MinigameInstance {
   render(g: CanvasRenderingContext2D): void {
     const { width, height } = this.ctx;
     fillArena(g, width, height);
+    this.juice.begin(g);
     this.drawSwirl(g);
     this.drawRings(g);
     for (const peg of this.world.pegs) {
@@ -220,9 +328,42 @@ class EyeOfTheStorm implements MinigameInstance {
       g.strokeStyle = "#9ad9ff";
       g.stroke();
     }
+    if (this.cell) this.drawCell(g, this.cell);
     for (const seat of this.seats) this.drawPad(g, seat);
     for (const puck of this.world.pucks) this.drawPuck(g, puck);
     for (const seat of this.seats) if (seat.aim) this.drawAim(g, seat);
+    this.juice.end(g);
+    if (this.best > 0) {
+      g.fillStyle = "rgba(244,247,251,0.5)";
+      g.font = "600 14px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "top";
+      g.fillText(`BEST ${this.best}`, width / 2, 10);
+    }
+    this.callouts.draw(g, width, height);
+  }
+
+  private drawCell(g: CanvasRenderingContext2D, cell: StormCell): void {
+    const pulse = 1 + Math.sin(this.time * 8) * 0.12;
+    const fade = Math.min(1, cell.life / 1.5);
+    g.save();
+    g.globalAlpha = fade;
+    g.shadowColor = "#9ad9ff";
+    g.shadowBlur = 24;
+    g.beginPath();
+    g.arc(cell.x, cell.y, CELL_RADIUS * pulse, 0, Math.PI * 2);
+    g.fillStyle = "rgba(154,217,255,0.25)";
+    g.fill();
+    g.lineWidth = 3;
+    g.strokeStyle = "#9ad9ff";
+    g.stroke();
+    g.shadowBlur = 0;
+    g.fillStyle = "#F4F7FB";
+    g.font = "700 22px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText("+1", cell.x, cell.y + 1);
+    g.restore();
   }
 
   private drawSwirl(g: CanvasRenderingContext2D): void {
