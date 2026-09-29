@@ -8,20 +8,26 @@ audio and session scoring. No additional packages or external assets are needed.
 
 - Drag across the board and release to drop, or use Left/Right (A/D) and Space.
   The active player's configured seat controls also work.
-- Two touching identical orbs merge: 1 → 2 → 4 → 8 → 16 → 32 → 64 → 128.
+- Two touching identical orbs merge: 1 → 2 → 4 → … → 128 → 256 → 512 → 1024 → 2048 → 4096.
 - Each merge awards the new value × 10. Merges within 1.5 seconds build a chain
   multiplier, up to ×5.
-- Drops roll 1 (65%), 2 (25%), or 4 (10%). The next two orbs are visible.
+- Drops start at 1 (65%), 2 (25%), 4 (10%). As your score climbs you level up
+  (2k, 6k, 15k, 30k): 8s and then 16s join the drops and big orbs get likelier.
+  See `levels.ts`. The next two orbs are visible.
+- Shot clock: wait too long and the orb drops where you're aiming. It starts at
+  8s and shrinks with each level, down to 3s.
 - Six merges charge a shake. Press S or tap the Shake button to use it.
-- Creating 128 clears the board and adds a 1,000-point bonus.
+- Creating 128 adds a 1,000-point bonus, and each size up doubles it: 256 = 2,000,
+  512 = 4,000, 1024 = 8,000, 2048 = 16,000, 4096 = 32,000. The board stays.
+  4096 is the top orb (two 4096s don't merge).
 - A settled orb above the dotted line for three seconds ends the run. New falling
   orbs get a grace period.
 
-**Every run is unlimited: no drop cap and no timer, in solo or multiplayer.**
+**Every run is unlimited: no drop cap and no overall timer, in solo or multiplayer.**
 Players take consecutive runs on fresh boards until each board overflows. Everyone
 gets the same seeded drop sequence; shakes do not consume drop randomness. Bots
 aim at exposed matches or open space and use charged shakes near the top. The
-highest score wins; C5 handles ties and party points. Menu/Escape exits as usual.
+highest score wins; C5 handles ties and the win point. Menu/Escape exits as usual.
 Personal best is local to this browser and shared across seats.
 
 ## Implementation

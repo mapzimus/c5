@@ -1,4 +1,4 @@
-import { PARTY_POINTS_BY_RANK, type Player, type RankedResult, type SessionStanding } from "./types";
+import type { Player, RankedResult, SessionStanding } from "./types";
 
 export function rankResults(
   scores: { playerId: string; score: number }[],
@@ -11,26 +11,22 @@ export function rankResults(
     const rank = entry.score === lastScore ? lastRank : index + 1;
     lastScore = entry.score;
     lastRank = rank;
-    const partyPoints = PARTY_POINTS_BY_RANK[rank] ?? 1;
-    return { ...entry, rank, partyPoints };
+    return { ...entry, rank, won: rank === 1 };
   });
 }
 
+/** Scoring is just wins: every game won is 1 point. The winner picks the next game. */
 export class Session {
   players: Player[];
   standings: SessionStanding[];
   lastResults: RankedResult[] = [];
-  circuit: string[] = [];
-  circuitIndex = 0;
   gamesPlayed = 0;
+  /** Who chooses the next minigame. Null before the first game. */
+  pickerId: string | null = null;
 
   constructor(players: Player[]) {
     this.players = players;
-    this.standings = players.map((player) => ({
-      playerId: player.id,
-      points: 0,
-      wins: 0,
-    }));
+    this.standings = players.map((player) => ({ playerId: player.id, wins: 0 }));
   }
 
   applyResults(scores: { playerId: string; score: number }[]): RankedResult[] {
@@ -39,13 +35,14 @@ export class Session {
     this.gamesPlayed += 1;
 
     for (const result of ranked) {
-      const standing = this.standings.find((item) => item.playerId === result.playerId);
-      if (!standing) continue;
-      standing.points += result.partyPoints;
-      if (result.rank === 1) standing.wins += 1;
+      if (!result.won) continue;
+      const standing = this.standingFor(result.playerId);
+      if (standing) standing.wins += 1;
     }
+    // On a tie for first, the first listed winner picks.
+    this.pickerId = ranked.find((result) => result.won)?.playerId ?? null;
 
-    this.standings.sort((a, b) => b.points - a.points || b.wins - a.wins);
+    this.standings.sort((a, b) => b.wins - a.wins);
     return ranked;
   }
 
@@ -57,21 +54,7 @@ export class Session {
     return this.standings[0];
   }
 
-  startCircuit(ids: string[]): void {
-    this.circuit = ids;
-    this.circuitIndex = 0;
-  }
-
-  currentCircuitId(): string | undefined {
-    return this.circuit[this.circuitIndex];
-  }
-
-  advanceCircuit(): string | undefined {
-    this.circuitIndex += 1;
-    return this.currentCircuitId();
-  }
-
-  circuitDone(): boolean {
-    return this.circuit.length > 0 && this.circuitIndex >= this.circuit.length;
+  picker(): Player | undefined {
+    return this.players.find((player) => player.id === this.pickerId);
   }
 }

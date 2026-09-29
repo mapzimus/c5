@@ -1,5 +1,13 @@
-export const RADII = [17, 23, 30, 38, 47, 57, 68, 80] as const;
-export const COLORS = ["#c9f65b", "#6ee7b7", "#74cefa", "#b6a2ff", "#f5adce", "#ffb478", "#ffe071", "#f1b4ee"] as const;
+import { rollTier } from "./levels";
+
+/** 1 through 4096. 4096 is the top orb and does not merge further. */
+export const RADII = [17, 23, 30, 38, 47, 57, 68, 80, 92, 104, 116, 128, 140] as const;
+/** Making 128 or bigger pays a bonus that doubles with each size: 128 = 1,000 … 4096 = 32,000. */
+export const BONUS_TIER = 7;
+export function bonusFor(tier: number): number {
+  return tier >= BONUS_TIER ? 1000 * 2 ** (tier - BONUS_TIER) : 0;
+}
+export const COLORS = ["#c9f65b", "#6ee7b7", "#74cefa", "#b6a2ff", "#f5adce", "#ffb478", "#ffe071", "#f1b4ee", "#ff7a7a", "#7aa2ff", "#4fd1c5", "#ffcf33", "#ffffff"] as const;
 export const BOARD = { width: 480, height: 630, left: 8, right: 472, floor: 620, danger: 105 } as const;
 
 export interface Orb {
@@ -15,7 +23,7 @@ export interface Orb {
 
 export type DropEvent =
   | { type: "merge"; x: number; y: number; tier: number; points: number; chain: number }
-  | { type: "burst"; x: number; y: number }
+  | { type: "burst"; x: number; y: number; tier: number; bonus: number }
   | { type: "over" };
 
 /** The original Lucky Drop circle solver, independent of canvas and C5's lifecycle. */
@@ -46,8 +54,8 @@ export class DropWorld {
   }
 
   private roll(): number {
-    const n = this.random();
-    return n < 0.65 ? 0 : n < 0.9 ? 1 : 2;
+    // Odds shift toward 8s and 16s as the score climbs (see levels.ts).
+    return rollTier(this.random(), this.score);
   }
 
   add(tier: number, x: number, y: number, vx = 0, vy = 0): Orb {
@@ -104,7 +112,7 @@ export class DropWorld {
           const min = a.radius + b.radius;
           let distance = Math.hypot(dx, dy);
           if (distance > min + 0.2) continue;
-          if (pass === 0 && a.tier === b.tier && this.time - a.born > 0.17 &&
+          if (pass === 0 && a.tier === b.tier && a.tier < RADII.length - 1 && this.time - a.born > 0.17 &&
             this.time - b.born > 0.17 && !used.has(a.id) && !used.has(b.id)) {
             used.add(a.id);
             used.add(b.id);
@@ -147,12 +155,11 @@ export class DropWorld {
         const points = 2 ** tier * 10 * this.chain;
         this.score += points;
         this.events.push({ type: "merge", x, y, tier, points, chain: this.chain });
-        if (tier >= 7) {
-          this.score += 1000;
-          this.balls = [];
-          this.danger = 0;
-          this.events.push({ type: "burst", x, y });
-          break;
+        // 128 and up pay a doubling bonus with fanfare; the board stays.
+        const bonus = bonusFor(tier);
+        if (bonus) {
+          this.score += bonus;
+          this.events.push({ type: "burst", x, y, tier, bonus });
         }
         this.add(tier, x, y, (a.vx + b.vx) * 0.35, Math.min(-35, (a.vy + b.vy) * 0.2));
       }

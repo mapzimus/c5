@@ -65,12 +65,10 @@ export class App {
   private renderMenu(): void {
     const screen = this.screens.get("menu")!;
     clear(screen);
-    const games = this.registry.list();
-
     screen.append(
       el("p", { class: "brand", text: "Category Five" }),
       el("h1", { class: "display", text: "Minigames" }),
-      el("p", { class: "lede", text: "Pick a game. More cards show up here as they get added." }),
+      el("p", { class: "lede", text: this.pickPrompt() ?? "Pick a game. Win it and you pick the next one." }),
     );
 
     const seats = el("div", { class: "seats" });
@@ -90,6 +88,17 @@ export class App {
 
     if (this.session.gamesPlayed > 0) screen.append(this.standingRow());
 
+    screen.append(this.gameCards());
+  }
+
+  /** Who picks next, e.g. "Gale won, Gale picks next". Null before the first game. */
+  private pickPrompt(): string | null {
+    const picker = this.session.picker();
+    return picker ? `${picker.name} won. ${picker.name} picks the next game.` : null;
+  }
+
+  private gameCards(): HTMLElement {
+    const games = this.registry.list();
     const cards = el("div", { class: "grid cards" });
     for (const game of games) {
       const card = el("button", { class: "card" });
@@ -113,7 +122,7 @@ export class App {
         ),
       );
     }
-    screen.append(cards);
+    return cards;
   }
 
   private seatCard(player: Player, index: number): HTMLElement {
@@ -165,7 +174,7 @@ export class App {
       row.append(
         el("span", {
           class: "chip",
-          text: `${player.name}  ${standing.points} pts · ${standing.wins}W`,
+          text: `${player.name}  ${standing.wins} ${standing.wins === 1 ? "pt" : "pts"}`,
           style: `border-color:${player.color}`,
         }),
       );
@@ -212,17 +221,36 @@ export class App {
         el("span", { class: "rank", text: `${result.rank}`, style: `color:${player.color}` }),
         el("strong", { text: player.name }),
         el("span", { text: `${result.score}` }),
-        el("span", { class: "hint", text: `+${result.partyPoints} pts` }),
+        el("span", { class: "hint", text: result.won ? "+1 pt" : "" }),
       );
       list.append(row);
+    }
+    const picker = this.session.picker();
+    const next = el("div", { class: "pick-next" });
+    if (picker?.kind === "bot") {
+      // Bots don't tap screens: pick for them and let a human start it.
+      const games = this.registry.list();
+      const choice = games[Math.floor(Math.random() * games.length)];
+      if (choice) {
+        next.append(
+          el("h3", { text: `${picker.name} picks ${choice.name}`, style: `color:${picker.color}` }),
+          el("div", { class: "row" }, button(`Play ${choice.name}`, () => {
+            this.sfx.unlock();
+            this.launch(choice);
+          })),
+        );
+      }
+    } else if (picker) {
+      next.append(el("h3", { text: `${picker.name}, pick the next game`, style: `color:${picker.color}` }), this.gameCards());
     }
     screen.append(
       el("p", { class: "brand", text: this.selected?.name ?? "Results" }),
       el("h2", { class: "display", text: "Results" }),
       list,
       this.standingRow(),
+      next,
       el("div", { class: "row" },
-        button("Menu", () => {
+        ghost("Menu", () => {
           this.renderMenu();
           this.show("menu");
         }),

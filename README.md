@@ -22,6 +22,8 @@ npm run build
 
 Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot on the menu.
 
+**Scoring:** every minigame win is 1 point (ties for first all get it). The winner picks the next game from the results screen. If a bot wins, it picks at random.
+
 ## Games
 
 | Game | How it plays |

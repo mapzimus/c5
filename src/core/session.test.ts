@@ -13,7 +13,7 @@ function players(): Player[] {
 }
 
 describe("rankResults", () => {
-  it("awards party points by rank", () => {
+  it("ranks by score and marks only first place as the win", () => {
     const ranked = rankResults([
       { playerId: "a", score: 10 },
       { playerId: "b", score: 40 },
@@ -22,53 +22,49 @@ describe("rankResults", () => {
     ]);
     expect(ranked.map((row) => row.playerId)).toEqual(["b", "c", "a", "d"]);
     expect(ranked.map((row) => row.rank)).toEqual([1, 2, 3, 4]);
-    expect(ranked.map((row) => row.partyPoints)).toEqual([5, 3, 2, 1]);
+    expect(ranked.map((row) => row.won)).toEqual([true, false, false, false]);
   });
 
-  it("shares rank and points on a tie", () => {
+  it("gives every player tied for first the win", () => {
     const ranked = rankResults([
       { playerId: "a", score: 10 },
       { playerId: "b", score: 10 },
       { playerId: "c", score: 3 },
     ]);
-    expect(ranked[0]?.rank).toBe(1);
-    expect(ranked[1]?.rank).toBe(1);
-    expect(ranked[0]?.partyPoints).toBe(5);
-    expect(ranked[1]?.partyPoints).toBe(5);
-    expect(ranked[2]?.rank).toBe(3);
-    expect(ranked[2]?.partyPoints).toBe(2);
+    expect(ranked.map((row) => row.rank)).toEqual([1, 1, 3]);
+    expect(ranked.map((row) => row.won)).toEqual([true, true, false]);
   });
 });
 
 describe("Session", () => {
-  it("accumulates standings and wins", () => {
+  it("scores 1 point per win and hands the pick to the winner", () => {
     const session = new Session(players());
+    expect(session.pickerId).toBeNull();
     session.applyResults([
       { playerId: "a", score: 1 },
       { playerId: "b", score: 9 },
       { playerId: "c", score: 4 },
       { playerId: "d", score: 3 },
     ]);
+    expect(session.pickerId).toBe("b");
     session.applyResults([
       { playerId: "a", score: 8 },
       { playerId: "b", score: 2 },
       { playerId: "c", score: 2 },
       { playerId: "d", score: 1 },
     ]);
+    session.applyResults([
+      { playerId: "a", score: 1 },
+      { playerId: "b", score: 5 },
+      { playerId: "c", score: 0 },
+      { playerId: "d", score: 0 },
+    ]);
 
-    expect(session.gamesPlayed).toBe(2);
-    expect(session.standingFor("b")?.wins).toBe(1);
+    expect(session.gamesPlayed).toBe(3);
+    expect(session.standingFor("b")?.wins).toBe(2);
     expect(session.standingFor("a")?.wins).toBe(1);
+    expect(session.standingFor("c")?.wins).toBe(0);
     expect(session.leader()?.playerId).toBe("b");
-    expect(session.standingFor("b")?.points).toBe(5 + 3);
-  });
-
-  it("walks a chaos circuit", () => {
-    const session = new Session(players());
-    session.startCircuit(["alpha", "beta"]);
-    expect(session.currentCircuitId()).toBe("alpha");
-    expect(session.advanceCircuit()).toBe("beta");
-    session.advanceCircuit();
-    expect(session.circuitDone()).toBe(true);
+    expect(session.picker()?.name).toBe("B");
   });
 });
