@@ -2,6 +2,9 @@ import Matter from "matter-js";
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../core/rng";
 import {
+  AMMO_WEIGHTS,
+  BASE_AMMO_WEIGHTS,
+  GOLDEN_ODDS,
   QUEUE_LENGTH,
   SUDDEN_DEATH_AFTER,
   WIND_MAX,
@@ -24,6 +27,19 @@ describe("castle siege rules", () => {
   it("goes all bombs in sudden death", () => {
     const rng = new Rng(1);
     for (let i = 0; i < 20; i += 1) expect(rollAmmo(rng, SUDDEN_DEATH_AFTER)).toBe("bomb");
+  });
+
+  it("ammo odds sum to 1, keep the common proportions, and golden is rollable", () => {
+    const total = Object.values(AMMO_WEIGHTS).reduce((sum, w) => sum + w, 0);
+    expect(total).toBeCloseTo(1, 10);
+    expect(AMMO_WEIGHTS.golden).toBeCloseTo(GOLDEN_ODDS, 10);
+    expect(AMMO_WEIGHTS.ball / AMMO_WEIGHTS.boulder).toBeCloseTo(BASE_AMMO_WEIGHTS.ball / BASE_AMMO_WEIGHTS.boulder, 10);
+    expect(AMMO_WEIGHTS.bomb / AMMO_WEIGHTS.triple).toBeCloseTo(BASE_AMMO_WEIGHTS.bomb / BASE_AMMO_WEIGHTS.triple, 10);
+    const rng = new Rng(11);
+    const rolls = Array.from({ length: 5000 }, () => rollAmmo(rng, 0));
+    const golden = rolls.filter((a) => a === "golden").length / rolls.length;
+    expect(golden).toBeGreaterThan(0.03);
+    expect(golden).toBeLessThan(0.09);
   });
 
   it("keeps wind whole and inside ±max", () => {

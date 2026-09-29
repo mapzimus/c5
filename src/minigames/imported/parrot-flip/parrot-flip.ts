@@ -1,4 +1,5 @@
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "../../../core/types";
+import { Callouts, Juice, loadBest, saveBest } from "../../../fx/juice";
 import { ParrotPhysics } from "./physics";
 import { FlickPointer } from "./pointer";
 import { ParrotScene, preloadParrots } from "./renderer";
@@ -10,6 +11,7 @@ import {
   isOver,
   missWouldEliminate,
   resolveFlip,
+  rollGolden,
   scoresFromTable,
   suddenDeathLevel,
   type FlipOutcome,
@@ -20,6 +22,11 @@ type Phase = "ready" | "flight" | "result";
 
 const RESULT_MS = 1200;
 const HUD_INSET = 8;
+const GOLD = "#f2c14e";
+const FLAMES = ["#ff3d00", "#ff6d00", "#ff9100", "#ffd600"];
+const BEST_KEY = "parrot-flip-fire";
+/** Start the make-or-break slow-mo when the falling parrot is this close to the ground. */
+const DRAMA_SLOWMO_PX = 240;
 
 class ParrotFlipGame implements MinigameInstance {
   private readonly physics: ParrotPhysics;
@@ -34,11 +41,22 @@ class ParrotFlipGame implements MinigameInstance {
   private showGlow = false;
   private botWait = 0;
   private done = false;
+  private readonly juice = new Juice();
+  private readonly callouts = new Callouts();
+  /** This flick rolled a golden flip (1 in 150, like flipgame). */
+  private golden = false;
+  /** A miss on this flip knocks the flipper out. */
+  private dramatic = false;
+  private slowMoFired = false;
+  /** Lives gained in the current ON FIRE run (humans only count toward the best). */
+  private fireRun = 0;
+  private bestFire = loadBest(BEST_KEY);
+  private bestAnnounced = false;
 
   constructor(private readonly ctx: MinigameContext) {
     this.physics = new ParrotPhysics(() => this.ctx.rng.next());
     this.table = dealTable(this.ctx.players.map((player) => player.id));
-    preloadParrots(this.ctx.players.map((player) => player.color));
+    preloadParrots([...this.ctx.players.map((player) => player.color), GOLD]);
     this.physics.init(GAME_WIDTH, GAME_HEIGHT, HUD_INSET);
     this.physics.setSideWalls(true);
     this.pointer = new FlickPointer(this.ctx.canvas, { w: GAME_WIDTH, h: GAME_HEIGHT }, (vx, vy) => {
@@ -47,7 +65,9 @@ class ParrotFlipGame implements MinigameInstance {
     this.beginTurn();
   }
 
-  update(dt: number): void {
+  update(realDt: number): void {
+    this.callouts.update(realDt);
+    const dt = this.juice.update(realDt);
     if (this.done) return;
 
     const botShot = this.phase === "flight" && this.current()?.kind === "bot";
@@ -55,6 +75,7 @@ class ParrotFlipGame implements MinigameInstance {
     if (botShot) this.physics.step(dt);
 
     if (this.phase === "flight") {
+      this.maybeSlowMo();
       const landing = this.physics.checkLanding();
       if (landing) this.resolve(landing);
       return;
@@ -83,6 +104,7 @@ class ParrotFlipGame implements MinigameInstance {
 
   render(g: CanvasRenderingContext2D): void {
     const player = this.current();
+    this.juice.begin(g);
     this.scene.frame(g, 1 / 60, GAME_WIDTH, GAME_HEIGHT, {
       bottle: this.physics.getBottle(),
       liquid: this.physics.liquid,
@@ -92,9 +114,12 @@ class ParrotFlipGame implements MinigameInstance {
       resultAlpha: this.resultAlpha,
       showGlow: this.showGlow,
       isOnFire: !!this.table.seats[this.table.turn]?.onFire,
-      liquidColor: player?.color ?? "#d62828",
+      liquidColor: this.golden ? GOLD : (player?.color ?? "#d62828"),
+      golden: this.golden,
     });
+    this.juice.end(g);
     this.drawHud(g);
+    this.callouts.draw(g, GAME_WIDTH, GAME_HEIGHT);
   }
 
   isFinished(): boolean {
@@ -119,8 +144,15 @@ class ParrotFlipGame implements MinigameInstance {
     this.result = null;
     this.resultAlpha = 0;
     this.showGlow = false;
+    this.golden = false;
+    this.slowMoFired = false;
     this.physics.resetBottle();
     const player = this.current();
+    this.dramatic = missWouldEliminate(this.table);
+    if (this.dramatic) {
+      this.callouts.show("MAKE IT OR YOU'RE OUT", "#FF3D7A", { life: 1.8, y: 0.2, size: 58 });
+      this.ctx.sfx.tick();
+    }
     if (player?.kind === "bot") {
       this.pointer.disable();
       this.botWait = 0.45 + this.ctx.rng.float(0, 0.25);
@@ -135,32 +167,112 @@ class ParrotFlipGame implements MinigameInstance {
     this.pointer.disable();
     this.physics.applyFlick(vx, vy);
     this.phase = "flight";
+    this.golden = rollGolden(this.ctx.rng);
     this.ctx.sfx.hit();
+    if (this.golden) {
+      this.callouts.show("GOLDEN FLIP", GOLD, { life: 1.1, y: 0.2, size: 56 });
+      this.ctx.sfx.streak(2);
+    }
   }
 
   private resolve(landing: "MAKE" | "MISS"): void {
     const made = landing === "MAKE";
-    this.lastOutcome = resolveFlip(this.table, made);
+    const seat = this.table.seats[this.table.turn];
+    const wasOnFire = !!seat?.onFire;
+    this.lastOutcome = resolveFlip(this.table, made, { golden: this.golden });
     this.result = landing;
     this.showGlow = made;
     this.phase = "result";
     this.resultTimer = RESULT_MS;
     this.resultAlpha = 0;
+    const perfect = made && !!this.physics.getLastLandingInfo()?.perfect;
     const bottle = this.physics.getBottle();
+    const x = bottle?.position.x ?? GAME_WIDTH / 2;
+    const y = (bottle?.position.y ?? GAME_HEIGHT * 0.7) - 40;
     if (bottle) {
-      this.scene.kick(
-        landing,
-        bottle.position.x,
-        bottle.position.y,
-        this.current()?.color ?? "#69f0ae",
-        made && !!this.physics.getLastLandingInfo()?.perfect,
-      );
+      this.scene.kick(landing, bottle.position.x, bottle.position.y, this.current()?.color ?? "#69f0ae", perfect);
     }
     const outcome = this.lastOutcome;
+    this.juiceResult(outcome, perfect, wasOnFire, x, y);
     if (outcome.justIgnited) this.ctx.sfx.streak(3);
     else if (made) this.ctx.sfx.collect();
     else if (outcome.eliminated) this.ctx.sfx.hit();
     else this.ctx.sfx.miss();
+  }
+
+  /** Slow the fall right before touchdown when a miss would knock the flipper out. */
+  private maybeSlowMo(): void {
+    if (!this.dramatic || this.slowMoFired) return;
+    const bottle = this.physics.getBottle();
+    if (!bottle || bottle.velocity.y <= 0) return;
+    if (bottle.position.y < this.physics.getGroundY() - DRAMA_SLOWMO_PX) return;
+    this.slowMoFired = true;
+    this.juice.slowMo(0.9, 0.3);
+  }
+
+  private juiceResult(o: FlipOutcome, perfect: boolean, wasOnFire: boolean, x: number, y: number): void {
+    const player = this.current();
+    const color = player?.color ?? "#69f0ae";
+
+    if (o.made) {
+      this.juice.burst(x, y, [color, "#ffffff"], { count: 18, speed: 260, angle: -Math.PI / 2, spread: 2.4 });
+      this.juice.shake(0.12);
+      if (perfect) {
+        this.juice.burst(x, y, [color, "#ffffff", "#B8FF3D"], { count: 36, speed: 460, size: 5 });
+        this.juice.shake(0.2);
+        this.juice.hitStop(0.05);
+        this.callouts.show("PERFECT", "#7DF9FF", { life: 1, y: 0.2, size: 60 });
+      }
+      if (o.golden) {
+        this.juice.burst(x, y, [GOLD, "#fff3b0", "#ffffff"], { count: 50, speed: 520, size: 5 });
+        this.juice.shake(0.3);
+        this.callouts.show(wasOnFire ? "GOLDEN! +2 LIVES" : "GOLDEN! STAKE +2", GOLD, { life: 1.3, y: 0.13, size: 50 });
+      }
+    }
+
+    if (o.justIgnited) {
+      this.juice.burst(x, y, FLAMES, { count: 80, speed: 560, size: 6, life: 0.9, gravity: -120, angle: -Math.PI / 2, spread: 2.2 });
+      this.juice.shake(0.55);
+      this.juice.hitStop(0.08);
+      this.callouts.show("ON FIRE!", "#FF6D00", { life: 1.6, y: 0.2, size: 96 });
+      this.fireRun = 0;
+      this.bestAnnounced = false;
+    }
+
+    if (this.dramatic) {
+      if (o.made) {
+        this.juice.burst(x, y, ["#B8FF3D", "#ffffff", color], { count: 60, speed: 600, size: 6 });
+        this.juice.shake(0.6);
+        this.callouts.show("STILL ALIVE!", "#B8FF3D", { life: 1.4, y: 0.13, size: 54 });
+      } else {
+        this.juice.burst(x, y, ["#FF3D7A", "#64748b", "#ffffff"], { count: 60, speed: 600, size: 6 });
+      }
+    }
+
+    if (o.eliminated) {
+      this.juice.shake(1);
+      this.juice.hitStop(0.14);
+      this.juice.burst(x, y, ["#FF3D7A", "#94a3b8"], { count: 40, speed: 420, size: 5 });
+    }
+
+    // Personal best: longest ON FIRE run (lives gained), humans only.
+    if (o.fireGain > 0 && player?.kind === "human") {
+      this.fireRun += o.fireGain;
+      if (this.fireRun > this.bestFire) {
+        const hadBest = this.bestFire > 0;
+        this.bestFire = this.fireRun;
+        saveBest(BEST_KEY, this.fireRun);
+        if (!this.bestAnnounced && hadBest) {
+          this.bestAnnounced = true;
+          this.callouts.show("NEW BEST!", "#FFD600", { life: 1.4, y: 0.5, size: 64 });
+          this.ctx.sfx.win();
+        }
+      }
+    }
+    if (o.fireEnded || (wasOnFire && !this.table.seats[this.table.turn]?.onFire)) {
+      this.fireRun = 0;
+      this.bestAnnounced = false;
+    }
   }
 
   private advance(): void {
@@ -206,6 +318,11 @@ class ParrotFlipGame implements MinigameInstance {
     g.font = "600 14px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
     g.fillText(missWouldEliminate(table) ? "make it or you're out" : "lives lost on a miss", GAME_WIDTH - 40, 70);
+
+    g.font = "600 14px Outfit, sans-serif";
+    g.fillStyle = "#FFB020";
+    const runBit = seat?.onFire && player?.kind === "human" ? `Fire run +${this.fireRun}  ·  ` : "";
+    g.fillText(`${runBit}Best fire run +${this.bestFire}`, GAME_WIDTH - 40, 112);
 
     const o = this.lastOutcome;
     if (this.phase === "result" && o) {

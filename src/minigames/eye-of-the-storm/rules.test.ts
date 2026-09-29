@@ -4,14 +4,17 @@ import { PUCK_RADIUS, isResting, stepWorld, type Puck, type World } from "./phys
 import {
   MAX_LAUNCH_SPEED,
   MAX_PULL,
+  CELL_RADIUS,
   PAD_RADIUS,
   RINGS,
   botRelease,
   launchVelocity,
   padPositions,
+  placeCell,
   ringPoints,
   scatterPegs,
   scoreBoard,
+  touchesCell,
 } from "./rules";
 
 const W = 1280;
@@ -107,5 +110,33 @@ describe("eye of the storm physics", () => {
     settle(cw);
     settle(ccw);
     expect(cw.pucks[0]!.y).toBeGreaterThan(ccw.pucks[0]!.y);
+  });
+});
+
+describe("eye of the storm extras", () => {
+  it("places storm cells off the bullseye and away from pads and pegs", () => {
+    const pads = padPositions(W, H);
+    for (let seed = 1; seed < 30; seed += 1) {
+      const rng = new Rng(seed);
+      const pegs = scatterPegs(rng, W, H, pads);
+      const cell = placeCell(rng, W, H, pads, pegs)!;
+      expect(cell).not.toBeNull();
+      expect(Math.hypot(cell.x - center.x, cell.y - center.y)).toBeGreaterThanOrEqual(RINGS[1].radius);
+      for (const pad of pads) expect(Math.hypot(cell.x - pad.x, cell.y - pad.y)).toBeGreaterThan(PAD_RADIUS);
+      for (const peg of pegs) expect(Math.hypot(cell.x - peg.x, cell.y - peg.y)).toBeGreaterThan(peg.r + CELL_RADIUS);
+    }
+  });
+
+  it("detects a puck passing through a cell", () => {
+    expect(touchesCell({ x: 100, y: 100 }, { x: 100 + CELL_RADIUS + PUCK_RADIUS - 1, y: 100, r: PUCK_RADIUS })).toBe(true);
+    expect(touchesCell({ x: 100, y: 100 }, { x: 100 + CELL_RADIUS + PUCK_RADIUS + 1, y: 100, r: PUCK_RADIUS })).toBe(false);
+  });
+
+  it("reports which pucks collided so knockouts can be credited", () => {
+    const shooter = puck("a", 590, 360, 900, 0);
+    const target = puck("b", 620, 360);
+    const events = stepWorld(world([shooter, target]), 1 / 60);
+    expect(events.contacts).toHaveLength(1);
+    expect(new Set([events.contacts[0]!.a.owner, events.contacts[0]!.b.owner])).toEqual(new Set(["a", "b"]));
   });
 });

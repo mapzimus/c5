@@ -11,6 +11,11 @@ import {
   pickFaces,
   pickKnownIndex,
   pointsForMatch,
+  bestHumanScore,
+  feverMultiplier,
+  GOLDEN_FACTOR,
+  inFever,
+  scoreMatch,
   remainingPairs,
   remember,
   rememberCard,
@@ -156,5 +161,31 @@ describe("board cursor", () => {
     expect(stepCursor(5, 1, 0, 6, 6, () => true)).toBe(0);
     expect(stepCursor(0, 1, 0, 6, 6, (index) => index !== 1)).toBe(2);
     expect(stepCursor(0, 0, 1, 6, 6, () => true)).toBe(6);
+  });
+});
+
+describe("fever and golden scoring", () => {
+  it("escalates the multiplier with the streak", () => {
+    expect([0, 1, 2, 3, 4, 5, 9].map(feverMultiplier)).toEqual([1, 1, 1, 2, 2, 3, 3]);
+    expect(inFever(2)).toBe(false);
+    expect(inFever(3)).toBe(true);
+  });
+
+  it("multiplies combo points by fever", () => {
+    expect(scoreMatch(1, 10, false)).toBe(1);
+    expect(scoreMatch(3, 8, false)).toBe(3 * 2);
+    expect(scoreMatch(5, 6, false)).toBe(5 * 3);
+    expect(scoreMatch(3, 0, false)).toBe((3 + CLOSER_BONUS) * 2);
+  });
+
+  it("doubles the golden pair on top of fever", () => {
+    expect(scoreMatch(1, 10, true)).toBe(GOLDEN_FACTOR);
+    expect(scoreMatch(5, 6, true)).toBe(5 * 3 * GOLDEN_FACTOR);
+  });
+
+  it("finds the best human score", () => {
+    const players = [{ kind: "human" }, { kind: "bot" }, { kind: "human" }];
+    expect(bestHumanScore(players, [4, 99, 7])).toBe(7);
+    expect(bestHumanScore([{ kind: "bot" }], [5])).toBeNull();
   });
 });

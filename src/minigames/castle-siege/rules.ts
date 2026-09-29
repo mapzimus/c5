@@ -46,16 +46,38 @@ export function dealQueue(rng: Rng, length = QUEUE_LENGTH): PieceKind[] {
   return Array.from({ length }, () => weightedPick(rng, weights));
 }
 
-export type Ammo = "ball" | "bomb" | "triple" | "boulder";
+export type Ammo = "ball" | "bomb" | "triple" | "boulder" | "golden";
 
-export const AMMO_WEIGHTS: Record<Ammo, number> = { ball: 4, bomb: 2, triple: 2, boulder: 1 };
+/** Chance of the rare golden cannonball on a normal (non sudden-death) roll. */
+export const GOLDEN_ODDS = 0.06;
+/** Extra damage a golden ball deals on top of the heavy bonus. */
+export const GOLDEN_BONUS = 1;
+
+/** Relative odds of the common ammo. Golden is carved out of the total, keeping these proportions. */
+export const BASE_AMMO_WEIGHTS: Record<Exclude<Ammo, "golden">, number> = { ball: 4, bomb: 2, triple: 2, boulder: 1 };
+
+const BASE_TOTAL = Object.values(BASE_AMMO_WEIGHTS).reduce((sum, w) => sum + w, 0);
+
+/** Probabilities (sum to 1). */
+export const AMMO_WEIGHTS: Record<Ammo, number> = {
+  ...(Object.fromEntries(
+    Object.entries(BASE_AMMO_WEIGHTS).map(([ammo, w]) => [ammo, ((1 - GOLDEN_ODDS) * w) / BASE_TOTAL]),
+  ) as Record<Exclude<Ammo, "golden">, number>),
+  golden: GOLDEN_ODDS,
+};
 
 export const AMMO_LABELS: Record<Ammo, string> = {
   ball: "CANNONBALL",
   bomb: "BOMB",
   triple: "TRIPLE SHOT",
   boulder: "BOULDER",
+  golden: "GOLDEN BALL",
 };
+
+/** Heavy ammo cracks blocks harder and hurts kings more. */
+export function isHeavy(ammo: Ammo | undefined): boolean {
+  return ammo === "boulder" || ammo === "golden";
+}
 
 export function rollAmmo(rng: Rng, shotsThisRound: number): Ammo {
   if (shotsThisRound >= SUDDEN_DEATH_AFTER) return "bomb";

@@ -14,6 +14,21 @@ export const STARTING_LIVES = 10;
 export const MAX_LIVES = 20;
 export const SD_THRESHOLD = 70;
 export const SD_STEP = 20;
+/**
+ * Golden flip odds, matching flipgame (js/main.js: `seed % 150 === 77`): 1 in 150 flicks.
+ * A golden MAKE is worth 2 (stake steps, or ON FIRE lives).
+ */
+export const GOLDEN_ODDS = 150;
+
+/** Roll the golden-flip lottery for one flick (1 in GOLDEN_ODDS). */
+export function rollGolden(rng: Rng): boolean {
+  return rng.int(0, GOLDEN_ODDS - 1) === 77 % GOLDEN_ODDS;
+}
+
+/** Per-flip extras, like flipgame's resolveFlip `meta`. */
+export interface FlipMeta {
+  golden?: boolean;
+}
 
 export interface FlipSeat {
   playerId: string;
@@ -43,6 +58,10 @@ export interface FlipOutcome {
   justIgnited: boolean;
   fireEnded: boolean;
   eliminated: boolean;
+  /** This make was a golden flip (worth 2). */
+  golden: boolean;
+  /** 1 normally, 2 for a golden make. */
+  worth: number;
 }
 
 export function dealTable(playerIds: readonly string[], lives = STARTING_LIVES): FlipTable {
@@ -77,9 +96,20 @@ export function missWouldEliminate(table: FlipTable): boolean {
 }
 
 /** Apply one flip for the current seat. Mutates the table. */
-export function resolveFlip(table: FlipTable, made: boolean): FlipOutcome {
+export function resolveFlip(table: FlipTable, made: boolean, meta: FlipMeta = {}): FlipOutcome {
   const seat = table.seats[table.turn]!;
-  const out: FlipOutcome = { made, penalty: 0, fireGain: 0, justIgnited: false, fireEnded: false, eliminated: false };
+  const golden = made && !!meta.golden;
+  const worth = golden ? 2 : 1;
+  const out: FlipOutcome = {
+    made,
+    penalty: 0,
+    fireGain: 0,
+    justIgnited: false,
+    fireEnded: false,
+    eliminated: false,
+    golden,
+    worth,
+  };
   table.flips += 1;
   const sd = suddenDeathLevel(table.flips);
 
@@ -87,7 +117,7 @@ export function resolveFlip(table: FlipTable, made: boolean): FlipOutcome {
     if (made) {
       if (!sd) {
         const before = seat.lives;
-        seat.lives = Math.min(seat.lives + 1, MAX_LIVES);
+        seat.lives = Math.min(seat.lives + worth, MAX_LIVES);
         out.fireGain = seat.lives - before;
       }
       // Hitting the life cap ends the run cleanly.
@@ -103,7 +133,7 @@ export function resolveFlip(table: FlipTable, made: boolean): FlipOutcome {
 
   if (made) {
     seat.streak += 1;
-    table.stake += 1;
+    table.stake += worth;
     seat.heatingUp = seat.streak === 2;
     if (seat.streak >= 3) {
       seat.onFire = true;

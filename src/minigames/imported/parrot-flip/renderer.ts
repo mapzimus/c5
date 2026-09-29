@@ -230,6 +230,8 @@ export class ParrotScene {
       showGlow: boolean;
       isOnFire: boolean;
       liquidColor: string;
+      /** Golden flip: gold aura + sparkles around the parrot. */
+      golden?: boolean;
     },
   ): void {
     this.updateParticles(dt);
@@ -275,6 +277,7 @@ export class ParrotScene {
     }
     this.drawFlickIndicator(g, state.drag, state.bottle);
     if (state.showGlow && state.bottle) this.drawLandingGlow(g, state.bottle, state.groundY);
+    if (state.golden && state.bottle) this.drawGoldenAura(g, state.bottle);
     this.drawBottle(g, state.bottle, state.liquid, state.isOnFire, state.liquidColor, state.groundY);
     this.drawParticles(g);
     if (state.result) {
@@ -433,6 +436,33 @@ export class ParrotScene {
 
     if (Math.abs(liquid.vel) > 1.6) {
       this.spawnSplash(x, y - 30, 2, hexToRgba(liquidColor, 0.85));
+    }
+  }
+
+  private drawGoldenAura(g: CanvasRenderingContext2D, bottle: Pose): void {
+    const x = bottle.position.x;
+    const y = bottle.position.y - 40;
+    const pulse = 0.8 + 0.2 * Math.sin(performance.now() / 90);
+    const glow = g.createRadialGradient(x, y, 12, x, y, 130 * pulse);
+    glow.addColorStop(0, "rgba(255,226,120,0.55)");
+    glow.addColorStop(1, "rgba(242,193,78,0)");
+    g.fillStyle = glow;
+    g.beginPath();
+    g.arc(x, y, 130 * pulse, 0, Math.PI * 2);
+    g.fill();
+    if (Math.random() < 0.5) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 40 + Math.random() * 60;
+      this.particles.push({
+        x: x + Math.cos(a) * r,
+        y: y + Math.sin(a) * r,
+        vx: 0,
+        vy: -30,
+        life: 0.6,
+        maxLife: 0.6,
+        r: 2 + Math.random() * 2.5,
+        color: Math.random() < 0.5 ? "#fff3b0" : "#f2c14e",
+      });
     }
   }
 

@@ -141,3 +141,37 @@ export function pickKnownIndex(
   }
   return -1;
 }
+
+export const FEVER_STREAK = 3;
+export const GOLDEN_FACTOR = 2;
+
+/** Fever multiplier from the current consecutive-match streak: x1, then x2 at 3, x3 at 5+. */
+export function feverMultiplier(streak: number): number {
+  if (streak >= 5) return 3;
+  if (streak >= FEVER_STREAK) return 2;
+  return 1;
+}
+
+export function inFever(streak: number): boolean {
+  return streak >= FEVER_STREAK;
+}
+
+/** Full match score: combo points (with closer bonus) × fever multiplier, doubled again for the golden pair. */
+export function scoreMatch(streak: number, remainingPairsAfter: number, golden: boolean): number {
+  const base = pointsForMatch(streak, remainingPairsAfter) * feverMultiplier(streak);
+  return golden ? base * GOLDEN_FACTOR : base;
+}
+
+/** Best score among human seats, or null when no human is playing. */
+export function bestHumanScore(
+  players: readonly { kind: string }[],
+  scores: readonly number[],
+): number | null {
+  let best: number | null = null;
+  players.forEach((player, index) => {
+    if (player.kind !== "human") return;
+    const score = scores[index] ?? 0;
+    if (best === null || score > best) best = score;
+  });
+  return best;
+}
