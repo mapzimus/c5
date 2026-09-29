@@ -8,7 +8,7 @@ export const luckyDrop: MinigameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
   tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus, then keep going to 2048. Take turns on fresh boards; highest score wins when every board overflows.",
+  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus; every size up doubles it, all the way to 4096. Take turns on fresh boards; highest score wins when every board overflows.",
   durationMs: 0,
   controls: "Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
   create: ctx => new LuckyDropGame(ctx),
@@ -166,7 +166,7 @@ export class LuckyDropGame implements MinigameInstance {
         this.rings.push({ x: event.x, y: event.y, radius: RADII[event.tier], color, life: 0.45 });
         this.ctx.sfx.streak(event.chain);
       } else if (event.type === "burst") {
-        this.floaters.push({ x: 240, y: 280, text: "BIG LUCK! +1,000", color: COLORS[7], life: 2 });
+        this.floaters.push({ x: 240, y: 280, text: `${2 ** event.tier}! +${event.bonus.toLocaleString()}`, color: COLORS[event.tier], life: 2 });
         this.ctx.sfx.win();
       }
     }
@@ -310,7 +310,7 @@ export class LuckyDropGame implements MinigameInstance {
       label(g, `${odds}%`, 944 + tier * 60, 510, 14, "#f0f2e9", "center");
     });
     label(g, "Make 128 for +1,000.", 930, 541, 22, COLORS[7]);
-    label(g, "Collect a 1,000-point bonus.", 930, 570, 17, MUTED);
+    label(g, "Each size up doubles it. 4096 = +32,000.", 930, 570, 17, MUTED);
     if (this.ctx.players.length > 1) {
       label(g, `RUN ${Math.min(this.turn + 1, this.ctx.players.length)} / ${this.ctx.players.length}`, 930, 615, 14, MUTED);
       this.scores.forEach((score, index) => {

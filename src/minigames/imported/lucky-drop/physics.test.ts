@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../../core/rng";
-import { DropWorld } from "./physics";
+import { DropWorld, bonusFor } from "./physics";
 import { botAim } from "./rules";
 
 function advance(world: DropWorld, seconds: number): void {
@@ -135,20 +135,34 @@ describe("Lucky Drop physics", () => {
     expect(simulate()).toEqual(simulate());
   });
 
-  it("merges 128s on up to 256 without another bonus", () => {
+  it("merges 128s up to 256 and pays the doubled 2,000 bonus", () => {
     const world = new DropWorld(() => 0.1);
     world.add(7, 150, 540);
     world.add(7, 305, 540);
     advance(world, 1);
     expect(world.balls.map(ball => ball.tier)).toEqual([8]);
-    expect(world.score).toBe(2560);
+    expect(world.score).toBe(2560 + 2000);
   });
 
-  it("stops at 2048: two 2048s do not merge", () => {
+  it("stacked 2048s merge into 4096 for a 32,000 bonus", () => {
     const world = new DropWorld(() => 0.1);
-    world.add(11, 130, 480);
-    world.add(11, 350, 480);
+    world.add(11, 240, 492);
+    world.add(11, 240, 250);
     advance(world, 1);
-    expect(world.balls.filter(ball => ball.tier === 11)).toHaveLength(2);
+    expect(world.balls.map(ball => ball.tier)).toEqual([12]);
+    expect(world.score).toBe(40960 + 32000);
+    expect(world.events.some(event => event.type === "burst" && event.bonus === 32000)).toBe(true);
+  });
+
+  it("stops at 4096: two 4096s do not merge", () => {
+    const world = new DropWorld(() => 0.1);
+    world.add(12, 240, 480);
+    world.add(12, 240, 220);
+    advance(world, 1);
+    expect(world.balls.filter(ball => ball.tier === 12)).toHaveLength(2);
+  });
+
+  it("doubles the bonus each size from 128", () => {
+    expect([6, 7, 8, 9, 10, 11, 12].map(bonusFor)).toEqual([0, 1000, 2000, 4000, 8000, 16000, 32000]);
   });
 });

@@ -8,7 +8,7 @@ audio and session scoring. No additional packages or external assets are needed.
 
 - Drag across the board and release to drop, or use Left/Right (A/D) and Space.
   The active player's configured seat controls also work.
-- Two touching identical orbs merge: 1 → 2 → 4 → … → 128 → 256 → 512 → 1024 → 2048.
+- Two touching identical orbs merge: 1 → 2 → 4 → … → 128 → 256 → 512 → 1024 → 2048 → 4096.
 - Each merge awards the new value × 10. Merges within 1.5 seconds build a chain
   multiplier, up to ×5.
 - Drops start at 1 (65%), 2 (25%), 4 (10%). As your score climbs you level up
@@ -17,7 +17,9 @@ audio and session scoring. No additional packages or external assets are needed.
 - Shot clock: wait too long and the orb drops where you're aiming. It starts at
   8s and shrinks with each level, down to 3s.
 - Six merges charge a shake. Press S or tap the Shake button to use it.
-- Creating 128 adds a 1,000-point bonus. The board stays, and orbs keep merging up to 2048 (two 2048s don't merge).
+- Creating 128 adds a 1,000-point bonus, and each size up doubles it: 256 = 2,000,
+  512 = 4,000, 1024 = 8,000, 2048 = 16,000, 4096 = 32,000. The board stays.
+  4096 is the top orb (two 4096s don't merge).
 - A settled orb above the dotted line for three seconds ends the run. New falling
   orbs get a grace period.
 
