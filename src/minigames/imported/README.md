@@ -7,3 +7,9 @@ Wrap whatever you bring in as a `MinigameDefinition` (see `../template.ts`), the
 ## Parrot Flip
 
 Port of [Whydah-Unit parrot-flip](https://github.com/mapzimus/Whydah-Unit/tree/main/parrot-flip): same Matter.js flick physics and macaw art, scored as a four-toss party minigame.
+
+## Lucky Drop
+
+Port of the standalone Lucky Drop physics matching game, with unlimited runs,
+seeded drop odds, human/bot turns and C5 session scoring.
+[Rules and controls](lucky-drop/README.md).
