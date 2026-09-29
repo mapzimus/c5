@@ -135,11 +135,20 @@ describe("Lucky Drop physics", () => {
     expect(simulate()).toEqual(simulate());
   });
 
-  it("does not merge two 128s", () => {
+  it("merges 128s on up to 256 without another bonus", () => {
     const world = new DropWorld(() => 0.1);
     world.add(7, 150, 540);
-    world.add(7, 311, 540);
+    world.add(7, 305, 540);
     advance(world, 1);
-    expect(world.balls.filter(ball => ball.tier === 7)).toHaveLength(2);
+    expect(world.balls.map(ball => ball.tier)).toEqual([8]);
+    expect(world.score).toBe(2560);
+  });
+
+  it("stops at 2048: two 2048s do not merge", () => {
+    const world = new DropWorld(() => 0.1);
+    world.add(11, 130, 480);
+    world.add(11, 350, 480);
+    advance(world, 1);
+    expect(world.balls.filter(ball => ball.tier === 11)).toHaveLength(2);
   });
 });

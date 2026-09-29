@@ -8,12 +8,12 @@ audio and session scoring. No additional packages or external assets are needed.
 
 - Drag across the board and release to drop, or use Left/Right (A/D) and Space.
   The active player's configured seat controls also work.
-- Two touching identical orbs merge: 1 → 2 → 4 → 8 → 16 → 32 → 64 → 128.
+- Two touching identical orbs merge: 1 → 2 → 4 → … → 128 → 256 → 512 → 1024 → 2048.
 - Each merge awards the new value × 10. Merges within 1.5 seconds build a chain
   multiplier, up to ×5.
 - Drops roll 1 (65%), 2 (25%), or 4 (10%). The next two orbs are visible.
 - Six merges charge a shake. Press S or tap the Shake button to use it.
-- Creating 128 adds a 1,000-point bonus. The 128 stays on the board, and two 128s don't merge.
+- Creating 128 adds a 1,000-point bonus. The board stays, and orbs keep merging up to 2048 (two 2048s don't merge).
 - A settled orb above the dotted line for three seconds ends the run. New falling
   orbs get a grace period.
 

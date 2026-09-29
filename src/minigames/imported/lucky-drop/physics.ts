@@ -1,5 +1,8 @@
-export const RADII = [17, 23, 30, 38, 47, 57, 68, 80] as const;
-export const COLORS = ["#c9f65b", "#6ee7b7", "#74cefa", "#b6a2ff", "#f5adce", "#ffb478", "#ffe071", "#f1b4ee"] as const;
+/** 1 through 2048. 2048 is the top orb and does not merge further. */
+export const RADII = [17, 23, 30, 38, 47, 57, 68, 80, 92, 104, 116, 128] as const;
+/** Making 128 pays this bonus. */
+export const BONUS_TIER = 7;
+export const COLORS = ["#c9f65b", "#6ee7b7", "#74cefa", "#b6a2ff", "#f5adce", "#ffb478", "#ffe071", "#f1b4ee", "#ff7a7a", "#7aa2ff", "#4fd1c5", "#ffcf33"] as const;
 export const BOARD = { width: 480, height: 630, left: 8, right: 472, floor: 620, danger: 105 } as const;
 
 export interface Orb {
@@ -147,8 +150,8 @@ export class DropWorld {
         const points = 2 ** tier * 10 * this.chain;
         this.score += points;
         this.events.push({ type: "merge", x, y, tier, points, chain: this.chain });
-        // 128 is the top orb: bonus and fanfare, but it stays on the board.
-        if (tier === RADII.length - 1) {
+        // 128 pays a bonus with fanfare; the orb stays and keeps merging up to 2048.
+        if (tier === BONUS_TIER) {
           this.score += 1000;
           this.events.push({ type: "burst", x, y });
         }

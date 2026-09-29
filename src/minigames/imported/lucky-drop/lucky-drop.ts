@@ -7,7 +7,7 @@ export const luckyDrop: MinigameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
   tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, no timer. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus. Take turns on fresh boards; highest score wins when every board overflows.",
+  description: "Unlimited drops, no timer. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus, then keep going to 2048. Take turns on fresh boards; highest score wins when every board overflows.",
   durationMs: 0,
   controls: "Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
   create: ctx => new LuckyDropGame(ctx),
@@ -321,7 +321,8 @@ function drawOrb(g: CanvasRenderingContext2D, x: number, y: number, tier: number
   g.fillStyle = "#183021";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.font = `700 ${Math.max(15, radius * 0.78)}px Outfit, sans-serif`;
-  g.fillText(String(2 ** tier), x, y + 1);
+  const text = String(2 ** tier);
+  g.font = `700 ${Math.max(15, Math.min(radius * 0.78, (radius * 2.6) / text.length))}px Outfit, sans-serif`;
+  g.fillText(text, x, y + 1);
   g.restore();
 }
