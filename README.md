@@ -29,6 +29,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 | **Pairs** | A 5s peek (click to skip), then 18 random World XI crests on a 6×6 board. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
 | **Parrot Flip** | Take turns flicking a pirate macaw. Land it standing. Four tosses each — most makes wins. Port of [parrot-flip](https://github.com/mapzimus/Whydah-Unit/tree/main/parrot-flip) from Whydah-Unit. |
 | **Castle Siege** | Hide your king, then drop pieces to wall him in (25s). Then take turns firing random ammo (cannonball, bomb, triple shot, boulder) through the wind. Blocks crack and shatter, and 3 hits take out a king. First to 2 rounds wins. [Details](src/minigames/castle-siege/README.md) |
+| **Eye of the Storm** | Big-touchscreen game. Everyone fires at once: drag back from your corner pad to slingshot six pucks into the eye (10/5/2). Random pegs, a swirl that bends shots and flips direction, and puck-on-puck knockouts. Ends when every puck is out and still, or at 60s. |
 
 **Lucky Drop** is also available from the main menu: unlimited physics matching
 runs with 65/25/10 drop odds, chain multipliers, charged shakes and a 128 clear.
