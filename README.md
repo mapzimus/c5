@@ -33,7 +33,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 | **Castle Siege** | Hide your king, then drop pieces to wall him in (25s). Then take turns firing random ammo (cannonball, bomb, triple shot, boulder) through the wind. Blocks crack and shatter, and 3 hits take out a king. First to 2 rounds wins. [Details](src/minigames/castle-siege/README.md) |
 | **Eye of the Storm** | Big-touchscreen game. Everyone fires at once: drag back from your corner pad to slingshot six pucks into the eye (10/5/2). Random pegs, a swirl that bends shots and flips direction, and puck-on-puck knockouts. Ends when every puck is out and still, or at 60s. |
 
-**Lucky Drop** is also available from the main menu: unlimited physics matching
+**Lucky Drop** is also available from the main menu (Take Turns, or **Versus**: two boards at once, split screen, same drops): unlimited physics matching
 runs with 65/25/10 drop odds, chain multipliers, charged shakes and a 128 clear.
 Play solo or take turns against humans/bots; each run ends only when the board
 overflows. [Rules and controls](src/minigames/imported/lucky-drop/README.md).
