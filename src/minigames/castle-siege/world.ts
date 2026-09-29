@@ -43,6 +43,8 @@ export interface Ball {
   ammo: Ammo;
   exploded: boolean;
   touched: boolean;
+  /** Seconds since fired. */
+  age: number;
 }
 
 export type WorldEvent =
@@ -99,7 +101,10 @@ export class SiegeWorld {
     this.acc = Math.min(this.acc + dt * 1000, STEP_MS * 5);
     while (this.acc >= STEP_MS) {
       this.acc -= STEP_MS;
-      for (const ball of this.balls) this.applyWind(ball.body);
+      for (const ball of this.balls) {
+        this.applyWind(ball.body);
+        ball.age += STEP_MS / 1000;
+      }
       Engine.update(this.engine, STEP_MS);
       for (const piece of this.pieces) piece.cooldown = Math.max(0, piece.cooldown - STEP_MS / 1000);
       for (const ball of this.balls) if (ball.ammo === "bomb" && ball.touched && !ball.exploded) this.explode(ball);
@@ -269,7 +274,7 @@ export class SiegeWorld {
       });
       Body.setVelocity(body, { x: vx * cos - vy * sin, y: vx * sin + vy * cos });
       Composite.add(this.engine.world, body);
-      this.balls.push({ body, team, ammo, exploded: false, touched: false });
+      this.balls.push({ body, team, ammo, exploded: false, touched: false, age: 0 });
     }
   }
 
@@ -277,6 +282,16 @@ export class SiegeWorld {
     return this.balls.every((ball) => {
       const p = ball.body.position;
       return p.x < -60 || p.x > 1340 || p.y > GROUND_Y + 100 || (ball.touched && ball.body.speed < 0.5);
+    });
+  }
+
+  /** Real-time mode: retire balls one at a time once they're off-screen, resting, or stale. */
+  pruneBalls(maxAge = 7): void {
+    this.balls = this.balls.filter((ball) => {
+      const p = ball.body.position;
+      const done = p.x < -60 || p.x > 1340 || p.y > GROUND_Y + 100 || (ball.touched && ball.body.speed < 0.5) || ball.age > maxAge;
+      if (done) Composite.remove(this.engine.world, ball.body);
+      return !done;
     });
   }
 

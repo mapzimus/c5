@@ -130,3 +130,17 @@ export function comboCallout(smashed: number): string | null {
   if (smashed >= 2) return "DOUBLE SMASH!";
   return null;
 }
+
+// ---- Real-time siege: both cannons fire whenever they're reloaded ----------------
+
+/** Seconds between shots for each cannon. */
+export const REALTIME_RELOAD_S = 3;
+/** After this long in a real-time siege, every roll is a bomb. */
+export const REALTIME_SUDDEN_DEATH_S = 45;
+/** Wind shifts on its own every so often (there are no turns to reroll it on). */
+export const REALTIME_WIND_EVERY_S = 6;
+
+/** Ammo for the next real-time shot: normal odds until sudden death, then bombs. */
+export function realtimeAmmo(rng: Rng, siegeSeconds: number): Ammo {
+  return rollAmmo(rng, siegeSeconds >= REALTIME_SUDDEN_DEATH_S ? SUDDEN_DEATH_AFTER : 0);
+}

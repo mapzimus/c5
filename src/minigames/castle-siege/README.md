@@ -4,6 +4,16 @@ Hide your king in a fortress, then blow up theirs. First to 2 rounds wins.
 
 Seats alternate teams: 1st and 3rd on the left, 2nd and 4th on the right. A team with any human seat uses touch. An all-bot team plays itself.
 
+## Modes
+
+Castle Siege opens on a mode pick (an all-bot table skips it and takes turns):
+
+- **Take turns:** the classic siege below.
+- **Real-time:** same build phase, but in the siege both cannons fire whenever they're
+  reloaded (3s). Each cannon rolls its next ammo as it reloads, the wind shifts every 6s,
+  and after 45s every roll is a bomb (sudden death). Smashes are credited to the side that
+  fired, and blocks broken within 1.2s of each other count as one combo.
+
 ## A round
 
 1. **Build (25s).** Both sides at once, with dual touch.
@@ -22,5 +32,5 @@ Seats alternate teams: 1st and 3rd on the left, 2nd and 4th on the right. A team
 
 ## Tuning
 
-- `rules.ts`: pieces (size, HP, odds), build time, queue length, ammo odds (golden odds and bonus), wind, impact damage curve, sudden-death shot count.
+- `rules.ts`: real-time reload, sudden-death time and wind interval (`REALTIME_*`), pieces (size, HP, odds), build time, queue length, ammo odds (golden odds and bonus), wind, impact damage curve, sudden-death shot count.
 - `world.ts`: zones, drop gap, wind strength, bomb radius, max shot speed.
