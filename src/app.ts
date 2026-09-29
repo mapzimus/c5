@@ -182,6 +182,7 @@ export class App {
       el("strong", { text: game.name }),
       ghost("Menu", () => {
         this.engine?.abort();
+        exitFullscreen();
         this.renderMenu();
         this.show("menu");
       }),
@@ -189,7 +190,9 @@ export class App {
     const wrap = el("div", { class: "play-wrap" });
     const canvas = el("canvas", { id: "game" });
     wrap.append(canvas);
-    screen.append(bar, wrap);
+    const hint = el("p", { class: "rotate-hint", text: "Turn your phone sideways for a bigger board" });
+    screen.append(bar, wrap, hint);
+    enterLandscape();
     this.show("play");
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
@@ -251,4 +254,20 @@ function button(label: string, onClick: () => void, extraClass?: string): HTMLBu
 
 function ghost(label: string, onClick: () => void): HTMLButtonElement {
   return button(label, onClick, "ghost");
+}
+
+const coarse = () => window.matchMedia?.("(pointer: coarse)").matches ?? false;
+
+/** On phones and tablets: go fullscreen and try to lock landscape. Browsers that refuse just keep the normal layout. */
+function enterLandscape(): void {
+  if (!coarse() || document.fullscreenElement) return;
+  const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+  document.documentElement
+    .requestFullscreen?.()
+    .then(() => orientation.lock?.("landscape"))
+    .catch(() => {});
+}
+
+function exitFullscreen(): void {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }

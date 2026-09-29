@@ -310,3 +310,104 @@ footer.fine {
   color: var(--muted);
   font-size: 13px;
 }
+
+/* Play screen: the canvas gets the whole viewport. */
+#screen-play.active {
+  padding: 0;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+#screen-play .play-wrap {
+  position: absolute;
+  inset: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+#screen-play .hud-bar {
+  position: absolute;
+  top: max(8px, env(safe-area-inset-top));
+  left: max(8px, env(safe-area-inset-left));
+  z-index: 2;
+  padding: 0;
+}
+
+#screen-play .hud-bar strong {
+  display: none;
+}
+
+#screen-play .hud-bar .btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  background: rgba(7, 11, 20, 0.72);
+}
+
+.rotate-hint {
+  display: none;
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+  #screen-play .rotate-hint {
+    display: block;
+    position: absolute;
+    top: 18%;
+    left: 0;
+    right: 0;
+    margin: 0;
+    padding: 0 24px;
+    text-align: center;
+    font-family: "Bebas Neue", Impact, sans-serif;
+    font-size: 28px;
+    color: var(--amber);
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 720px), (max-height: 500px) {
+  #game {
+    border-radius: 0;
+  }
+}
+
+/* Menu on phones. */
+@media (max-width: 600px) {
+  .screen {
+    padding: 20px 16px 28px;
+  }
+
+  .display {
+    font-size: 56px;
+  }
+
+  .lede {
+    font-size: 16px;
+  }
+
+  .seats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .seats .seat {
+    width: auto;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .seats .row {
+    gap: 8px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+    margin-top: 20px;
+  }
+
+  .card {
+    min-height: 0;
+    padding: 16px 18px;
+  }
+}
