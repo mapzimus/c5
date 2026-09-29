@@ -7,7 +7,7 @@ export const luckyDrop: MinigameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
   tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, no timer. Match identical orbs, build chains, and shake the board. Make 128 for a clearing burst. Take turns on fresh boards; highest score wins when every board overflows.",
+  description: "Unlimited drops, no timer. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus. Take turns on fresh boards; highest score wins when every board overflows.",
   durationMs: 0,
   controls: "Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
   create: ctx => new LuckyDropGame(ctx),
@@ -285,7 +285,7 @@ export class LuckyDropGame implements MinigameInstance {
       drawOrb(g, 949 + tier * 100, 478, tier, 1, 15);
       label(g, odds, 972 + tier * 100, 484, 16);
     });
-    label(g, "Make 128. Clear the board.", 930, 541, 22, COLORS[7]);
+    label(g, "Make 128 for +1,000.", 930, 541, 22, COLORS[7]);
     label(g, "Collect a 1,000-point bonus.", 930, 570, 17, MUTED);
     if (this.ctx.players.length > 1) {
       label(g, `RUN ${Math.min(this.turn + 1, this.ctx.players.length)} / ${this.ctx.players.length}`, 930, 615, 14, MUTED);

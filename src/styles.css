@@ -274,6 +274,15 @@ input {
   flex-wrap: wrap;
 }
 
+.pick-next {
+  margin: 24px 0 16px;
+}
+
+.pick-next h3 {
+  margin: 0 0 12px;
+  font-size: 22px;
+}
+
 .chip {
   border: 1px solid var(--line);
   background: rgba(7, 11, 20, 0.55);

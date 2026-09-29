@@ -13,7 +13,7 @@ audio and session scoring. No additional packages or external assets are needed.
   multiplier, up to ×5.
 - Drops roll 1 (65%), 2 (25%), or 4 (10%). The next two orbs are visible.
 - Six merges charge a shake. Press S or tap the Shake button to use it.
-- Creating 128 clears the board and adds a 1,000-point bonus.
+- Creating 128 adds a 1,000-point bonus. The 128 stays on the board, and two 128s don't merge.
 - A settled orb above the dotted line for three seconds ends the run. New falling
   orbs get a grace period.
 
@@ -21,7 +21,7 @@ audio and session scoring. No additional packages or external assets are needed.
 Players take consecutive runs on fresh boards until each board overflows. Everyone
 gets the same seeded drop sequence; shakes do not consume drop randomness. Bots
 aim at exposed matches or open space and use charged shakes near the top. The
-highest score wins; C5 handles ties and party points. Menu/Escape exits as usual.
+highest score wins; C5 handles ties and the win point. Menu/Escape exits as usual.
 Personal best is local to this browser and shared across seats.
 
 ## Implementation

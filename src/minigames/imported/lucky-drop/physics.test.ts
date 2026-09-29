@@ -62,13 +62,13 @@ describe("Lucky Drop physics", () => {
     expect(world.chain).toBe(1);
   });
 
-  it("clears the board at 128 and awards the extra 1,000 points", () => {
+  it("awards 1,000 at 128 and keeps the board", () => {
     const world = new DropWorld(() => 0.1);
     world.add(0, 40, 600);
     world.add(6, 170, 550);
     world.add(6, 303, 550);
     advance(world, 1);
-    expect(world.balls).toHaveLength(0);
+    expect(world.balls.map(ball => ball.tier).sort()).toEqual([0, 7]);
     expect(world.score).toBe(2280);
     expect(world.events.some(event => event.type === "burst")).toBe(true);
     expect(world.over).toBe(false);
@@ -133,5 +133,13 @@ describe("Lucky Drop physics", () => {
       return { score: world.score, balls: world.balls, drops: world.drops };
     };
     expect(simulate()).toEqual(simulate());
+  });
+
+  it("does not merge two 128s", () => {
+    const world = new DropWorld(() => 0.1);
+    world.add(7, 150, 540);
+    world.add(7, 311, 540);
+    advance(world, 1);
+    expect(world.balls.filter(ball => ball.tier === 7)).toHaveLength(2);
   });
 });

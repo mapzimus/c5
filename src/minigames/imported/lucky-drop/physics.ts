@@ -104,7 +104,7 @@ export class DropWorld {
           const min = a.radius + b.radius;
           let distance = Math.hypot(dx, dy);
           if (distance > min + 0.2) continue;
-          if (pass === 0 && a.tier === b.tier && this.time - a.born > 0.17 &&
+          if (pass === 0 && a.tier === b.tier && a.tier < RADII.length - 1 && this.time - a.born > 0.17 &&
             this.time - b.born > 0.17 && !used.has(a.id) && !used.has(b.id)) {
             used.add(a.id);
             used.add(b.id);
@@ -147,12 +147,10 @@ export class DropWorld {
         const points = 2 ** tier * 10 * this.chain;
         this.score += points;
         this.events.push({ type: "merge", x, y, tier, points, chain: this.chain });
-        if (tier >= 7) {
+        // 128 is the top orb: bonus and fanfare, but it stays on the board.
+        if (tier === RADII.length - 1) {
           this.score += 1000;
-          this.balls = [];
-          this.danger = 0;
           this.events.push({ type: "burst", x, y });
-          break;
         }
         this.add(tier, x, y, (a.vx + b.vx) * 0.35, Math.min(-35, (a.vy + b.vy) * 0.2));
       }
