@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../core/rng";
-import { RACER_COUNT, backersOf, draftRacers, placings, scoreBets } from "./rules";
+import { MIN_COLOR_GAP, RACER_COUNT, RACER_POOL, backersOf, colorDistance, draftRacers, placings, scoreBets } from "./rules";
 import { DerbyWorld, FINISH_X, MAX_RACE_S, type Runner } from "./world";
 
 interface RaceLog {
@@ -43,6 +43,19 @@ describe("chaos derby world", () => {
       expect(r.stats.topSpeed).toBeGreaterThan(200);
       expect(r.stats.jumpSkill).toBeLessThan(1);
     }
+  });
+
+  it("never puts two lookalike colours in the same race", () => {
+    for (let seed = 1; seed <= 300; seed += 1) {
+      const racers = draftRacers(new Rng(seed));
+      expect(racers).toHaveLength(RACER_COUNT);
+      for (let i = 0; i < racers.length; i += 1) {
+        for (let j = i + 1; j < racers.length; j += 1) {
+          expect(colorDistance(racers[i]!.spec.color, racers[j]!.spec.color)).toBeGreaterThanOrEqual(MIN_COLOR_GAP);
+        }
+      }
+    }
+    expect(new Set(RACER_POOL.map((r) => r.color)).size).toBe(RACER_POOL.length);
   });
 
   it("runs a full race: everyone finishes, in order, inside the time cap", () => {
