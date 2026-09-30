@@ -1,7 +1,7 @@
 import { drawPlayerOrb } from "../../core/draw";
 import { Callouts, Juice } from "../../fx/juice";
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance, type Player } from "../../core/types";
-import { drawRacer, shade, type RacerLook } from "./draw";
+import { drawRacer, labelColor, shade, type RacerLook } from "./draw";
 import { RACER_COUNT, backersOf, draftRacers, placings, scoreBets } from "./rules";
 import { DerbyWorld, FINISH_X, STEP, type DerbyEvent, type Runner } from "./world";
 
@@ -189,7 +189,7 @@ class ChaosDerby implements MinigameInstance {
     const lead = order[0]!;
     if (!lead.finished && lead.lane !== this.leaderLane) {
       if (this.leaderLane >= 0 && this.world.time > 4 && this.world.time - this.lastLeadCall > 4) {
-        this.callouts.show(`#${lead.lane + 1} ${lead.spec.name.toUpperCase()} TAKES THE LEAD`, lead.spec.color, { life: 1.6, size: 34, y: 0.2 });
+        this.callouts.show(`#${lead.lane + 1} ${lead.spec.name.toUpperCase()} TAKES THE LEAD`, labelColor(lead.spec.color), { life: 1.6, size: 34, y: 0.2 });
         this.lastLeadCall = this.world.time;
       }
       this.leaderLane = lead.lane;
@@ -246,7 +246,7 @@ class ChaosDerby implements MinigameInstance {
       this.juice.slowMo(0.9, 0.3);
       this.juice.burst(GAME_WIDTH / 2, 120, [r.spec.color, "#F4F7FB", "#FFB020", "#3EE0FF"], { count: 90, speed: 520, gravity: 420, life: 1.6, size: 6 });
       const names = backersOf(r.lane, this.bets).map((id) => this.ctx.players.find((p) => p.id === id)?.name ?? "?");
-      this.callouts.show(`${r.spec.name.toUpperCase()} WINS!`, r.spec.color, { life: 2.6, size: 88, y: 0.28 });
+      this.callouts.show(`${r.spec.name.toUpperCase()} WINS!`, labelColor(r.spec.color), { life: 2.6, size: 88, y: 0.28 });
       this.callouts.show(names.length ? `${names.join(" & ")} called it` : "Nobody backed that", "#F4F7FB", { life: 2.6, size: 36, y: 0.39 });
     } else if (r.place === 2 && r.finishTime - this.winnerAt < 0.3) {
       this.callouts.show("PHOTO FINISH!", "#3EE0FF", { life: 1.6, size: 48, y: 0.48 });
@@ -618,6 +618,8 @@ class ChaosDerby implements MinigameInstance {
       time: this.time,
       boost: r.boostT > 0,
       charred: r.charT > 0,
+      vy: b.velocity.y,
+      squash: r.landT / 0.22,
     };
   }
 
@@ -728,7 +730,7 @@ class ChaosDerby implements MinigameInstance {
       g.arc(mx, my, 11, 0, Math.PI * 2);
       g.fill();
       g.stroke();
-      g.fillStyle = "#0b1020";
+      g.fillStyle = labelColor(r.spec.color) === r.spec.color ? "#0b1020" : "#f8fafc";
       g.font = "700 15px Bebas Neue, Impact, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
@@ -753,7 +755,7 @@ class ChaosDerby implements MinigameInstance {
       g.beginPath();
       g.arc(26, y, 11, 0, Math.PI * 2);
       g.fill();
-      g.fillStyle = "#0b1020";
+      g.fillStyle = labelColor(r.spec.color) === r.spec.color ? "#0b1020" : "#f8fafc";
       g.font = "700 15px Bebas Neue, Impact, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
@@ -827,7 +829,7 @@ class ChaosDerby implements MinigameInstance {
       g.restore();
 
       g.textAlign = "center";
-      g.fillStyle = r.spec.color;
+      g.fillStyle = labelColor(r.spec.color);
       g.font = "700 34px Bebas Neue, Impact, sans-serif";
       g.fillText(r.spec.name.toUpperCase(), x + CARD_W / 2, CARD_Y + 262);
       let ox = x + CARD_W / 2 - (backersOf(r.lane, this.bets).length - 1) * 15;

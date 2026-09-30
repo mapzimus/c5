@@ -1,6 +1,6 @@
 import Matter from "matter-js";
 import type { Rng } from "../../core/rng";
-import { BUILD_SIZE, type Placeable, type RacerEntry, type RacerSpec, type RacerStats } from "./rules";
+import { type Placeable, type RacerEntry, type RacerSpec, type RacerStats } from "./rules";
 
 const { Engine, Bodies, Body, Composite, Events } = Matter;
 
@@ -72,6 +72,10 @@ export interface Runner extends Placeable {
   stuckT: number;
   /** Seconds a flattened racer can't be hit by a boulder again. */
   immuneT: number;
+  /** Counts down after a hard landing; drives the squash in the drawing. */
+  landT: number;
+  hopT: number;
+  wasGrounded: boolean;
   mood: Mood;
   decisions: Map<number, number>;
 }
@@ -269,7 +273,7 @@ export class DerbyWorld {
   // ---------------------------------------------------------------- racers
 
   private makeRunner(entry: RacerEntry, i: number): Runner {
-    const { w, h } = BUILD_SIZE[entry.spec.build];
+    const { w, h } = entry.spec;
     const body = Bodies.rectangle(0, -h / 2, w, h, {
       chamfer: { radius: Math.min(w, h) * 0.32 },
       density: 0.002,
@@ -315,6 +319,9 @@ export class DerbyWorld {
       falls: 0,
       stuckT: 0,
       immuneT: 0,
+      landT: 0,
+      hopT: 0,
+      wasGrounded: true,
       mood: "focused",
       decisions: new Map(),
     };
@@ -364,7 +371,7 @@ export class DerbyWorld {
   private control(r: Runner, dt: number): void {
     const b = r.body;
     r.modeT += dt;
-    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT"] as const) {
+    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT", "landT", "hopT"] as const) {
       r[key] = Math.max(0, r[key] - dt);
     }
     const mask = GROUND | laneBit(r.lane) | (r.immuneT > 0 ? 0 : BOULDER);
@@ -390,13 +397,15 @@ export class DerbyWorld {
       if (r.mudded) target *= 0.42;
       if (r.stopT > 0) target = 0;
       target = target * r.dir + this.gust;
-      if (r.grounded) {
+      // hoppers keep driving through their own little hops
+      const driving = r.grounded || (r.spec.gait === "hop" && r.hopT > 0.08);
+      if (driving) {
         const k = Math.min(1, r.stats.accel * dt);
         Body.setVelocity(b, { x: vx + (target - vx) * k, y: b.velocity.y });
       }
       const wobble = r.dizzyT > 0 ? Math.sin(this.time * 9 + r.lane) * 0.35 : 0;
       const lean = Math.max(-0.2, Math.min(0.2, target * 0.035)) + wobble;
-      const stiff = (r.grounded ? 0.11 : 0.02) * r.stats.balance;
+      const stiff = (driving ? 0.11 : 0.02) * r.stats.balance;
       Body.setAngularVelocity(b, b.angularVelocity * 0.82 - (ang - lean) * stiff);
       const pushing = Math.abs(target) > 1.5 && r.grounded && Math.abs(b.velocity.x) < 1.2;
       r.stuckT = pushing ? r.stuckT + dt : 0;
@@ -405,6 +414,10 @@ export class DerbyWorld {
         Body.setVelocity(b, { x: b.velocity.x + r.dir * 1.5, y: -8 });
       }
       this.maybeJump(r);
+      if (r.spec.gait === "hop" && r.grounded && r.hopT <= 0 && r.stopT <= 0 && Math.abs(target) > 1) {
+        r.hopT = this.rng.float(0.32, 0.42);
+        Body.setVelocity(b, { x: b.velocity.x, y: -3.2 });
+      }
       return;
     }
 
@@ -523,6 +536,8 @@ export class DerbyWorld {
 
   private afterStep(r: Runner, dt: number): void {
     const b = r.body;
+    if (r.grounded && !r.wasGrounded && r.mode !== "fallen") r.landT = 0.22;
+    r.wasGrounded = r.grounded;
     const prevX = r.x;
     r.x = b.position.x;
     if (r.grounded && (r.mode === "run" || r.mode === "finished")) r.stride += Math.abs(r.x - prevX);
