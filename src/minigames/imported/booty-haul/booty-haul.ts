@@ -13,14 +13,20 @@ import {
   shipPos,
   SHIP_TYPES,
   spawnFleet,
+  spawnConvoyPack,
+  maybeStartGoldRush,
+  spawnGoldRushShips,
   STREAK_THRESHOLD,
   type Ship,
+  type GoldRush,
 } from "./rules";
 
 const GAME_ID = "booty-haul";
 const GLOBE_CX = 480;
 const GLOBE_CY = 340;
-const GLOBE_R = 300;
+const GLOBE_R_DEFAULT = 300;
+const GLOBE_R_MIN = 200;
+const GLOBE_R_MAX = 500;
 const SPIN_SPEED = 8;
 
 export const bootyHaul: MinigameDefinition = {
@@ -28,11 +34,12 @@ export const bootyHaul: MinigameDefinition = {
   name: "Booty Haul",
   tagline: "Drop anchor where the ships sail. Score every hull in range.",
   description:
-    "Park your pirate on the globe near a chokepoint or a busy lane. " +
+    "Click anywhere on the globe to drop anchor. " +
     "Every vessel within 200 km scores: cargo 2, tanker 5, treasure 15, convoy 30. " +
-    "Build a streak for multiplied points. Two reparks to chase the traffic. 75 seconds.",
+    "Build a streak for multiplied points. Two reparks to chase the traffic. " +
+    "Watch for gold rush events on busy lanes. Scroll to zoom. 75 seconds.",
   durationMs: GAME_DURATION_S * 1000,
-  controls: "Click the globe to park · Two reparks · 1–9 keys for doors",
+  controls: "Click anywhere on the globe · Scroll to zoom · Two reparks · 1–9 keys for landmarks",
   create: (ctx) => new ParkYourPirateGame(ctx),
 };
 
@@ -78,12 +85,30 @@ class ParkYourPirateGame implements MinigameInstance {
   private done = false;
   private tickAccum = 0;
   private hoveredDoor: Door | null = null;
+  private globeRadius = GLOBE_R_DEFAULT;
+  private goldRush: GoldRush | null = null;
+  private goldRushSpawnCooldown = 0;
+  private convoyTimer = 0;
+  private readonly wheelHandler: (e: WheelEvent) => void;
 
   constructor(private readonly ctx: MinigameContext) {
     this.lanes = buildLanes();
     this.ships = spawnFleet(ctx.rng, this.lanes, FLEET_SIZE);
     this.juice = new Juice(() => ctx.rng.next());
     this.callouts = new Callouts();
+
+    // Spawn a few initial convoy packs
+    for (let i = 0; i < 3; i++) {
+      this.ships.push(...spawnConvoyPack(ctx.rng, this.lanes));
+    }
+
+    // Mouse wheel zoom
+    this.wheelHandler = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = -Math.sign(e.deltaY) * 20;
+      this.globeRadius = Math.max(GLOBE_R_MIN, Math.min(GLOBE_R_MAX, this.globeRadius + delta));
+    };
+    ctx.canvas.addEventListener("wheel", this.wheelHandler, { passive: false });
 
     for (let i = 0; i < 120; i++) {
       this.stars.push({
@@ -105,7 +130,7 @@ class ParkYourPirateGame implements MinigameInstance {
   }
 
   private globe(): Globe {
-    return makeGlobe(GLOBE_CX, GLOBE_CY, GLOBE_R, this.camLat, this.camLng);
+    return makeGlobe(GLOBE_CX, GLOBE_CY, this.globeRadius, this.camLat, this.camLng);
   }
 
   update(dt: number): void {
@@ -128,11 +153,32 @@ class ParkYourPirateGame implements MinigameInstance {
       this.camLng += (this.targetLng - this.camLng) * Math.min(1, dt * 3);
     }
 
+    // Convoy pack spawning every ~15 seconds
+    this.convoyTimer += gdt;
+    if (this.convoyTimer >= 15) {
+      this.convoyTimer -= 15;
+      this.ships.push(...spawnConvoyPack(this.ctx.rng, this.lanes));
+    }
+
     this.tickAccum += gdt;
     const TICK = 0.4;
     while (this.tickAccum >= TICK) {
       this.tickAccum -= TICK;
       this.scoreAllPlayers();
+
+      // Gold rush logic
+      this.goldRush = maybeStartGoldRush(this.ctx.rng, this.lanes, this.goldRush);
+      if (this.goldRush) {
+        this.goldRush.remaining -= TICK;
+        this.goldRushSpawnCooldown -= TICK;
+        if (this.goldRushSpawnCooldown <= 0) {
+          this.ships.push(...spawnGoldRushShips(this.ctx.rng, this.lanes, this.goldRush.laneIdx));
+          this.goldRushSpawnCooldown = 2;
+        }
+        if (this.goldRush.remaining <= 0) {
+          this.goldRush = null;
+        }
+      }
     }
 
     for (const [, state] of this.playerStates) {
@@ -300,22 +346,23 @@ class ParkYourPirateGame implements MinigameInstance {
   }
 
   private drawGlobe(g: CanvasRenderingContext2D, globe: Globe): void {
-    const atmo = g.createRadialGradient(GLOBE_CX, GLOBE_CY, GLOBE_R * 0.95, GLOBE_CX, GLOBE_CY, GLOBE_R * 1.15);
+    const R = this.globeRadius;
+    const atmo = g.createRadialGradient(GLOBE_CX, GLOBE_CY, R * 0.95, GLOBE_CX, GLOBE_CY, R * 1.15);
     atmo.addColorStop(0, "rgba(56,130,220,0.12)");
     atmo.addColorStop(1, "rgba(56,130,220,0)");
     g.fillStyle = atmo;
-    g.fillRect(GLOBE_CX - GLOBE_R * 1.2, GLOBE_CY - GLOBE_R * 1.2, GLOBE_R * 2.4, GLOBE_R * 2.4);
+    g.fillRect(GLOBE_CX - R * 1.2, GLOBE_CY - R * 1.2, R * 2.4, R * 2.4);
 
     g.save();
     g.beginPath();
-    g.arc(GLOBE_CX, GLOBE_CY, GLOBE_R, 0, Math.PI * 2);
+    g.arc(GLOBE_CX, GLOBE_CY, R, 0, Math.PI * 2);
     g.clip();
 
-    const ocean = g.createRadialGradient(GLOBE_CX - 60, GLOBE_CY - 80, 0, GLOBE_CX, GLOBE_CY, GLOBE_R);
+    const ocean = g.createRadialGradient(GLOBE_CX - 60, GLOBE_CY - 80, 0, GLOBE_CX, GLOBE_CY, R);
     ocean.addColorStop(0, "#0f2847");
     ocean.addColorStop(1, "#071428");
     g.fillStyle = ocean;
-    g.fillRect(GLOBE_CX - GLOBE_R, GLOBE_CY - GLOBE_R, GLOBE_R * 2, GLOBE_R * 2);
+    g.fillRect(GLOBE_CX - R, GLOBE_CY - R, R * 2, R * 2);
 
     this.drawGraticulesClipped(g, globe);
     this.drawLandClipped(g, globe);
@@ -328,7 +375,7 @@ class ParkYourPirateGame implements MinigameInstance {
     g.restore();
 
     g.beginPath();
-    g.arc(GLOBE_CX, GLOBE_CY, GLOBE_R, 0, Math.PI * 2);
+    g.arc(GLOBE_CX, GLOBE_CY, R, 0, Math.PI * 2);
     g.strokeStyle = "rgba(100,160,220,0.15)";
     g.lineWidth = 2;
     g.stroke();
@@ -382,10 +429,12 @@ class ParkYourPirateGame implements MinigameInstance {
       for (let i = 0; i < pts.length; i++) {
         const curr = pts[i]!;
         const prev = pts[(i + pts.length - 1) % pts.length]!;
-        if (curr.z > -0.05) {
-          if (!started || prev.z <= -0.05) {
-            if (prev.z <= -0.05 && curr.z > -0.05) {
-              const t = (prev.z + 0.05) / (prev.z - curr.z + 0.1);
+        if (curr.z >= 0) {
+          if (!started || prev.z < 0) {
+            if (prev.z < 0 && curr.z >= 0) {
+              // Interpolate from behind-globe to visible at the z=0 horizon
+              const dz = curr.z - prev.z;
+              const t = dz > 0 ? -prev.z / dz : 0;
               g.moveTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
               g.lineTo(curr.x, curr.y);
             } else {
@@ -395,8 +444,10 @@ class ParkYourPirateGame implements MinigameInstance {
           } else {
             g.lineTo(curr.x, curr.y);
           }
-        } else if (started && prev.z > -0.05) {
-          const t = (prev.z + 0.05) / (prev.z - curr.z + 0.1);
+        } else if (started && prev.z >= 0) {
+          // Interpolate from visible to behind-globe at the z=0 horizon
+          const dz = prev.z - curr.z;
+          const t = dz > 0 ? prev.z / dz : 0;
           g.lineTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
         }
       }
@@ -627,21 +678,45 @@ class ParkYourPirateGame implements MinigameInstance {
     if (human) {
       const hState = this.playerStates.get(human.id)!;
       if (!hState.parked) {
+        const promptY = Math.min(GLOBE_CY + this.globeRadius + 16, GAME_HEIGHT - 50);
         g.fillStyle = "rgba(3,8,16,0.6)";
         g.beginPath();
-        g.roundRect(GLOBE_CX - 160, GLOBE_CY + GLOBE_R + 16, 320, 40, 8);
+        g.roundRect(GLOBE_CX - 170, promptY, 340, 40, 8);
         g.fill();
         g.font = "600 14px Outfit, sans-serif";
         g.textAlign = "center";
         g.textBaseline = "middle";
         g.fillStyle = "#94a3b8";
-        g.fillText("Click the globe to drop anchor", GLOBE_CX, GLOBE_CY + GLOBE_R + 36);
+        g.fillText("Click anywhere on the globe to drop anchor", GLOBE_CX, promptY + 20);
       } else if (hState.reparks > 0) {
         g.font = "400 11px Outfit, sans-serif";
         g.textAlign = "center";
         g.fillStyle = "rgba(148,163,184,0.5)";
         g.fillText(`${hState.reparks} repark${hState.reparks > 1 ? "s" : ""} left`, GLOBE_CX, GAME_HEIGHT - 8);
       }
+    }
+
+    // Zoom level indicator
+    if (this.globeRadius !== GLOBE_R_DEFAULT) {
+      const zoomPct = Math.round((this.globeRadius / GLOBE_R_DEFAULT) * 100);
+      g.font = "600 11px Outfit, sans-serif";
+      g.textAlign = "left";
+      g.textBaseline = "top";
+      g.fillStyle = "rgba(148,163,184,0.6)";
+      g.fillText(`Zoom ${zoomPct}%`, 14, 14);
+    }
+
+    // Gold rush indicator
+    if (this.goldRush) {
+      const rushY = 56;
+      const pulse = 0.7 + Math.sin(this.elapsed * 6) * 0.3;
+      g.globalAlpha = pulse;
+      g.fillStyle = "#fbbf24";
+      g.font = "700 13px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "top";
+      g.fillText(`GOLD RUSH! Lane ${this.goldRush.laneIdx + 1} (${Math.ceil(this.goldRush.remaining)}s)`, GLOBE_CX, rushY);
+      g.globalAlpha = 1;
     }
   }
 
@@ -668,5 +743,7 @@ class ParkYourPirateGame implements MinigameInstance {
     }));
   }
 
-  destroy(): void {}
+  destroy(): void {
+    this.ctx.canvas.removeEventListener("wheel", this.wheelHandler);
+  }
 }

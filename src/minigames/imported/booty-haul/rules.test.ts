@@ -10,20 +10,25 @@ import {
   SHIP_TYPES,
   spawnFleet,
   spawnShip,
+  spawnConvoyPack,
+  spawnGoldRushShips,
 } from "./rules";
 
 const lanes = buildLanes();
 const rng = () => new Rng(42);
 
 describe("Park Your Pirate rules", () => {
-  it("spawns a ship on a valid lane", () => {
+  it("spawns a ship on a valid lane with speedMult", () => {
     const ship = spawnShip(rng(), lanes);
     expect(ship.laneIdx).toBeGreaterThanOrEqual(0);
     expect(ship.laneIdx).toBeLessThan(lanes.length);
     expect(ship.alive).toBe(true);
+    expect(ship.speedMult).toBeGreaterThanOrEqual(0.7);
+    expect(ship.speedMult).toBeLessThanOrEqual(1.3);
   });
 
-  it("spawns a full fleet", () => {
+  it("spawns a full fleet of 300", () => {
+    expect(FLEET_SIZE).toBe(300);
     const fleet = spawnFleet(rng(), lanes, FLEET_SIZE);
     expect(fleet).toHaveLength(FLEET_SIZE);
     for (const ship of fleet) {
@@ -37,7 +42,7 @@ describe("Park Your Pirate rules", () => {
     expect(sum).toBeCloseTo(1, 5);
   });
 
-  it("advances ships along lanes", () => {
+  it("advances ships along lanes using speedMult", () => {
     const fleet = spawnFleet(rng(), lanes, 10);
     const before = fleet.map((s) => s.km);
     advanceShips(fleet, lanes, 1, rng());
@@ -61,7 +66,7 @@ describe("Park Your Pirate rules", () => {
     expect(score).toBeGreaterThanOrEqual(0);
   });
 
-  it("bot picks a door to park at", () => {
+  it("bot picks a spot to park at (doors or lane points)", () => {
     const fleet = spawnFleet(rng(), lanes, FLEET_SIZE);
     const ll = botPickSpot(rng(), fleet, lanes, DOORS, []);
     expect(ll[0]).toBeGreaterThan(-90);
@@ -75,5 +80,29 @@ describe("Park Your Pirate rules", () => {
     ship.dir = 1;
     advanceShips([ship], lanes, 100, r);
     expect(ship.alive).toBe(true);
+  });
+
+  it("spawns convoy packs of 3-5 ships on same lane", () => {
+    const pack = spawnConvoyPack(rng(), lanes);
+    expect(pack.length).toBeGreaterThanOrEqual(3);
+    expect(pack.length).toBeLessThanOrEqual(5);
+    const laneIdx = pack[0]!.laneIdx;
+    for (const ship of pack) {
+      expect(ship.laneIdx).toBe(laneIdx);
+      expect(ship.speedMult).toBeGreaterThanOrEqual(0.7);
+      expect(ship.speedMult).toBeLessThanOrEqual(1.3);
+    }
+  });
+
+  it("gold rush spawns treasure/convoy ships on target lane", () => {
+    const r = rng();
+    const laneIdx = 0;
+    const ships = spawnGoldRushShips(r, lanes, laneIdx);
+    expect(ships.length).toBeGreaterThanOrEqual(2);
+    expect(ships.length).toBeLessThanOrEqual(4);
+    for (const ship of ships) {
+      expect(ship.laneIdx).toBe(laneIdx);
+      expect(["treasure", "convoy"]).toContain(ship.type.key);
+    }
   });
 });
