@@ -70,6 +70,7 @@ export interface Runner extends Placeable {
   finishTime: number;
   falls: number;
   stuckT: number;
+  stuckX: number;
   /** Seconds a flattened racer can't be hit by a boulder again. */
   immuneT: number;
   /** Counts down after a hard landing; drives the squash in the drawing. */
@@ -124,9 +125,33 @@ export interface DerbyEvent {
   callout?: string;
   shake?: number;
   sound: "hit" | "tick" | "boost" | "miss" | "big" | "none";
+  /** For bad luck: the victim's running position when it struck (0 = leader). */
+  position?: number;
+  /** For bad luck: 0 mild, 1 medium, 2 severe. */
+  severity?: Severity;
 }
 
-const BAD_EVENTS = ["trip", "sneeze", "nap", "wrongway", "distracted", "cramp", "lightning"] as const;
+type BadEvent = "trip" | "sneeze" | "nap" | "wrongway" | "distracted" | "cramp" | "lightning";
+export type Severity = 0 | 1 | 2;
+/** Bad luck by how much it hurts: a wave to the crowd, a faceplant, or a lightning strike. */
+const BAD_BY_SEVERITY: readonly (readonly BadEvent[])[] = [
+  ["distracted", "cramp"],
+  ["trip", "wrongway", "sneeze"],
+  ["nap", "lightning"],
+];
+
+/**
+ * Odds of [mild, medium, severe] bad luck for a runner in `position` (0 = leader) of a
+ * `field`-runner race. The higher up the order, the likelier it's severe; a leader who's
+ * pulling away (`leadGap` px clear of second) gets a little extra on top.
+ */
+export function severityOdds(position: number, field: number, leadGap = 0): [number, number, number] {
+  const standing = field <= 1 ? 1 : 1 - position / (field - 1);
+  const runaway = position === 0 ? Math.min(0.2, Math.max(0, leadGap) / 1500) : 0;
+  const severe = 0.05 + 0.55 * standing * standing + runaway;
+  const mild = Math.min(1 - severe, 0.1 + 0.5 * (1 - standing));
+  return [mild, Math.max(0, 1 - severe - mild), severe];
+}
 const GOOD_EVENTS = ["boost", "secondwind"] as const;
 const FIELD_EVENTS = ["boulder", "quake", "gust", "crates"] as const;
 
@@ -238,8 +263,8 @@ export class DerbyWorld {
       for (let s = 0; s < stack; s += 1) {
         const size = this.rng.float(26, 36);
         const body = Bodies.rectangle(x + this.rng.float(-10, 10), -size / 2 - s * size - dropFrom, size, size, {
-          density: 0.0012,
-          friction: 0.7,
+          density: 0.0009,
+          friction: 0.15,
           label: "crate",
           collisionFilter: { category: laneBit(lane), mask: GROUND | laneBit(lane) | BOULDER },
         });
@@ -318,6 +343,7 @@ export class DerbyWorld {
       finishTime: 0,
       falls: 0,
       stuckT: 0,
+      stuckX: 0,
       immuneT: 0,
       landT: 0,
       hopT: 0,
@@ -351,7 +377,9 @@ export class DerbyWorld {
     this.nextEvent -= dt;
     if (this.nextEvent <= 0 && this.opts.events !== false) {
       this.randomEvent();
-      this.nextEvent = this.rng.float(1.0, 2.3);
+      // fewer runners left, fewer events: stragglers shouldn't get all the chaos to themselves
+      const left = Math.max(1, this.runners.filter((r) => !r.finished).length);
+      this.nextEvent = this.rng.float(1.0, 2.3) * Math.sqrt(this.runners.length / left);
     }
     this.gustT = Math.max(0, this.gustT - dt);
     if (this.gustT <= 0) this.gust = 0;
@@ -364,6 +392,7 @@ export class DerbyWorld {
     this.handleHits();
 
     for (const r of this.runners) this.afterStep(r, dt);
+    this.layDownHurdles();
     this.updateBoulders(dt);
     return [...this.out];
   }
@@ -391,7 +420,7 @@ export class DerbyWorld {
         this.fall(r, 0, 0, 0, "OOF");
         return;
       }
-      let target = (r.stats.topSpeed / 60) * (0.72 + 0.28 * r.stamina) * r.pace;
+      let target = (r.stats.topSpeed / 60) * r.spec.pace * (0.72 + 0.28 * r.stamina) * r.pace;
       if (r.boostT > 0) target *= 1.7;
       if (r.slowT > 0) target *= 0.5;
       if (r.mudded) target *= 0.42;
@@ -407,11 +436,20 @@ export class DerbyWorld {
       const lean = Math.max(-0.2, Math.min(0.2, target * 0.035)) + wobble;
       const stiff = (driving ? 0.11 : 0.02) * r.stats.balance;
       Body.setAngularVelocity(b, b.angularVelocity * 0.82 - (ang - lean) * stiff);
-      const pushing = Math.abs(target) > 1.5 && r.grounded && Math.abs(b.velocity.x) < 1.2;
-      r.stuckT = pushing ? r.stuckT + dt : 0;
-      if (r.stuckT > 0.7) {
+      // Every second, check they actually got somewhere; if not, big leap over whatever's in the way.
+      if (Math.abs(target) > 1.5 && r.stopT <= 0) {
+        r.stuckT += dt;
+        if (r.stuckT >= 0.9) {
+          if ((b.position.x - r.stuckX) * r.dir < 25) {
+            Body.setVelocity(b, { x: b.velocity.x + r.dir * 2, y: -9.5 });
+            this.emit({ kind: "unstick", lane: r.lane, sound: "none" });
+          }
+          r.stuckT = 0;
+          r.stuckX = b.position.x;
+        }
+      } else {
         r.stuckT = 0;
-        Body.setVelocity(b, { x: b.velocity.x + r.dir * 1.5, y: -8 });
+        r.stuckX = b.position.x;
       }
       this.maybeJump(r);
       if (r.spec.gait === "hop" && r.grounded && r.hopT <= 0 && r.stopT <= 0 && Math.abs(target) > 1) {
@@ -550,7 +588,8 @@ export class DerbyWorld {
     }
 
     r.mudded = false;
-    const feetDown = b.bounds.max.y > surface - 10;
+    // generous so hoppers bouncing along still land in the mud and on the bananas
+    const feetDown = b.bounds.max.y > surface - 24;
     for (const p of this.patches) {
       if (p.lane !== r.lane || p.used) continue;
       if (Math.abs(b.position.x - p.x) > p.w / 2 + r.w / 2 - 8) continue;
@@ -622,7 +661,8 @@ export class DerbyWorld {
   // ---------------------------------------------------------------- random events
 
   private randomEvent(): void {
-    const running = this.order().filter((r) => !r.finished);
+    const order = this.order();
+    const running = order.filter((r) => !r.finished);
     if (running.length === 0) return;
     const roll = this.rng.next();
     if (roll < 0.16) {
@@ -632,17 +672,30 @@ export class DerbyWorld {
     }
     const good = roll > 0.8;
     // Bad luck finds the leaders, good luck finds the stragglers: upsets are the point.
-    const weights = running.map((_, i) => {
-      const fromFront = i / Math.max(1, running.length - 1);
+    // Positions count finished runners too, so a lone straggler is still last, not "leading".
+    const weights = running.map((r) => {
+      const fromFront = order.indexOf(r) / Math.max(1, order.length - 1);
       return good ? 0.6 + fromFront * 2.4 : 3 - fromFront * 2.2;
     });
     const target = weightedPick(this.rng, running, weights);
     if (target.mode !== "run") return;
-    if (good) this.goodEvent(this.rng.pick(GOOD_EVENTS), target, running);
-    else this.badEvent(this.rng.pick(BAD_EVENTS), target);
+    if (good) {
+      this.goodEvent(this.rng.pick(GOOD_EVENTS), target, running);
+      return;
+    }
+    const position = order.indexOf(target);
+    const leadGap = position === 0 && running.length > 1 ? running[0]!.x - running[1]!.x : 0;
+    const odds = severityOdds(position, order.length, leadGap);
+    const severity = weightedPick(this.rng, [0, 1, 2] as const, odds);
+    const before = this.out.length;
+    this.badEvent(this.rng.pick(BAD_BY_SEVERITY[severity]!), target);
+    for (const event of this.out.slice(before)) {
+      event.position = position;
+      event.severity = severity;
+    }
   }
 
-  private badEvent(kind: (typeof BAD_EVENTS)[number], r: Runner): void {
+  private badEvent(kind: BadEvent, r: Runner): void {
     const b = r.body;
     switch (kind) {
       case "trip":
@@ -731,6 +784,17 @@ export class DerbyWorld {
       case "crates":
         this.crates(leadX + this.rng.float(300, 600), this.rng.int(2, 4), 520);
         this.emit({ kind, lane: null, callout: "INCOMING!", sound: "big" });
+    }
+  }
+
+  /**
+   * A knocked-over hurdle just lies in the lane as scenery. Left solid, runners would
+   * shove it along the ground, and bigger bodies lost far more time to that than small ones.
+   */
+  private layDownHurdles(): void {
+    for (const item of this.items) {
+      if (item.kind !== "hurdle" || item.body.collisionFilter.mask === GROUND) continue;
+      if (Math.abs(wrap(item.body.angle)) > 0.9) item.body.collisionFilter.mask = GROUND;
     }
   }
 
