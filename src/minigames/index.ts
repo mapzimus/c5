@@ -8,9 +8,10 @@ import { eyeOfTheStorm } from "./eye-of-the-storm/eye-of-the-storm";
 import { bootyHaul } from "./imported/booty-haul/booty-haul";
 import { chaosDerby } from "./chaos-derby/chaos-derby";
 import { bugWars } from "./imported/bug-wars/bug-wars";
+import knockabout from "./imported/knockabout/index";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars];
+export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, knockabout];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();
