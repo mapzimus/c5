@@ -1,8 +1,9 @@
 import { Rng } from "../../../core/rng";
 import type { MinigameContext, MinigameDefinition, MinigameInstance } from "../../../core/types";
 import { BOARD, COLORS, DropWorld, RADII } from "./physics";
-import { drawOrb, label } from "./draw";
-import { LEVELS, levelFor, levelIndex, shotClock } from "./levels";
+import { UI, display, drawOrb, label } from "./draw";
+import { fillArena } from "../../../core/draw";
+import { LEVELS, levelIndex, shotClock } from "./levels";
 import { botAim } from "./rules";
 import { Callouts, Juice } from "../../../fx/juice";
 import { ModePicker } from "../../mode-picker";
@@ -21,9 +22,9 @@ export const luckyDrop: MinigameDefinition = {
   ], ctx.players.length < 2 || ctx.players.every(p => p.kind === "bot")),
 };
 
-const LIME = "#c9f65b", MUTED = "#9ba395";
+const LIME = UI.lime;
 const BX = 400, BY = 48;
-const SHAKE = { x: 930, y: 338, w: 292, h: 54 };
+const SHAKE = { x: 950, y: 290, w: 220, h: 68 };
 interface Floater { x: number; y: number; text: string; color: string; life: number }
 interface Ring { x: number; y: number; radius: number; color: string; life: number }
 
@@ -217,7 +218,7 @@ export class LuckyDropGame implements MinigameInstance {
     if (!this.bestAnnounced && this.runBest > 0 && this.world.score > this.runBest) {
       this.bestAnnounced = true;
       this.callouts.show("NEW BEST!", LIME, { size: 72, y: 0.2, life: 1.6 });
-      this.juice.burst(48 - BX + 110, 400 - BY, [LIME, "#ffe071", "#ffffff"], { count: 36, speed: 360, size: 6, life: 1 });
+      this.juice.burst(240, 120, [LIME, "#ffe071", "#ffffff"], { count: 36, speed: 360, size: 6, life: 1 });
       this.ctx.sfx.win();
     }
     this.heartbeatStep(dt);
@@ -277,63 +278,54 @@ export class LuckyDropGame implements MinigameInstance {
 
   render(g: CanvasRenderingContext2D): void {
     g.save();
-    g.fillStyle = "#141714";
-    g.fillRect(0, 0, this.ctx.width, this.ctx.height);
-    label(g, "LUCKY DROP", 48, 58, 22, LIME);
-    label(g, "Make", 48, 143, 58);
-    label(g, "your own", 48, 203, 58);
-    label(g, "luck.", 48, 263, 58, LIME);
+    fillArena(g, this.ctx.width, this.ctx.height);
     const player = this.ctx.players[Math.min(this.turn, this.ctx.players.length - 1)];
-    label(g, `${player.name}${player.kind === "bot" ? " · BOT" : " · YOUR RUN"}`, 48, 316, 22, player.color);
-    label(g, "SCORE", 48, 355, 14, MUTED);
-    label(g, this.world.score.toLocaleString(), 48, 416, 60);
-    label(g, `PERSONAL BEST  ${this.best.toLocaleString()}`, 48, 446, 14, LIME);
-    if (this.runBest > 0) {
-      // Progress toward the best this run has to beat; full and lit once beaten.
-      const beat = this.world.score > this.runBest;
-      const t = Math.min(1, this.world.score / this.runBest);
-      g.fillStyle = "#313929"; g.fillRect(48, 456, 250, 4);
-      g.fillStyle = beat ? LIME : "#9ba39588"; g.fillRect(48, 456, 250 * t, 4);
-      label(g, beat ? "BEST BEATEN" : `${Math.round(t * 100)}% TO BEST`, 306, 462, 11, beat ? LIME : MUTED);
-    }
-    label(g, "1   Aim, then drop an orb.", 48, 508, 18, MUTED);
-    label(g, "2   Match pairs to multiply.", 48, 539, 18, MUTED);
-    label(g, "3   Stay below the dotted line.", 48, 570, 18, MUTED);
-    label(g, `LEVEL ${levelIndex(this.world.score) + 1} / ${LEVELS.length}  ·  ${levelFor(this.world.score).shot}s SHOT CLOCK`, 48, 655, 16, LIME);
 
+    // Left: who's playing, the score, the best to beat.
+    display(g, player.name.toUpperCase(), 60, 110, 40, player.color);
+    display(g, this.world.score.toLocaleString(), 60, 200, 92);
+    const beat = this.runBest > 0 && this.world.score > this.runBest;
+    label(g, beat ? "NEW BEST" : `BEST ${this.best.toLocaleString()}`, 62, 236, 18, beat ? UI.lime : UI.muted);
+    if (this.runBest > 0 && !beat) {
+      g.fillStyle = UI.line; g.fillRect(62, 250, 260, 4);
+      g.fillStyle = UI.muted; g.fillRect(62, 250, 260 * Math.min(1, this.world.score / this.runBest), 4);
+    }
+    label(g, `LEVEL ${levelIndex(this.world.score) + 1}`, 62, 300, 18, UI.muted);
+    if (this.ctx.players.length > 1) {
+      this.scores.forEach((score, index) => {
+        const p = this.ctx.players[index];
+        const y = 560 + index * 34;
+        label(g, p.name, 62, y, 20, index === this.turn ? p.color : UI.dim);
+        label(g, score.score.toLocaleString(), 330, y, 20, index === this.turn ? UI.text : UI.dim, "right");
+      });
+    }
+
+    // Board.
     const ox = this.juice.offsetX, oy = this.juice.offsetY;
     g.translate(BX + ox, BY + oy);
-    g.fillStyle = "#20271b";
+    g.fillStyle = UI.panel;
     g.beginPath();
     g.roundRect(0, 0, BOARD.width, BOARD.height, 18);
     g.fill();
-    g.strokeStyle = "#566044";
-    g.lineWidth = 1;
+    g.strokeStyle = UI.line;
+    g.lineWidth = 2;
     g.stroke();
     g.save();
     g.clip();
-    g.fillStyle = "#d1ed9320";
-    for (let x = 24; x < 480; x += 24) for (let y = 20; y < 630; y += 24) {
-      g.beginPath(); g.arc(x, y, 0.8, 0, Math.PI * 2); g.fill();
-    }
     const danger = this.world.danger > 0.1 && !this.world.over;
     if (danger) {
-      // Red vignette that thumps with the heartbeat and deepens toward the limit.
       const a = Math.min(1, this.world.danger / 3) * (0.35 + 0.65 * this.pulse);
       const glow = g.createRadialGradient(240, 315, 180, 240, 315, 420);
-      glow.addColorStop(0, "rgba(255,60,60,0)");
-      glow.addColorStop(1, `rgba(255,60,60,${(0.45 * a).toFixed(3)})`);
+      glow.addColorStop(0, "rgba(255,61,122,0)");
+      glow.addColorStop(1, `rgba(255,61,122,${(0.45 * a).toFixed(3)})`);
       g.fillStyle = glow; g.fillRect(0, 0, BOARD.width, BOARD.height);
-      g.fillStyle = `rgba(255,90,90,${(0.18 * a).toFixed(3)})`;
-      g.fillRect(0, 0, BOARD.width, BOARD.danger);
     }
-    g.strokeStyle = danger ? (this.pulse > 0.5 ? "#ff7a7a" : "#ffb478") : "#a2b88b55";
-    g.lineWidth = danger ? 1 + this.pulse * 3 : 1;
-    g.setLineDash([4, 7]);
-    g.beginPath(); g.moveTo(18, BOARD.danger); g.lineTo(462, BOARD.danger); g.stroke();
+    g.strokeStyle = danger ? UI.hot : UI.line;
+    g.lineWidth = danger ? 1 + this.pulse * 3 : 2;
+    g.setLineDash([6, 8]);
+    g.beginPath(); g.moveTo(14, BOARD.danger); g.lineTo(466, BOARD.danger); g.stroke();
     g.setLineDash([]);
     g.lineWidth = 1;
-    label(g, "KEEP IT BELOW", 20, 93, 12, MUTED);
     if (!this.world.over) {
       const x = this.world.clampAim(this.aim);
       let bottom = BOARD.floor - RADII[this.world.next];
@@ -347,13 +339,10 @@ export class LuckyDropGame implements MinigameInstance {
       g.setLineDash([]);
       drawOrb(g, x, 45, this.world.next, this.world.time - this.world.lastDrop < 0.48 ? 0.35 : 0.85);
       if (player.kind === "human") {
-        // Shot clock bar across the top of the board; red for the last 1.5s.
-        const total = shotClock(this.world.score);
-        const t = Math.max(0, Math.min(1, this.shotLeft / total));
-        g.fillStyle = "#313929";
-        g.fillRect(18, 8, 444, 6);
-        g.fillStyle = this.shotLeft < 1.5 ? "#ff7a7a" : LIME;
-        g.fillRect(18, 8, 444 * t, 6);
+        // Shot clock across the top of the board; red for the last 1.5s.
+        const t = Math.max(0, Math.min(1, this.shotLeft / shotClock(this.world.score)));
+        g.fillStyle = UI.line; g.fillRect(14, 8, 452, 6);
+        g.fillStyle = this.shotLeft < 1.5 ? UI.hot : player.color; g.fillRect(14, 8, 452 * t, 6);
       }
     }
     for (const ball of this.world.balls) drawOrb(g, ball.x, ball.y, ball.tier);
@@ -366,60 +355,44 @@ export class LuckyDropGame implements MinigameInstance {
     g.globalAlpha = 1;
     for (const item of this.floaters) {
       g.globalAlpha = Math.min(1, item.life * 2);
-      label(g, item.text, item.x, item.y, 24, item.color, "center");
+      display(g, item.text, item.x, item.y, 30, item.color, "center");
     }
     g.globalAlpha = 1;
     this.juice.drawParticles(g);
-    if (!this.world.drops) label(g, player.kind === "bot" ? "WATCH THE LUCK UNFOLD" : "DRAG TO AIM · RELEASE TO DROP", 240, 310, 17, MUTED, "center");
-    if (this.world.danger > 0.2 && !this.world.over) label(g, `MAKE ROOM · ${Math.max(1, Math.ceil(3 - this.world.danger))}s`, 240, 135, 20, "#ffb478", "center");
+    if (!this.world.drops && player.kind === "human") label(g, "Drag, then let go", 240, 320, 20, UI.muted, "center");
     if (this.world.over) {
-      g.fillStyle = "#172010ee"; g.fillRect(0, 0, 480, 630);
-      label(g, "GOOD RUN!", 240, 240, 44, LIME, "center");
-      label(g, `${this.world.score.toLocaleString()} points`, 240, 296, 30, "#f0f2e9", "center");
-      label(g, `${this.world.merges} merges · best chain ×${this.world.maxChain}`, 240, 340, 19, MUTED, "center");
-      label(g, this.turn + 1 < this.ctx.players.length ? `${this.ctx.players[this.turn + 1].name} is up next` : "Here come the results…", 240, 408, 21, LIME, "center");
+      g.fillStyle = "rgba(7,11,20,0.85)"; g.fillRect(0, 0, 480, 630);
+      display(g, this.world.score.toLocaleString(), 240, 300, 80, UI.text, "center");
+      const next = this.turn + 1 < this.ctx.players.length ? this.ctx.players[this.turn + 1] : null;
+      label(g, next ? `${next.name} is next` : "Results…", 240, 350, 22, next?.color ?? UI.muted, "center");
     }
     g.restore();
     g.translate(-BX - ox, -BY - oy);
     if (this.flash > 0) {
-      g.fillStyle = `rgba(201,246,91,${(0.35 * this.flash).toFixed(3)})`;
+      g.fillStyle = `rgba(184,255,61,${(0.25 * this.flash).toFixed(3)})`;
       g.fillRect(0, 0, this.ctx.width, this.ctx.height);
     }
-    label(g, `DROP ${this.world.drops}`, BX, 30, 14, MUTED);
-    if (this.world.time - this.world.lastMerge < 1.5) {
-      // Grows with the multiplier and pops on each new link.
+    if (this.world.time - this.world.lastMerge < 1.5 && this.world.chain > 1) {
       const chain = this.world.chain;
-      const size = Math.round((14 + chain * 3) * (1 + this.chainPop * 0.35));
-      label(g, `CHAIN ×${chain}`, BX + 480, 34, size, chain >= 5 ? COLORS[8] : chain >= 3 ? COLORS[5] : LIME, "right");
+      const size = Math.round((26 + chain * 4) * (1 + this.chainPop * 0.35));
+      display(g, `×${chain}`, SHAKE.x + SHAKE.w / 2, 560, size * 1.6, chain >= 5 ? COLORS[8] : chain >= 3 ? UI.warn : UI.lime, "center");
     }
-    label(g, "← → / A D  Aim    SPACE  Drop    S  Shake", 640, 704, 15, MUTED, "center");
 
-    label(g, "ON DECK", 930, 65, 16, MUTED);
-    drawOrb(g, 989, 123, this.world.next, 1, 34);
-    label(g, "THEN", 1060, 111, 14, MUTED);
-    drawOrb(g, 1146, 121, this.world.queued, 1, 23);
-    label(g, ["A small beginning.", "A lucky little head start.", "Ooh. A rare one.", "Big one incoming.", "A monster. Make room."][this.world.next] ?? "", 930, 190, 18, MUTED);
-    label(g, "Shake things up", 930, 258, 23);
-    label(g, "Six merges earn a board shake.", 930, 289, 17, MUTED);
-    g.fillStyle = "#313929"; g.fillRect(930, 312, 292, 5);
-    g.fillStyle = LIME; g.fillRect(930, 312, 292 * this.world.charge / 6, 5);
+    // Right: next orbs and the shake button. Nothing else.
+    label(g, "NEXT", 960, 110, 16, UI.muted);
+    drawOrb(g, 1010, 165, this.world.next, 1, 40);
+    drawOrb(g, 1100, 175, this.world.queued, 0.6, 26);
     const ready = this.world.charge >= 6 && !this.world.over;
-    g.fillStyle = ready ? LIME : "#29331f";
-    g.beginPath(); g.roundRect(SHAKE.x, SHAKE.y, SHAKE.w, SHAKE.h, 9); g.fill();
-    label(g, ready ? "SHAKE THE BOARD · S" : `CHARGING  ${this.world.charge} / 6`, 1076, 373, 19, ready ? "#1c2812" : MUTED, "center");
-    label(g, "THE LUCK OF THE DROP", 930, 438, 16, MUTED);
-    levelFor(this.world.score).odds.forEach((odds, tier) => {
-      if (!odds) return;
-      drawOrb(g, 944 + tier * 60, 478, tier, 1, 15);
-      label(g, `${odds}%`, 944 + tier * 60, 510, 14, "#f0f2e9", "center");
-    });
-    label(g, "Make 128 for +1,000.", 930, 541, 22, COLORS[7]);
-    label(g, "Each size up doubles it. 4096 = +32,000.", 930, 570, 17, MUTED);
-    if (this.ctx.players.length > 1) {
-      label(g, `RUN ${Math.min(this.turn + 1, this.ctx.players.length)} / ${this.ctx.players.length}`, 930, 615, 14, MUTED);
-      this.scores.forEach((score, index) => {
-        label(g, `${this.ctx.players[index].name}: ${score.score}`, 930 + (index % 2) * 150, 644 + Math.floor(index / 2) * 25, 16, this.ctx.players[index].color);
-      });
+    g.fillStyle = ready ? player.color : UI.panel;
+    g.strokeStyle = ready ? player.color : UI.line;
+    g.lineWidth = 2;
+    g.beginPath(); g.roundRect(SHAKE.x, SHAKE.y, SHAKE.w, SHAKE.h, 16); g.fill(); g.stroke();
+    display(g, "SHAKE", SHAKE.x + SHAKE.w / 2, SHAKE.y + 46, 34, ready ? "#070b14" : UI.dim, "center");
+    for (let i = 0; i < 6; i++) {
+      g.beginPath();
+      g.arc(SHAKE.x + SHAKE.w / 2 - 50 + i * 20, SHAKE.y + SHAKE.h + 22, 5, 0, Math.PI * 2);
+      g.fillStyle = i < this.world.charge ? player.color : UI.line;
+      g.fill();
     }
     this.callouts.draw(g, this.ctx.width, this.ctx.height);
     g.restore();

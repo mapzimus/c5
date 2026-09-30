@@ -1,7 +1,29 @@
 import { COLORS, RADII } from "./physics";
 
+/** C5's own palette (matches the rest of the suite). */
+export const UI = {
+  text: "#F4F7FB",
+  muted: "#94a3b8",
+  dim: "#64748b",
+  panel: "rgba(7,11,20,0.55)",
+  line: "rgba(244,247,251,0.12)",
+  lime: "#B8FF3D",
+  hot: "#FF3D7A",
+  warn: "#FFB020",
+} as const;
+
+/** Big numbers and headings in the suite's display face. */
+export function display(g: CanvasRenderingContext2D, text: string, x: number, y: number, size: number,
+  color: string = UI.text, align: CanvasTextAlign = "left"): void {
+  g.fillStyle = color;
+  g.font = `700 ${size}px Bebas Neue, Impact, sans-serif`;
+  g.textAlign = align;
+  g.textBaseline = "alphabetic";
+  g.fillText(text, x, y);
+}
+
 export function label(g: CanvasRenderingContext2D, text: string, x: number, y: number, size: number,
-  color = "#f0f2e9", align: CanvasTextAlign = "left"): void {
+  color: string = UI.text, align: CanvasTextAlign = "left"): void {
   g.fillStyle = color;
   g.font = `600 ${size}px Outfit, sans-serif`;
   g.textAlign = align;
