@@ -62,7 +62,7 @@ describe("Lucky Drop Versus", () => {
     const scores = game.getScores();
     expect(scores.map((s) => s.playerId)).toEqual(["p0", "p1", "p2"]);
     expect(scores.every((s) => s.score > 0)).toBe(true);
-  });
+  }, 30_000); // simulates whole 3-bot game; ~5s, too close to vitest's default limit
 
   it("cleans up its listeners", () => {
     const { game, listeners } = setup(["human", "bot"]);

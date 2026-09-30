@@ -3,11 +3,12 @@ import { Rng } from "../../../core/rng";
 import type { MinigameContext, MinigameInstance, Player } from "../../../core/types";
 import { Callouts, Juice } from "../../../fx/juice";
 import { levelFor, levelIndex, shotClock } from "./levels";
-import { drawOrb, label } from "./draw";
+import { UI, display, drawOrb, label } from "./draw";
+import { fillArena } from "../../../core/draw";
 import { BOARD, COLORS, DropWorld, RADII } from "./physics";
 import { botAim } from "./rules";
 
-const LIME = "#c9f65b", MUTED = "#9ba395";
+const LIME = UI.lime, MUTED = UI.muted;
 const BY = 78;
 const BOARD_X = [40, 760] as const;
 const HEADER_H = 64;
@@ -280,8 +281,7 @@ export class LuckyDropVersus implements MinigameInstance {
 
   render(g: CanvasRenderingContext2D): void {
     g.save();
-    g.fillStyle = "#141714";
-    g.fillRect(0, 0, this.ctx.width, this.ctx.height);
+    fillArena(g, this.ctx.width, this.ctx.height);
     g.translate(this.juice.offsetX, this.juice.offsetY);
     for (const pane of this.panes) this.drawPane(g, pane);
     this.juice.drawParticles(g);
@@ -292,22 +292,17 @@ export class LuckyDropVersus implements MinigameInstance {
 
   private drawCenter(g: CanvasRenderingContext2D): void {
     const cx = 640;
-    label(g, "LUCKY DROP", cx, 44, 18, LIME, "center");
-    label(g, "VS", cx, 150, 64, "#f0f2e9", "center");
+    display(g, "VS", cx, 130, 56, UI.dim, "center");
     const [a, b] = this.panes;
     const lead = a.player && b.player && a.world.score !== b.world.score ? (a.world.score > b.world.score ? a : b) : null;
     this.panes.forEach((pane, i) => {
       if (!pane.player) return;
-      const y = 230 + i * 130;
+      const y = 240 + i * 150;
       label(g, pane.player.name, cx, y, 20, pane.player.color, "center");
-      label(g, pane.world.score.toLocaleString(), cx, y + 44, 38, lead === pane ? LIME : "#f0f2e9", "center");
-      label(g, pane.world.over ? "OVERFLOWED" : `LV ${pane.level + 1} · ${levelFor(pane.world.score).shot}s`, cx, y + 70, 13, pane.world.over ? "#ff7a7a" : MUTED, "center");
+      display(g, pane.world.score.toLocaleString(), cx, y + 52, 52, lead === pane ? UI.text : UI.muted, "center");
+      if (pane.world.over) label(g, "OUT", cx, y + 78, 14, UI.hot, "center");
     });
-    if (this.heats.length > 1) label(g, `HEAT ${this.heat + 1} / ${this.heats.length}`, cx, 520, 14, MUTED, "center");
-    label(g, `BEST ${this.best.toLocaleString()}`, cx, 550, 13, LIME, "center");
-    label(g, "Same drops for both.", cx, 620, 13, MUTED, "center");
-    label(g, "Last board standing", cx, 640, 13, MUTED, "center");
-    label(g, "can keep scoring.", cx, 660, 13, MUTED, "center");
+    if (this.heats.length > 1) label(g, `HEAT ${this.heat + 1}/${this.heats.length}`, cx, 640, 14, UI.dim, "center");
   }
 
   private drawPane(g: CanvasRenderingContext2D, pane: Pane): void {
@@ -317,24 +312,25 @@ export class LuckyDropVersus implements MinigameInstance {
 
     // Header: name, next orbs, shake button.
     if (player) {
-      label(g, player.name + (player.kind === "bot" ? " · BOT" : ""), 0, -HEADER_H + 30, 22, player.color);
-      label(g, "NEXT", 0, -HEADER_H + 54, 12, MUTED);
-      drawOrb(g, 58, -HEADER_H + 49, world.next, 1, 12);
-      drawOrb(g, 88, -HEADER_H + 49, world.queued, 0.7, 9);
+      display(g, player.name.toUpperCase(), 0, -HEADER_H + 36, 30, player.color);
+      drawOrb(g, 200, -HEADER_H + 26, world.next, 1, 16);
+      drawOrb(g, 232, -HEADER_H + 30, world.queued, 0.6, 11);
       const ready = world.charge >= 6 && !world.over;
       const sx = BOARD.width - SHAKE_W, sy = -HEADER_H + 8;
-      g.fillStyle = ready ? LIME : "#29331f";
-      g.beginPath(); g.roundRect(sx, sy, SHAKE_W, SHAKE_H, 9); g.fill();
-      g.fillStyle = "#313929"; g.fillRect(sx, sy + SHAKE_H + 4, SHAKE_W, 3);
-      g.fillStyle = LIME; g.fillRect(sx, sy + SHAKE_H + 4, SHAKE_W * world.charge / 6, 3);
-      label(g, ready ? "SHAKE" : `SHAKE ${world.charge}/6`, sx + SHAKE_W / 2, sy + 27, 16, ready ? "#1c2812" : MUTED, "center");
+      g.fillStyle = ready ? player.color : UI.panel;
+      g.strokeStyle = ready ? player.color : UI.line;
+      g.lineWidth = 2;
+      g.beginPath(); g.roundRect(sx, sy, SHAKE_W, SHAKE_H, 12); g.fill(); g.stroke();
+      display(g, "SHAKE", sx + SHAKE_W / 2, sy + 30, 24, ready ? "#070b14" : UI.dim, "center");
+      g.fillStyle = UI.line; g.fillRect(sx, sy + SHAKE_H + 4, SHAKE_W, 3);
+      g.fillStyle = player.color; g.fillRect(sx, sy + SHAKE_H + 4, SHAKE_W * world.charge / 6, 3);
     }
 
-    g.fillStyle = "#20271b";
+    g.fillStyle = UI.panel;
     g.beginPath();
     g.roundRect(0, 0, BOARD.width, BOARD.height, 18);
     g.fill();
-    g.strokeStyle = player ? player.color + "88" : "#566044";
+    g.strokeStyle = player ? player.color + "66" : UI.line;
     g.lineWidth = 2;
     g.stroke();
     g.save();
@@ -347,13 +343,14 @@ export class LuckyDropVersus implements MinigameInstance {
     }
     const danger = world.danger > 0.1 && !world.over;
     if (danger) {
-      g.fillStyle = `rgba(255,90,90,${(0.12 + 0.18 * pane.pulse).toFixed(3)})`;
+      g.fillStyle = `rgba(255,61,122,${(0.12 + 0.18 * pane.pulse).toFixed(3)})`;
       g.fillRect(0, 0, BOARD.width, BOARD.danger);
     }
-    g.strokeStyle = danger ? "#ff7a7a" : "#a2b88b55";
+    g.strokeStyle = danger ? UI.hot : UI.line;
+    g.lineWidth = 2;
+    g.setLineDash([6, 8]);
+    g.beginPath(); g.moveTo(14, BOARD.danger); g.lineTo(466, BOARD.danger); g.stroke();
     g.lineWidth = 1;
-    g.setLineDash([4, 7]);
-    g.beginPath(); g.moveTo(18, BOARD.danger); g.lineTo(462, BOARD.danger); g.stroke();
     g.setLineDash([]);
     if (!world.over) {
       const x = world.clampAim(pane.aim);
@@ -369,22 +366,21 @@ export class LuckyDropVersus implements MinigameInstance {
       drawOrb(g, x, 45, world.next, world.time - world.lastDrop < 0.48 ? 0.35 : 0.85);
       if (player.kind === "human") {
         const t = Math.max(0, Math.min(1, pane.shotLeft / shotClock(world.score)));
-        g.fillStyle = "#313929"; g.fillRect(18, 8, 444, 6);
-        g.fillStyle = pane.shotLeft < 1.5 ? "#ff7a7a" : LIME; g.fillRect(18, 8, 444 * t, 6);
+        g.fillStyle = UI.line; g.fillRect(14, 8, 452, 6);
+        g.fillStyle = pane.shotLeft < 1.5 ? UI.hot : player.color; g.fillRect(14, 8, 452 * t, 6);
       }
     }
     for (const ball of world.balls) drawOrb(g, ball.x, ball.y, ball.tier);
     for (const f of pane.floaters) {
       g.globalAlpha = Math.min(1, f.life * 2);
-      label(g, f.text, f.x, f.y, 22, f.color, "center");
+      display(g, f.text, f.x, f.y, 28, f.color, "center");
     }
     g.globalAlpha = 1;
-    if (!world.drops && player.kind === "human") label(g, "DRAG ON YOUR BOARD · RELEASE", 240, 310, 16, MUTED, "center");
+    if (!world.drops && player.kind === "human") label(g, "Drag, then let go", 240, 320, 20, MUTED, "center");
     if (world.over) {
-      g.fillStyle = "#172010ee"; g.fillRect(0, 0, 480, 630);
-      label(g, "OVERFLOW!", 240, 250, 40, "#ff7a7a", "center");
-      label(g, `${world.score.toLocaleString()} points`, 240, 300, 28, "#f0f2e9", "center");
-      label(g, `${world.merges} merges · best chain ×${world.maxChain}`, 240, 340, 17, MUTED, "center");
+      g.fillStyle = "rgba(7,11,20,0.85)"; g.fillRect(0, 0, 480, 630);
+      display(g, world.score.toLocaleString(), 240, 300, 72, UI.text, "center");
+      label(g, "OVERFLOW", 240, 345, 20, UI.hot, "center");
     }
     g.restore();
     g.restore();

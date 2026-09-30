@@ -72,7 +72,7 @@ describe("Lucky Drop C5 adapter", () => {
   it("supports the shake button without dropping and lets bots play independently", () => {
     const human = setup(["human"]);
     human.state.world.charge = 6;
-    human.setClick({ x: 1000, y: 360 }); human.tick();
+    human.setClick({ x: 1060, y: 324 }); human.tick();
     expect(human.state.world.charge).toBe(0);
     expect(human.state.world.drops).toBe(0);
     human.game.destroy();
