@@ -6,6 +6,8 @@ export interface Perk {
   description: string;
   category: "launch" | "defense" | "tactical" | "chaos";
   icon: string;
+  /** False or absent = perk has no implemented behavior and is hidden from the draft pool. */
+  ready?: boolean;
   onApply?(disc: Disc, player: MatchPlayer): void;
   onLaunch?(disc: Disc, player: MatchPlayer): { speedMul?: number; massMul?: number };
   onHit?(event: HitEvent, disc: Disc, player: MatchPlayer): void;
@@ -20,6 +22,7 @@ export const ALL_PERKS: Perk[] = [
     description: "+30% launch speed",
     category: "launch",
     icon: "HH",
+    ready: true,
     onLaunch: () => ({ speedMul: 1.3 }),
   },
   {
@@ -28,7 +31,8 @@ export const ALL_PERKS: Perk[] = [
     description: "Lower mass, harder to push but easier to fall",
     category: "defense",
     icon: "FW",
-    onApply: (d) => { d.mass *= 0.6; },
+    ready: true,
+    onApply: (d) => { d.baseMass *= 0.6; d.mass = d.baseMass; },
   },
   {
     id: "rubber-bumper",
@@ -43,7 +47,8 @@ export const ALL_PERKS: Perk[] = [
     description: "+60% mass, harder to knock off",
     category: "defense",
     icon: "IW",
-    onApply: (d) => { d.mass *= 1.6; },
+    ready: true,
+    onApply: (d) => { d.baseMass *= 1.6; d.mass = d.baseMass; },
   },
   {
     id: "ghost-step",
@@ -118,7 +123,7 @@ export function startDraft(state: DraftState, loser: number, players: MatchPlaye
   state.active = true;
   state.draftingPlayer = loser;
   const owned = new Set(players[loser]!.perks);
-  const available = ALL_PERKS.filter((p) => !owned.has(p.id));
+  const available = ALL_PERKS.filter((p) => p.ready && !owned.has(p.id));
   const shuffled = available.sort(() => random() - 0.5);
   state.choices = shuffled.slice(0, Math.min(3, shuffled.length));
   state.timer = 15;
@@ -136,6 +141,16 @@ export function getPerk(id: string): Perk | undefined {
 
 export function getPlayerPerks(player: MatchPlayer): Perk[] {
   return player.perks.map((id) => getPerk(id)).filter((p): p is Perk => p != null);
+}
+
+export function applyPerksToDiscs(discs: Disc[], player: MatchPlayer): void {
+  for (const perk of getPlayerPerks(player)) {
+    if (perk.onApply) {
+      for (const d of discs) {
+        if (d.owner === player.id) perk.onApply(d, player);
+      }
+    }
+  }
 }
 
 export function applyLaunchPerks(disc: Disc, player: MatchPlayer): { speedMul: number; massMul: number } {

@@ -138,6 +138,14 @@ class BugWarsGame implements MinigameInstance {
     }
 
     if (this.phase === "pick" || this.phase === "target") {
+      if (!hasAnyAttack(this.board, this.currentSeat)) {
+        this.advanceTurn();
+        return;
+      }
+      if (this.handlePassInput()) {
+        this.advanceTurn();
+        return;
+      }
       this.handleHumanInput();
     }
   }
@@ -149,6 +157,13 @@ class BugWarsGame implements MinigameInstance {
   private handleHumanInput(): void {
     const click = this.ctx.input.consumeClick();
     if (!click) return;
+
+    const bx = GAME_WIDTH / 2;
+    const by = GAME_HEIGHT - 36;
+    if (click.x >= bx - 90 && click.x <= bx + 90 && click.y >= by - 16 && click.y <= by + 16) {
+      this.advanceTurn();
+      return;
+    }
 
     const tileId = this.hitTile(click.x, click.y);
     if (tileId === null) return;
@@ -179,10 +194,7 @@ class BugWarsGame implements MinigameInstance {
   }
 
   private handlePassInput(): boolean {
-    if (this.ctx.input.justPressed("Space") || this.ctx.input.justPressed("Enter")) {
-      return true;
-    }
-    return false;
+    return this.ctx.input.justPressed("Space") || this.ctx.input.justPressed("Enter");
   }
 
   private launchAttack(from: number, to: number): void {
@@ -591,22 +603,24 @@ class BugWarsGame implements MinigameInstance {
   }
 
   private drawPassHint(g: CanvasRenderingContext2D): void {
-    if (!hasAnyAttack(this.board, this.currentSeat)) {
-      this.advanceTurn();
-      return;
-    }
+    const bx = GAME_WIDTH / 2;
+    const by = GAME_HEIGHT - 36;
+    const hover = this.ctx.input.hover;
+    const hovered = hover && hover.x >= bx - 90 && hover.x <= bx + 90 && hover.y >= by - 16 && hover.y <= by + 16;
 
-    this.ctx.input.consumeClick();
-    if (this.handlePassInput()) {
-      this.advanceTurn();
-      return;
-    }
+    g.beginPath();
+    roundRect(g, bx - 90, by - 16, 180, 32, 8);
+    g.fillStyle = hovered ? "rgba(100,116,139,0.35)" : "rgba(100,116,139,0.15)";
+    g.fill();
+    g.strokeStyle = "#64748b";
+    g.lineWidth = 1;
+    g.stroke();
 
     g.font = "600 13px Outfit, sans-serif";
     g.textAlign = "center";
-    g.textBaseline = "alphabetic";
-    g.fillStyle = "#64748b";
-    g.fillText("Click a tile to attack  ·  Space to end turn", GAME_WIDTH / 2, GAME_HEIGHT - 20);
+    g.textBaseline = "middle";
+    g.fillStyle = hovered ? "#e2e8f0" : "#94a3b8";
+    g.fillText("END TURN · Space", bx, by);
   }
 
   private drawFloaters(g: CanvasRenderingContext2D): void {
