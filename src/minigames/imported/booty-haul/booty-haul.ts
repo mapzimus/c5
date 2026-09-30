@@ -36,10 +36,10 @@ export const bootyHaul: MinigameDefinition = {
   description:
     "Click anywhere on the globe to drop anchor. " +
     "Every vessel within 200 km scores: cargo 2, tanker 5, treasure 15, convoy 30. " +
-    "Build a streak for multiplied points. Two reparks to chase the traffic. " +
+    "Build a streak for multiplied points. Moves recharge every six seconds. Raid busy waters on the flashing beat for a burst of bonus gold. " +
     "Watch for gold rush events on busy lanes. Scroll to zoom. 75 seconds.",
   durationMs: GAME_DURATION_S * 1000,
-  controls: "Click anywhere on the globe · Scroll to zoom · Two reparks · 1–9 keys for landmarks",
+  controls: "Click anywhere on the globe · Scroll to zoom · Space / RAID button · Moves recharge · 1–9 keys for landmarks",
   create: (ctx) => new ParkYourPirateGame(ctx),
 };
 
@@ -52,6 +52,8 @@ interface PlayerState {
   streak: number;
   multiplier: number;
   dryTicks: number;
+  moveCharge: number;
+  raidCooldown: number;
 }
 
 interface ScorePopup {
@@ -122,7 +124,7 @@ class ParkYourPirateGame implements MinigameInstance {
     for (const p of ctx.players) {
       this.playerStates.set(p.id, {
         parked: false, ll: [0, 0], score: 0, displayScore: 0,
-        reparks: REPARK_COUNT, streak: 0, multiplier: 1, dryTicks: 0,
+        reparks: REPARK_COUNT, streak: 0, multiplier: 1, dryTicks: 0, moveCharge: 0, raidCooldown: 0,
       });
     }
 
@@ -182,6 +184,11 @@ class ParkYourPirateGame implements MinigameInstance {
     }
 
     for (const [, state] of this.playerStates) {
+      state.raidCooldown = Math.max(0, state.raidCooldown - gdt);
+      if (state.reparks < REPARK_COUNT) {
+        state.moveCharge += gdt;
+        if (state.moveCharge >= 6) { state.reparks++; state.moveCharge -= 6; }
+      } else state.moveCharge = 0;
       if (state.displayScore < state.score) {
         state.displayScore += Math.ceil((state.score - state.displayScore) * Math.min(1, dt * 8));
         if (state.displayScore > state.score) state.displayScore = state.score;
@@ -265,10 +272,34 @@ class ParkYourPirateGame implements MinigameInstance {
       }
     }
 
+    if (input.justPressed("Space") || (click && click.x >= 850 && click.x <= 1230 && click.y >= 390 && click.y <= 458)) {
+      this.raid(human.id);
+      return;
+    }
     if (click) {
       const ll = globeUnproject(click.x, click.y, globe);
       if (ll) this.park(human.id, ll);
     }
+  }
+
+  private raid(playerId: string): void {
+    const state = this.playerStates.get(playerId)!;
+    if (!state.parked || state.raidCooldown > 0) return;
+    const raw = scoreShipsInRange(this.ships, state.ll, this.lanes);
+    if (raw === 0) {
+      this.callouts.show("NO SHIPS IN RANGE — CHASE THE LANES", "#94a3b8", { size: 30 });
+      return;
+    }
+    const perfect = this.elapsed % 4 < 1;
+    const points = raw * state.multiplier * (perfect ? 8 : 4);
+    state.score += points;
+    state.raidCooldown = 3;
+    const p = globeProject(state.ll, this.globe());
+    const color = this.ctx.players.find((p) => p.id === playerId)!.color;
+    this.juice.burst(p.x, p.y, [color, "#fbbf24"], { count: 32, speed: 260, gravity: 0 });
+    this.juice.shake(perfect ? 0.35 : 0.15);
+    this.ctx.sfx.streak(perfect ? 3 : 1);
+    this.callouts.show(`${perfect ? "PERFECT RAID" : "RAID"} +${points}`, color, { size: 44, life: 0.8 });
   }
 
   private park(playerId: string, ll: LatLng): void {
@@ -281,8 +312,10 @@ class ParkYourPirateGame implements MinigameInstance {
     }
     state.parked = true;
     state.ll = ll;
-    this.targetLat = ll[0];
-    this.targetLng = ll[1];
+    if (this.ctx.players.find((p) => p.id === playerId)?.kind === "human") {
+      this.targetLat = ll[0];
+      this.targetLng = ll[1];
+    }
     this.ctx.sfx.go();
     this.juice.shake(0.3);
     this.juice.hitStop(0.06);
@@ -296,6 +329,7 @@ class ParkYourPirateGame implements MinigameInstance {
     for (const p of this.ctx.players) {
       if (p.kind !== "bot") continue;
       const state = this.playerStates.get(p.id)!;
+      if (state.parked && this.elapsed % 4 < 1) this.raid(p.id);
       if (!state.parked && this.elapsed > 0.8 + this.ctx.rng.next() * 1.5) {
         const takenSpots = [...this.playerStates.values()]
           .filter((s) => s.parked)
@@ -688,12 +722,30 @@ class ParkYourPirateGame implements MinigameInstance {
         g.textBaseline = "middle";
         g.fillStyle = "#94a3b8";
         g.fillText("Click anywhere on the globe to drop anchor", GLOBE_CX, promptY + 20);
-      } else if (hState.reparks > 0) {
+      } else {
         g.font = "400 11px Outfit, sans-serif";
         g.textAlign = "center";
         g.fillStyle = "rgba(148,163,184,0.5)";
-        g.fillText(`${hState.reparks} repark${hState.reparks > 1 ? "s" : ""} left`, GLOBE_CX, GAME_HEIGHT - 8);
+        g.fillText(`${hState.reparks} moves ready • next in ${Math.ceil(6 - hState.moveCharge)}s`, GLOBE_CX, GAME_HEIGHT - 8);
       }
+    }
+
+    if (human) {
+      const state = this.playerStates.get(human.id)!;
+      const perfect = this.elapsed % 4 < 1;
+      const ready = state.parked && state.raidCooldown === 0;
+      g.fillStyle = ready ? (perfect ? "#fbbf24" : "#164e63") : "#182334";
+      g.beginPath();
+      g.roundRect(850, 390, 380, 68, 12);
+      g.fill();
+      g.fillStyle = ready && perfect ? "#030810" : "#F4F7FB";
+      g.textAlign = "center";
+      g.font = "700 25px Bebas Neue, Impact, sans-serif";
+      g.fillText(state.raidCooldown > 0 ? `RELOADING ${state.raidCooldown.toFixed(1)}s` : perfect ? "RAID NOW! DOUBLE GOLD" : "RAID • SPACE / TAP", 1040, 419);
+      g.font = "400 12px Outfit, sans-serif";
+      g.fillText("Chase traffic • build x4 • raid on the gold flash", 1040, 443);
+      g.fillStyle = "#fbbf24";
+      g.fillRect(850, 463, 380 * ((this.elapsed % 4) / 4), 4);
     }
 
     // Zoom level indicator

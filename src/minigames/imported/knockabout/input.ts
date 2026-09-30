@@ -65,6 +65,9 @@ export class KnockaboutInput {
   private _onUp(e: PointerEvent): void {
     const p = this.pointers.get(e.pointerId);
     if (!p) return;
+    const { lx, ly } = this.cssToLogical(e);
+    const w = this.toWorld(lx, ly);
+    this.updateAim(p.disc, p.sx, p.sy, w.x, w.y);
     this.pointers.delete(e.pointerId);
     p.disc.grab = null;
   }
@@ -94,6 +97,14 @@ export class KnockaboutInput {
       px: cx,
       py: cy,
     };
+  }
+
+  reset(): void {
+    for (const { disc } of this.pointers.values()) {
+      disc.grab = null;
+      disc.aim = null;
+    }
+    this.pointers.clear();
   }
 
   refreshRect(): void {
