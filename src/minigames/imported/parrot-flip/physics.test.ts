@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Rng } from "../../../core/rng";
 import { ParrotPhysics } from "./physics";
 
 function median(xs: number[]): number {
@@ -63,7 +64,10 @@ describe("parrot physics", () => {
   });
 
   it("makes a sweet-spot flick usually, not always", () => {
-    const physics = new ParrotPhysics();
+    // Seeded so the sampled make rate is repeatable; unseeded, 40 samples drift
+    // outside the bounds below about one run in twenty.
+    const rng = new Rng(1);
+    const physics = new ParrotPhysics(() => rng.next());
     let makes = 0;
     const n = 40;
     for (let i = 0; i < n; i += 1) {
