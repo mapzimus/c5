@@ -11,6 +11,7 @@ describe("minigame catalog", () => {
     expect(ids).toContain("eye-of-the-storm");
     expect(ids).toContain("booty-haul");
     expect(ids).toContain("chaos-derby");
+    expect(ids).toContain("bug-wars");
     expect(new Set(ids).size).toBe(ids.length);
     expect(createRegistry().get("pairs").name).toBe("Pairs");
     expect(createRegistry().get("parrot-flip").name).toBe("Parrot Flip");
