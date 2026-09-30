@@ -2,12 +2,13 @@ import type { Rng } from "../../../core/rng";
 import { haversineKm, lanePos, lanesFromPort, type Lane, type LatLng, PORTS } from "./geo";
 
 export const SPOT_RANGE_KM = 200;
-export const SHIP_SPEED_KM_S = 60;
-export const VOYAGE_SECONDS = 60;
-export const FLEET_SIZE = 120;
-export const DRIFT_MAX = 0.4;
+export const SHIP_SPEED_KM_S = 75;
+export const FLEET_SIZE = 200;
+export const DRIFT_MAX = 0.5;
 export const DRIFT_FADE_KM = 300;
-export const GAME_DURATION_S = 90;
+export const GAME_DURATION_S = 75;
+export const REPARK_COUNT = 2;
+export const STREAK_THRESHOLD = 3;
 
 export interface ShipType {
   key: string;
@@ -19,9 +20,10 @@ export interface ShipType {
 }
 
 export const SHIP_TYPES: readonly ShipType[] = [
-  { key: "cargo",    label: "Cargo",    points: 1,  weight: 0.68, color: "#64748b", size: 4 },
-  { key: "tanker",   label: "Tanker",   points: 2,  weight: 0.24, color: "#f59e0b", size: 5 },
-  { key: "treasure", label: "Treasure", points: 5,  weight: 0.08, color: "#a855f7", size: 6 },
+  { key: "cargo",    label: "Cargo",    points: 2,   weight: 0.55, color: "#64748b", size: 3 },
+  { key: "tanker",   label: "Tanker",   points: 5,   weight: 0.25, color: "#f59e0b", size: 4 },
+  { key: "treasure", label: "Treasure", points: 15,  weight: 0.12, color: "#a855f7", size: 5 },
+  { key: "convoy",   label: "Convoy",   points: 30,  weight: 0.08, color: "#22d3ee", size: 6 },
 ];
 
 function pickType(rng: Rng): ShipType {

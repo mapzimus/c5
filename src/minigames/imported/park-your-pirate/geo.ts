@@ -28,47 +28,76 @@ export function lerpLatLng(a: LatLng, b: LatLng, t: number): LatLng {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
 
-// ---- projection ----------------------------------------------------------
+// ---- globe (orthographic) projection ------------------------------------
 
-export interface View {
-  width: number;
-  height: number;
-  /** Pixels per radian of Mercator space. */
-  scale: number;
-  /** Mercator y (radians) at the top edge of the canvas. */
-  yTop: number;
+export interface Globe {
+  cx: number;
+  cy: number;
+  radius: number;
+  lat: number;
+  lng: number;
+  sinLat: number;
+  cosLat: number;
+  lngRad: number;
 }
 
-/** ~76°N at the top; the Southern Ocean ends up under the bottom HUD. */
-const MERCATOR_TOP = 2.15;
-
-export function makeView(width: number, height: number): View {
-  return { width, height, scale: width / (Math.PI * 2), yTop: MERCATOR_TOP };
+export interface Projected {
+  x: number;
+  y: number;
+  z: number;
 }
 
-export function mercatorY(latDeg: number): number {
-  const lat = Math.max(-85, Math.min(85, latDeg)) * TO_RAD;
-  return Math.log(Math.tan(Math.PI / 4 + lat / 2));
-}
-
-export function project(ll: LatLng, view: View): Point {
+export function makeGlobe(cx: number, cy: number, radius: number, lat: number, lng: number): Globe {
   return {
-    x: ((ll[1] + 180) / 360) * view.width,
-    y: (view.yTop - mercatorY(ll[0])) * view.scale,
+    cx, cy, radius, lat, lng,
+    sinLat: Math.sin(lat * TO_RAD),
+    cosLat: Math.cos(lat * TO_RAD),
+    lngRad: lng * TO_RAD,
   };
 }
 
-export function unproject(p: Point, view: View): LatLng {
-  const lng = (p.x / view.width) * 360 - 180;
-  const y = view.yTop - p.y / view.scale;
-  const lat = (2 * Math.atan(Math.exp(y)) - Math.PI / 2) / TO_RAD;
-  return [lat, lng];
+export function globeProject(ll: LatLng, g: Globe): Projected {
+  const lat = ll[0] * TO_RAD;
+  const dLng = ll[1] * TO_RAD - g.lngRad;
+  const cosLat = Math.cos(lat);
+  const sinLat = Math.sin(lat);
+  const cosDLng = Math.cos(dLng);
+  return {
+    x: g.cx + g.radius * cosLat * Math.sin(dLng),
+    y: g.cy - g.radius * (g.cosLat * sinLat - g.sinLat * cosLat * cosDLng),
+    z: g.sinLat * sinLat + g.cosLat * cosLat * cosDLng,
+  };
 }
 
-/** Radius in pixels of a circle `km` across the water at this latitude (Mercator stretches toward the poles). */
-export function kmToPx(km: number, latDeg: number, view: View): number {
-  const cos = Math.max(0.2, Math.cos(latDeg * TO_RAD));
-  return ((km / EARTH_KM) * view.scale) / cos;
+export function globeUnproject(px: number, py: number, g: Globe): LatLng | null {
+  const nx = (px - g.cx) / g.radius;
+  const ny = -(py - g.cy) / g.radius;
+  const r2 = nx * nx + ny * ny;
+  if (r2 > 1) return null;
+  const nz = Math.sqrt(1 - r2);
+  const lat = Math.asin(ny * g.cosLat + nz * g.sinLat);
+  const lng = g.lngRad + Math.atan2(nx, nz * g.cosLat - ny * g.sinLat);
+  return [lat / TO_RAD, lng / TO_RAD];
+}
+
+export function globeRangeCircle(center: LatLng, radiusKm: number, g: Globe, segments = 48): Projected[] {
+  const angularRadius = radiusKm / EARTH_KM;
+  const cLat = center[0] * TO_RAD;
+  const cLng = center[1] * TO_RAD;
+  const pts: Projected[] = [];
+  for (let i = 0; i < segments; i++) {
+    const bearing = (i / segments) * Math.PI * 2;
+    const lat = Math.asin(
+      Math.sin(cLat) * Math.cos(angularRadius) +
+      Math.cos(cLat) * Math.sin(angularRadius) * Math.cos(bearing),
+    );
+    const lng = cLng + Math.atan2(
+      Math.sin(bearing) * Math.sin(angularRadius) * Math.cos(cLat),
+      Math.cos(angularRadius) - Math.sin(cLat) * Math.sin(lat),
+    );
+    pts.push(globeProject([lat / TO_RAD, lng / TO_RAD], g));
+  }
+  return pts;
 }
 
 // ---- the doors -----------------------------------------------------------

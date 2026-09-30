@@ -1,48 +1,50 @@
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "../../../core/types";
 import { Callouts, Juice, saveBest } from "../../../fx/juice";
 import { drawTimerBar } from "../../../core/draw";
-import { buildLanes, DOORS, kmToPx, makeView, project, unproject, type Door, type Lane, type LatLng, type View } from "./geo";
+import { buildLanes, DOORS, globeProject, globeRangeCircle, globeUnproject, makeGlobe, type Door, type Globe, type Lane, type LatLng } from "./geo";
 import { LAND } from "./land";
 import {
   advanceShips,
   botPickSpot,
   FLEET_SIZE,
   GAME_DURATION_S,
+  REPARK_COUNT,
   scoreShipsInRange,
   shipPos,
   SHIP_TYPES,
   spawnFleet,
-  SPOT_RANGE_KM,
+  STREAK_THRESHOLD,
   type Ship,
 } from "./rules";
 
 const GAME_ID = "park-your-pirate";
+const GLOBE_CX = 480;
+const GLOBE_CY = 340;
+const GLOBE_R = 300;
+const SPIN_SPEED = 8;
 
 export const parkYourPirate: MinigameDefinition = {
   id: GAME_ID,
   name: "Park Your Pirate",
   tagline: "Drop anchor where the ships sail. Score every hull in range.",
   description:
-    "Park your pirate on the world map — near a chokepoint, a busy lane, anywhere you think " +
-    "ships will sail through. Every vessel within 200 km of your anchor scores: cargo 1 pt, " +
-    "tanker 2 pts, treasure ship 5 pts. Points accumulate the whole round. " +
-    "Repark once mid-game to chase the traffic. Highest score wins.",
+    "Park your pirate on the globe near a chokepoint or a busy lane. " +
+    "Every vessel within 200 km scores: cargo 2, tanker 5, treasure 15, convoy 30. " +
+    "Build a streak for multiplied points. Two reparks to chase the traffic. 75 seconds.",
   durationMs: GAME_DURATION_S * 1000,
-  controls: "Click/tap to park · One repark allowed · Keyboard: 1–4 to quick-park at a door",
+  controls: "Click the globe to park · Two reparks · 1–9 keys for doors",
   create: (ctx) => new ParkYourPirateGame(ctx),
 };
-
-const OCEAN_TOP = "#0c1628";
-const OCEAN_BOT = "#0f2233";
-const LAND_FILL = "#1a2d1e";
-const LAND_STROKE = "#2a4a30";
 
 interface PlayerState {
   parked: boolean;
   ll: LatLng;
   score: number;
+  displayScore: number;
   reparks: number;
-  lastPopup: number;
+  streak: number;
+  multiplier: number;
+  dryTicks: number;
 }
 
 interface ScorePopup {
@@ -53,36 +55,57 @@ interface ScorePopup {
   life: number;
 }
 
+interface Star {
+  x: number;
+  y: number;
+  brightness: number;
+  size: number;
+}
+
 class ParkYourPirateGame implements MinigameInstance {
-  private readonly view: View;
   private readonly lanes: Lane[];
   private readonly ships: Ship[];
   private readonly playerStates: Map<string, PlayerState> = new Map();
   private readonly juice: Juice;
   private readonly callouts: Callouts;
   private readonly popups: ScorePopup[] = [];
+  private readonly stars: Star[] = [];
+  private camLat = 20;
+  private camLng = 0;
+  private targetLat = 20;
+  private targetLng = 0;
   private elapsed = 0;
   private done = false;
   private tickAccum = 0;
   private hoveredDoor: Door | null = null;
 
   constructor(private readonly ctx: MinigameContext) {
-    this.view = makeView(GAME_WIDTH, GAME_HEIGHT);
     this.lanes = buildLanes();
     this.ships = spawnFleet(ctx.rng, this.lanes, FLEET_SIZE);
     this.juice = new Juice(() => ctx.rng.next());
     this.callouts = new Callouts();
+
+    for (let i = 0; i < 120; i++) {
+      this.stars.push({
+        x: ctx.rng.next() * GAME_WIDTH,
+        y: ctx.rng.next() * GAME_HEIGHT,
+        brightness: 0.15 + ctx.rng.next() * 0.5,
+        size: 0.5 + ctx.rng.next() * 1.2,
+      });
+    }
+
     for (const p of ctx.players) {
       this.playerStates.set(p.id, {
-        parked: false,
-        ll: [0, 0],
-        score: 0,
-        reparks: 1,
-        lastPopup: 0,
+        parked: false, ll: [0, 0], score: 0, displayScore: 0,
+        reparks: REPARK_COUNT, streak: 0, multiplier: 1, dryTicks: 0,
       });
     }
 
     ctx.sfx.countdown();
+  }
+
+  private globe(): Globe {
+    return makeGlobe(GLOBE_CX, GLOBE_CY, GLOBE_R, this.camLat, this.camLng);
   }
 
   update(dt: number): void {
@@ -96,11 +119,27 @@ class ParkYourPirateGame implements MinigameInstance {
 
     advanceShips(this.ships, this.lanes, gdt, this.ctx.rng);
 
+    const anyParked = [...this.playerStates.values()].some((s) => s.parked);
+    if (!anyParked) {
+      this.camLng += SPIN_SPEED * gdt;
+      this.targetLng = this.camLng;
+    } else {
+      this.camLat += (this.targetLat - this.camLat) * Math.min(1, dt * 3);
+      this.camLng += (this.targetLng - this.camLng) * Math.min(1, dt * 3);
+    }
+
     this.tickAccum += gdt;
-    const TICK = 0.5;
+    const TICK = 0.4;
     while (this.tickAccum >= TICK) {
       this.tickAccum -= TICK;
       this.scoreAllPlayers();
+    }
+
+    for (const [, state] of this.playerStates) {
+      if (state.displayScore < state.score) {
+        state.displayScore += Math.ceil((state.score - state.displayScore) * Math.min(1, dt * 8));
+        if (state.displayScore > state.score) state.displayScore = state.score;
+      }
     }
 
     this.handleInput();
@@ -114,23 +153,40 @@ class ParkYourPirateGame implements MinigameInstance {
   }
 
   private scoreAllPlayers(): void {
+    const globe = this.globe();
     for (const [id, state] of this.playerStates) {
       if (!state.parked) continue;
-      const pts = scoreShipsInRange(this.ships, state.ll, this.lanes);
-      if (pts > 0) {
-        const prev = state.score;
+      const raw = scoreShipsInRange(this.ships, state.ll, this.lanes);
+      if (raw > 0) {
+        state.streak++;
+        state.dryTicks = 0;
+        state.multiplier = Math.min(4, 1 + Math.floor(state.streak / STREAK_THRESHOLD));
+        const pts = raw * state.multiplier;
         state.score += pts;
-        if (state.score - state.lastPopup >= 5) {
-          state.lastPopup = state.score;
-          const p = project(state.ll, this.view);
+        const p = globeProject(state.ll, globe);
+        if (p.z > 0) {
           const player = this.ctx.players.find((pl) => pl.id === id);
-          this.popups.push({
-            x: p.x,
-            y: p.y - 20,
-            text: `+${state.score - prev}`,
-            color: player?.color ?? "#fff",
-            life: 0.8,
-          });
+          const label = state.multiplier > 1 ? `+${pts} x${state.multiplier}` : `+${pts}`;
+          this.popups.push({ x: p.x, y: p.y - 24, text: label, color: player?.color ?? "#fff", life: 0.7 });
+        }
+        if (state.streak === STREAK_THRESHOLD) {
+          this.ctx.sfx.streak(1);
+          this.juice.shake(0.15);
+        } else if (state.streak === STREAK_THRESHOLD * 2) {
+          this.ctx.sfx.streak(2);
+          this.juice.shake(0.2);
+          this.callouts.show("x3", "#FFB020", { life: 0.6, size: 48 });
+        } else if (state.streak === STREAK_THRESHOLD * 3) {
+          this.ctx.sfx.streak(3);
+          this.juice.shake(0.3);
+          this.callouts.show("MAX x4", "#FF3D7A", { life: 0.8, size: 56 });
+        }
+      } else {
+        state.dryTicks++;
+        if (state.dryTicks >= 3) {
+          state.streak = 0;
+          state.multiplier = 1;
+          state.dryTicks = 0;
         }
       }
     }
@@ -139,12 +195,13 @@ class ParkYourPirateGame implements MinigameInstance {
   private handleInput(): void {
     const input = this.ctx.input;
     const click = input.consumeClick();
+    const globe = this.globe();
 
     this.hoveredDoor = null;
     if (input.hover) {
       for (const door of DOORS) {
-        const dp = project(door.ll, this.view);
-        if (Math.hypot(input.hover.x - dp.x, input.hover.y - dp.y) < 18) {
+        const dp = globeProject(door.ll, globe);
+        if (dp.z > 0 && Math.hypot(input.hover.x - dp.x, input.hover.y - dp.y) < 16) {
           this.hoveredDoor = door;
           break;
         }
@@ -163,47 +220,46 @@ class ParkYourPirateGame implements MinigameInstance {
     }
 
     if (click) {
-      const ll = unproject({ x: click.x, y: click.y }, this.view);
-      if (ll[0] > -60 && ll[0] < 75) {
-        this.park(human.id, ll);
-      }
+      const ll = globeUnproject(click.x, click.y, globe);
+      if (ll) this.park(human.id, ll);
     }
   }
 
   private park(playerId: string, ll: LatLng): void {
     const state = this.playerStates.get(playerId)!;
     if (state.parked && state.reparks <= 0) return;
-    if (state.parked) state.reparks--;
+    if (state.parked) {
+      state.reparks--;
+      state.streak = 0;
+      state.multiplier = 1;
+    }
     state.parked = true;
     state.ll = ll;
+    this.targetLat = ll[0];
+    this.targetLng = ll[1];
     this.ctx.sfx.go();
-    this.juice.shake(0.25);
-    const p = project(ll, this.view);
+    this.juice.shake(0.3);
+    this.juice.hitStop(0.06);
+    const globe = this.globe();
+    const p = globeProject(ll, globe);
     const player = this.ctx.players.find((pl) => pl.id === playerId);
-    this.juice.burst(p.x, p.y, player?.color ?? "#fff", { count: 12, speed: 180, life: 0.5 });
+    this.juice.burst(p.x, p.y, player?.color ?? "#fff", { count: 20, speed: 220, life: 0.6, gravity: 200 });
   }
 
   private handleBots(): void {
     for (const p of this.ctx.players) {
       if (p.kind !== "bot") continue;
       const state = this.playerStates.get(p.id)!;
-      if (!state.parked && this.elapsed > 1 + this.ctx.rng.next() * 2) {
+      if (!state.parked && this.elapsed > 0.8 + this.ctx.rng.next() * 1.5) {
         const takenSpots = [...this.playerStates.values()]
           .filter((s) => s.parked)
           .map((s) => ({ ll: s.ll, parked: s.parked, score: s.score }));
-        const ll = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, takenSpots);
-        this.park(p.id, ll);
-      } else if (
-        state.parked &&
-        state.reparks > 0 &&
-        this.elapsed > GAME_DURATION_S * 0.55 &&
-        this.ctx.rng.next() < 0.02
-      ) {
+        this.park(p.id, botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, takenSpots));
+      } else if (state.parked && state.reparks > 0 && this.elapsed > GAME_DURATION_S * 0.5 && this.ctx.rng.next() < 0.015) {
         const takenSpots = [...this.playerStates.values()]
           .filter((s) => s.parked && s !== state)
           .map((s) => ({ ll: s.ll, parked: s.parked, score: s.score }));
-        const ll = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, takenSpots);
-        this.park(p.id, ll);
+        this.park(p.id, botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, takenSpots));
       }
     }
   }
@@ -219,40 +275,130 @@ class ParkYourPirateGame implements MinigameInstance {
   }
 
   render(g: CanvasRenderingContext2D): void {
+    const globe = this.globe();
+    this.drawBackground(g);
     this.juice.begin(g);
-    this.drawOcean(g);
-    this.drawLand(g);
-    this.drawLanes(g);
-    this.drawDoors(g);
-    this.drawShips(g);
-    this.drawPlayers(g);
-    this.drawRangeRings(g);
+    this.drawGlobe(g, globe);
     this.juice.end(g);
-    this.drawHUD(g);
+    this.drawHUD(g, globe);
     this.drawPopups(g);
     this.callouts.draw(g, GAME_WIDTH, GAME_HEIGHT);
   }
 
-  private drawOcean(g: CanvasRenderingContext2D): void {
-    const grad = g.createLinearGradient(0, 0, 0, GAME_HEIGHT);
-    grad.addColorStop(0, OCEAN_TOP);
-    grad.addColorStop(1, OCEAN_BOT);
-    g.fillStyle = grad;
+  private drawBackground(g: CanvasRenderingContext2D): void {
+    g.fillStyle = "#030810";
     g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    for (const star of this.stars) {
+      const twinkle = star.brightness * (0.7 + Math.sin(this.elapsed * 2 + star.x) * 0.3);
+      g.globalAlpha = twinkle;
+      g.fillStyle = "#c8d6e5";
+      g.beginPath();
+      g.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.globalAlpha = 1;
   }
 
-  private drawLand(g: CanvasRenderingContext2D): void {
-    g.fillStyle = LAND_FILL;
-    g.strokeStyle = LAND_STROKE;
-    g.lineWidth = 0.8;
-    for (const ring of LAND) {
+  private drawGlobe(g: CanvasRenderingContext2D, globe: Globe): void {
+    const atmo = g.createRadialGradient(GLOBE_CX, GLOBE_CY, GLOBE_R * 0.95, GLOBE_CX, GLOBE_CY, GLOBE_R * 1.15);
+    atmo.addColorStop(0, "rgba(56,130,220,0.12)");
+    atmo.addColorStop(1, "rgba(56,130,220,0)");
+    g.fillStyle = atmo;
+    g.fillRect(GLOBE_CX - GLOBE_R * 1.2, GLOBE_CY - GLOBE_R * 1.2, GLOBE_R * 2.4, GLOBE_R * 2.4);
+
+    g.save();
+    g.beginPath();
+    g.arc(GLOBE_CX, GLOBE_CY, GLOBE_R, 0, Math.PI * 2);
+    g.clip();
+
+    const ocean = g.createRadialGradient(GLOBE_CX - 60, GLOBE_CY - 80, 0, GLOBE_CX, GLOBE_CY, GLOBE_R);
+    ocean.addColorStop(0, "#0f2847");
+    ocean.addColorStop(1, "#071428");
+    g.fillStyle = ocean;
+    g.fillRect(GLOBE_CX - GLOBE_R, GLOBE_CY - GLOBE_R, GLOBE_R * 2, GLOBE_R * 2);
+
+    this.drawGraticulesClipped(g, globe);
+    this.drawLandClipped(g, globe);
+    this.drawLanesClipped(g, globe);
+    this.drawDoorsClipped(g, globe);
+    this.drawShipsClipped(g, globe);
+    this.drawPlayersClipped(g, globe);
+    this.drawRangeRingsClipped(g, globe);
+
+    g.restore();
+
+    g.beginPath();
+    g.arc(GLOBE_CX, GLOBE_CY, GLOBE_R, 0, Math.PI * 2);
+    g.strokeStyle = "rgba(100,160,220,0.15)";
+    g.lineWidth = 2;
+    g.stroke();
+  }
+
+  private drawGraticulesClipped(g: CanvasRenderingContext2D, globe: Globe): void {
+    g.strokeStyle = "rgba(80,120,180,0.06)";
+    g.lineWidth = 0.5;
+    for (let lat = -60; lat <= 60; lat += 30) {
       g.beginPath();
+      let started = false;
+      for (let lng = -180; lng <= 180; lng += 5) {
+        const p = globeProject([lat, lng], globe);
+        if (p.z > 0) {
+          if (!started) { g.moveTo(p.x, p.y); started = true; }
+          else g.lineTo(p.x, p.y);
+        } else { started = false; }
+      }
+      g.stroke();
+    }
+    for (let lng = -180; lng < 180; lng += 30) {
+      g.beginPath();
+      let started = false;
+      for (let lat = -80; lat <= 80; lat += 5) {
+        const p = globeProject([lat, lng], globe);
+        if (p.z > 0) {
+          if (!started) { g.moveTo(p.x, p.y); started = true; }
+          else g.lineTo(p.x, p.y);
+        } else { started = false; }
+      }
+      g.stroke();
+    }
+  }
+
+  private drawLandClipped(g: CanvasRenderingContext2D, globe: Globe): void {
+    g.fillStyle = "#132e1c";
+    g.strokeStyle = "#1f5a2e";
+    g.lineWidth = 0.6;
+    for (const ring of LAND) {
+      let visCount = 0;
+      const pts: { x: number; y: number; z: number }[] = [];
       for (let i = 0; i < ring.length; i += 2) {
-        const lng = ring[i]!;
-        const lat = ring[i + 1]!;
-        const p = project([lat, lng], this.view);
-        if (i === 0) g.moveTo(p.x, p.y);
-        else g.lineTo(p.x, p.y);
+        const p = globeProject([ring[i + 1]!, ring[i]!], globe);
+        pts.push(p);
+        if (p.z > 0) visCount++;
+      }
+      if (visCount === 0) continue;
+
+      g.beginPath();
+      let started = false;
+      for (let i = 0; i < pts.length; i++) {
+        const curr = pts[i]!;
+        const prev = pts[(i + pts.length - 1) % pts.length]!;
+        if (curr.z > -0.05) {
+          if (!started || prev.z <= -0.05) {
+            if (prev.z <= -0.05 && curr.z > -0.05) {
+              const t = (prev.z + 0.05) / (prev.z - curr.z + 0.1);
+              g.moveTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
+              g.lineTo(curr.x, curr.y);
+            } else {
+              g.moveTo(curr.x, curr.y);
+            }
+            started = true;
+          } else {
+            g.lineTo(curr.x, curr.y);
+          }
+        } else if (started && prev.z > -0.05) {
+          const t = (prev.z + 0.05) / (prev.z - curr.z + 0.1);
+          g.lineTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
+        }
       }
       g.closePath();
       g.fill();
@@ -260,77 +406,94 @@ class ParkYourPirateGame implements MinigameInstance {
     }
   }
 
-  private drawLanes(g: CanvasRenderingContext2D): void {
-    g.strokeStyle = "rgba(100,150,200,0.08)";
-    g.lineWidth = 1;
+  private drawLanesClipped(g: CanvasRenderingContext2D, globe: Globe): void {
+    g.strokeStyle = "rgba(80,140,200,0.1)";
+    g.lineWidth = 0.8;
     for (const lane of this.lanes) {
       g.beginPath();
-      for (let i = 0; i < lane.pts.length; i++) {
-        const p = project(lane.pts[i]!, this.view);
-        if (i === 0) g.moveTo(p.x, p.y);
-        else g.lineTo(p.x, p.y);
+      let started = false;
+      for (const pt of lane.pts) {
+        const p = globeProject(pt, globe);
+        if (p.z > 0) {
+          if (!started) { g.moveTo(p.x, p.y); started = true; }
+          else g.lineTo(p.x, p.y);
+        } else { started = false; }
       }
       g.stroke();
     }
   }
 
-  private drawDoors(g: CanvasRenderingContext2D): void {
+  private drawDoorsClipped(g: CanvasRenderingContext2D, globe: Globe): void {
     for (const door of DOORS) {
-      const dp = project(door.ll, this.view);
+      const dp = globeProject(door.ll, globe);
+      if (dp.z < 0.1) continue;
       const hovered = this.hoveredDoor === door;
-      const pulse = 1 + Math.sin(this.elapsed * 3) * 0.15;
+      const pulse = 1 + Math.sin(this.elapsed * 3.5) * 0.2;
+      const r = (hovered ? 7 : 4) * pulse;
 
       g.beginPath();
-      g.arc(dp.x, dp.y, (hovered ? 8 : 5) * pulse, 0, Math.PI * 2);
-      g.fillStyle = hovered ? "rgba(255,200,60,0.6)" : "rgba(255,200,60,0.3)";
+      g.arc(dp.x, dp.y, r + 3, 0, Math.PI * 2);
+      g.fillStyle = hovered ? "rgba(255,200,60,0.15)" : "rgba(255,200,60,0.06)";
       g.fill();
 
-      g.font = "600 11px Outfit, sans-serif";
-      g.textAlign = door.align;
-      g.textBaseline = "middle";
-      g.fillStyle = hovered ? "#fcd34d" : "rgba(252,211,77,0.6)";
-      g.fillText(door.name, dp.x + door.dx, dp.y + door.dy);
+      g.beginPath();
+      g.arc(dp.x, dp.y, r, 0, Math.PI * 2);
+      g.fillStyle = hovered ? "#fcd34d" : "rgba(252,211,77,0.5)";
+      g.fill();
 
-      if (hovered) {
-        g.font = "400 10px Outfit, sans-serif";
-        g.fillStyle = "rgba(255,255,255,0.6)";
-        const blurbY = dp.y + door.dy + (door.dy > 0 ? 14 : -14);
-        g.fillText(door.blurb.slice(0, 55) + (door.blurb.length > 55 ? "..." : ""), dp.x + door.dx, blurbY);
-      }
+      g.font = "600 10px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "bottom";
+      g.fillStyle = hovered ? "#fef3c7" : "rgba(252,211,77,0.6)";
+      g.fillText(door.name, dp.x, dp.y - r - 3);
     }
   }
 
-  private drawShips(g: CanvasRenderingContext2D): void {
+  private drawShipsClipped(g: CanvasRenderingContext2D, globe: Globe): void {
     for (const ship of this.ships) {
       if (!ship.alive) continue;
       const sp = shipPos(ship, this.lanes);
-      const pp = project(sp, this.view);
+      const pp = globeProject(sp, globe);
+      if (pp.z < 0.05) continue;
+
+      const alpha = Math.min(0.85, pp.z * 1.2);
+      g.globalAlpha = alpha;
+
+      if (ship.type.key === "convoy" || ship.type.key === "treasure") {
+        g.beginPath();
+        g.arc(pp.x, pp.y, ship.type.size + 2, 0, Math.PI * 2);
+        g.fillStyle = ship.type.key === "convoy" ? "rgba(34,211,238,0.12)" : "rgba(168,85,247,0.12)";
+        g.fill();
+      }
+
+      g.beginPath();
+      g.arc(pp.x, pp.y, ship.type.size * 0.6, 0, Math.PI * 2);
       g.fillStyle = ship.type.color;
-      g.globalAlpha = 0.7;
-      g.fillRect(pp.x - ship.type.size / 2, pp.y - ship.type.size / 2, ship.type.size, ship.type.size);
+      g.fill();
     }
     g.globalAlpha = 1;
   }
 
-  private drawPlayers(g: CanvasRenderingContext2D): void {
+  private drawPlayersClipped(g: CanvasRenderingContext2D, globe: Globe): void {
     for (const p of this.ctx.players) {
       const state = this.playerStates.get(p.id)!;
       if (!state.parked) continue;
-      const pp = project(state.ll, this.view);
+      const pp = globeProject(state.ll, globe);
+      if (pp.z < 0) continue;
 
-      const glow = 1 + Math.sin(this.elapsed * 4 + this.ctx.players.indexOf(p) * 1.5) * 0.12;
+      const pulse = 1 + Math.sin(this.elapsed * 5 + this.ctx.players.indexOf(p) * 1.5) * 0.15;
       g.beginPath();
-      g.arc(pp.x, pp.y, 10 * glow, 0, Math.PI * 2);
+      g.arc(pp.x, pp.y, 14 * pulse, 0, Math.PI * 2);
       g.fillStyle = p.color;
-      g.globalAlpha = 0.3;
+      g.globalAlpha = 0.15;
       g.fill();
+
       g.globalAlpha = 1;
-
       g.beginPath();
-      g.arc(pp.x, pp.y, 5, 0, Math.PI * 2);
+      g.arc(pp.x, pp.y, 6, 0, Math.PI * 2);
       g.fillStyle = p.color;
       g.fill();
-      g.strokeStyle = "#0c1628";
+      g.strokeStyle = "#030810";
       g.lineWidth = 2;
       g.stroke();
 
@@ -338,109 +501,158 @@ class ParkYourPirateGame implements MinigameInstance {
       g.textAlign = "center";
       g.textBaseline = "bottom";
       g.fillStyle = p.color;
-      g.fillText(p.name, pp.x, pp.y - 14);
+      g.fillText(p.name, pp.x, pp.y - 18);
     }
   }
 
-  private drawRangeRings(g: CanvasRenderingContext2D): void {
+  private drawRangeRingsClipped(g: CanvasRenderingContext2D, globe: Globe): void {
     for (const p of this.ctx.players) {
       const state = this.playerStates.get(p.id)!;
       if (!state.parked) continue;
-      const pp = project(state.ll, this.view);
-      const r = kmToPx(SPOT_RANGE_KM, state.ll[0], this.view);
+      const ring = globeRangeCircle(state.ll, 200, globe);
+      const visible = ring.filter((pt) => pt.z > 0);
+      if (visible.length < 3) continue;
+
       g.beginPath();
-      g.arc(pp.x, pp.y, r, 0, Math.PI * 2);
+      let started = false;
+      for (const pt of ring) {
+        if (pt.z > 0) {
+          if (!started) { g.moveTo(pt.x, pt.y); started = true; }
+          else g.lineTo(pt.x, pt.y);
+        } else { started = false; }
+      }
+      if (ring[0]!.z > 0 && ring[ring.length - 1]!.z > 0) g.closePath();
       g.strokeStyle = p.color;
-      g.globalAlpha = 0.25;
+      g.globalAlpha = 0.3;
       g.lineWidth = 1.5;
-      g.setLineDash([4, 4]);
+      g.setLineDash([6, 4]);
       g.stroke();
       g.setLineDash([]);
+
+      g.globalAlpha = 0.04;
+      g.fillStyle = p.color;
+      g.beginPath();
+      started = false;
+      for (const pt of ring) {
+        if (pt.z > 0) {
+          if (!started) { g.moveTo(pt.x, pt.y); started = true; }
+          else g.lineTo(pt.x, pt.y);
+        }
+      }
+      g.closePath();
+      g.fill();
       g.globalAlpha = 1;
     }
   }
 
-  private drawHUD(g: CanvasRenderingContext2D): void {
+  private drawHUD(g: CanvasRenderingContext2D, _globe: Globe): void {
     const remaining = Math.max(0, GAME_DURATION_S - this.elapsed);
     drawTimerBar(g, GAME_WIDTH, remaining, GAME_DURATION_S);
 
-    g.fillStyle = "rgba(7,11,20,0.7)";
-    g.fillRect(0, GAME_HEIGHT - 56, GAME_WIDTH, 56);
-
-    g.font = "700 42px Bebas Neue, Impact, sans-serif";
-    g.textBaseline = "middle";
-    const hudY = GAME_HEIGHT - 28;
+    g.font = "700 28px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "right";
+    g.fillStyle = remaining < 10 ? "#FF3D7A" : "#94a3b8";
+    g.fillText(`${Math.ceil(remaining)}`, GAME_WIDTH - 18, 34);
+    g.font = "400 11px Outfit, sans-serif";
+    g.fillText("sec", GAME_WIDTH - 18, 48);
 
     const sorted = [...this.ctx.players].sort((a, b) => {
-      const sa = this.playerStates.get(a.id)!.score;
-      const sb = this.playerStates.get(b.id)!.score;
-      return sb - sa;
+      return this.playerStates.get(b.id)!.score - this.playerStates.get(a.id)!.score;
     });
 
-    const spacing = Math.min(280, GAME_WIDTH / sorted.length);
-    const startX = (GAME_WIDTH - spacing * (sorted.length - 1)) / 2;
+    const panelX = 830;
+    const panelW = 430;
+    g.fillStyle = "rgba(3,8,16,0.75)";
+    g.beginPath();
+    g.roundRect(panelX, 70, panelW, sorted.length * 56 + 16, 12);
+    g.fill();
 
     for (let i = 0; i < sorted.length; i++) {
       const p = sorted[i]!;
       const state = this.playerStates.get(p.id)!;
-      const x = startX + i * spacing;
-      g.textAlign = "center";
+      const y = 92 + i * 56;
+
+      g.beginPath();
+      g.arc(panelX + 24, y + 14, 6, 0, Math.PI * 2);
       g.fillStyle = p.color;
-      g.fillText(String(state.score), x, hudY);
+      g.fill();
 
-      g.font = "600 13px Outfit, sans-serif";
-      g.fillStyle = "rgba(255,255,255,0.5)";
-      g.fillText(p.name, x, hudY - 22);
-      g.font = "700 42px Bebas Neue, Impact, sans-serif";
-    }
+      g.font = "600 14px Outfit, sans-serif";
+      g.textAlign = "left";
+      g.fillStyle = "#e2e8f0";
+      g.fillText(p.name, panelX + 38, y + 10);
 
-    if (!this.done) {
-      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      if (state.multiplier > 1) {
+        g.font = "700 12px Outfit, sans-serif";
+        g.fillStyle = state.multiplier >= 4 ? "#FF3D7A" : state.multiplier >= 3 ? "#FFB020" : "#3EE0FF";
+        g.fillText(`x${state.multiplier}`, panelX + 38 + g.measureText(p.name).width + 8, y + 10);
+      }
+
+      g.font = "700 28px Bebas Neue, Impact, sans-serif";
       g.textAlign = "right";
-      g.fillStyle = remaining < 10 ? "#FF3D7A" : "#F4F7FB";
-      g.fillText(`${Math.ceil(remaining)}s`, GAME_WIDTH - 16, 32);
+      g.fillStyle = p.color;
+      g.fillText(String(state.displayScore), panelX + panelW - 20, y + 18);
+
+      if (state.streak > 0) {
+        const barW = Math.min(panelW - 60, (state.streak % STREAK_THRESHOLD) / STREAK_THRESHOLD * (panelW - 60));
+        const nextMult = Math.min(4, state.multiplier + 1);
+        g.fillStyle = state.multiplier >= 4 ? "rgba(255,61,122,0.25)" : "rgba(62,224,255,0.15)";
+        g.fillRect(panelX + 38, y + 30, barW, 3);
+        if (state.multiplier < 4) {
+          g.font = "400 9px Outfit, sans-serif";
+          g.textAlign = "left";
+          g.fillStyle = "rgba(148,163,184,0.5)";
+          g.fillText(`→ x${nextMult}`, panelX + 42 + barW, y + 34);
+        }
+      }
     }
 
-    const legend = SHIP_TYPES;
-    g.font = "600 11px Outfit, sans-serif";
+    g.font = "600 10px Outfit, sans-serif";
     g.textAlign = "left";
     g.textBaseline = "top";
-    let lx = 12;
-    const ly = 8;
-    for (const t of legend) {
+    let lx = 14;
+    const ly = GAME_HEIGHT - 22;
+    for (const t of SHIP_TYPES) {
+      g.beginPath();
+      g.arc(lx + 4, ly + 4, 3, 0, Math.PI * 2);
       g.fillStyle = t.color;
-      g.fillRect(lx, ly, 8, 8);
-      g.fillStyle = "rgba(255,255,255,0.5)";
-      g.fillText(`${t.label} ${t.points}pt`, lx + 12, ly - 1);
-      lx += g.measureText(`${t.label} ${t.points}pt`).width + 24;
+      g.fill();
+      g.fillStyle = "rgba(255,255,255,0.4)";
+      const label = `${t.label} ${t.points}`;
+      g.fillText(label, lx + 10, ly);
+      lx += g.measureText(label).width + 22;
     }
 
     const human = this.ctx.players.find((p) => p.kind === "human");
     if (human) {
       const hState = this.playerStates.get(human.id)!;
       if (!hState.parked) {
-        g.font = "600 16px Outfit, sans-serif";
+        g.fillStyle = "rgba(3,8,16,0.6)";
+        g.beginPath();
+        g.roundRect(GLOBE_CX - 160, GLOBE_CY + GLOBE_R + 16, 320, 40, 8);
+        g.fill();
+        g.font = "600 14px Outfit, sans-serif";
         g.textAlign = "center";
+        g.textBaseline = "middle";
         g.fillStyle = "#94a3b8";
-        g.fillText("Click anywhere on the map to park your pirate", GAME_WIDTH / 2, GAME_HEIGHT / 2 - 10);
-        g.font = "400 13px Outfit, sans-serif";
-        g.fillText("or press 1-9 to park at a door", GAME_WIDTH / 2, GAME_HEIGHT / 2 + 14);
+        g.fillText("Click the globe to drop anchor", GLOBE_CX, GLOBE_CY + GLOBE_R + 36);
       } else if (hState.reparks > 0) {
         g.font = "400 11px Outfit, sans-serif";
         g.textAlign = "center";
-        g.fillStyle = "rgba(148,163,184,0.6)";
-        g.fillText(`${hState.reparks} repark left — click to move`, GAME_WIDTH / 2, GAME_HEIGHT - 62);
+        g.fillStyle = "rgba(148,163,184,0.5)";
+        g.fillText(`${hState.reparks} repark${hState.reparks > 1 ? "s" : ""} left`, GLOBE_CX, GAME_HEIGHT - 8);
       }
     }
   }
 
   private drawPopups(g: CanvasRenderingContext2D): void {
     for (const p of this.popups) {
-      g.globalAlpha = Math.min(1, p.life / 0.3);
-      g.font = "700 18px Bebas Neue, Impact, sans-serif";
+      const t = 1 - p.life / 0.7;
+      g.globalAlpha = Math.min(1, p.life / 0.2);
+      g.font = "700 16px Bebas Neue, Impact, sans-serif";
       g.textAlign = "center";
       g.fillStyle = p.color;
-      g.fillText(p.text, p.x, p.y - (1 - p.life) * 30);
+      g.fillText(p.text, p.x, p.y - t * 28);
     }
     g.globalAlpha = 1;
   }
