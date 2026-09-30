@@ -6,9 +6,10 @@ import { parrotFlip } from "./imported/parrot-flip/parrot-flip";
 import { luckyDrop } from "./imported/lucky-drop/lucky-drop";
 import { eyeOfTheStorm } from "./eye-of-the-storm/eye-of-the-storm";
 import { chaosDerby } from "./chaos-derby/chaos-derby";
+import knockabout from "./imported/knockabout/index";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, chaosDerby];
+export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, chaosDerby, knockabout];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();
