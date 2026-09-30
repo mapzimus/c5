@@ -5,9 +5,10 @@ import { castleSiege } from "./castle-siege/castle-siege";
 import { parrotFlip } from "./imported/parrot-flip/parrot-flip";
 import { luckyDrop } from "./imported/lucky-drop/lucky-drop";
 import { eyeOfTheStorm } from "./eye-of-the-storm/eye-of-the-storm";
+import { bugWars } from "./imported/bug-wars/bug-wars";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm];
+export const allMinigames: MinigameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bugWars];
 
 export function createRegistry(): MinigameRegistry {
   const registry = new MinigameRegistry();
