@@ -17,15 +17,15 @@ import {
   type Ship,
 } from "./rules";
 
-const GAME_ID = "park-your-pirate";
+const GAME_ID = "booty-haul";
 const GLOBE_CX = 480;
 const GLOBE_CY = 340;
 const GLOBE_R = 300;
 const SPIN_SPEED = 8;
 
-export const parkYourPirate: MinigameDefinition = {
+export const bootyHaul: MinigameDefinition = {
   id: GAME_ID,
-  name: "Park Your Pirate",
+  name: "Booty Haul",
   tagline: "Drop anchor where the ships sail. Score every hull in range.",
   description:
     "Park your pirate on the globe near a chokepoint or a busy lane. " +
