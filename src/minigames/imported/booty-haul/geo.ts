@@ -197,6 +197,32 @@ export const LANES: readonly LaneSpec[] = [
   { n: 3, pts: [[52,-179.9],[52.5,-170],[52,-158],[51,-145],[49.5,-133],[48.4,-125.8]] },
   /* Tokyo → North Pacific → date line */
   { n: 3, pts: [[35.6,140.5],[38,146],[42,153],[46,162],[50,172],[52,179.9]] },
+  /* Arctic / Northern Sea Route (Murmansk → Vladivostok via Russia coast) */
+  { n: 5, pts: [[69,33.1],[71,40],[72.5,52],[73,68],[74,80],[75,95],[73,110],[72,125],[70,135],[68,140],[62,148],[55,155],[48,150],[43.1,131.9]] },
+  /* South Pacific (Sydney → Tahiti → Valparaiso) */
+  { n: 6, pts: [[-33.9,151.2],[-33,155],[-30,165],[-25,175],[-20,179.9]] },
+  /* South Pacific (date line → Chile) */
+  { n: 5, pts: [[-20,-179.9],[-18,-160],[-17.5,-149.5],[-20,-135],[-25,-115],[-30,-95],[-33,-71.6]] },
+  /* West Africa coastal (Dakar → Luanda) */
+  { n: 5, pts: [[14.7,-17.4],[12,-16.5],[9.5,-14],[6.2,3.3],[4.1,9.7],[3.5,6.5],[1,8.5],[-4.5,11.5],[-8.8,13.2]] },
+  /* Indian Ocean cross (Durban → Colombo) */
+  { n: 5, pts: [[-29.9,31],[-28,35],[-22,42],[-15,50],[-8,58],[-2,65],[3,72],[5.8,80.5]] },
+  /* Indian Ocean cross (Aden → Perth) */
+  { n: 5, pts: [[12.6,43.3],[8,50],[3,58],[-5,68],[-12,80],[-20,95],[-28,108],[-31.9,115.8]] },
+  /* Mediterranean internal (Barcelona → Naples → Piraeus) */
+  { n: 4, pts: [[41.3,2.1],[40.5,5],[39.5,8],[38.5,11.5],[40,13.5],[40.8,14.2],[39,16.5],[38.5,20],[37.9,23.7]] },
+  /* Mediterranean internal (Marseille → Tunis → Alexandria) */
+  { n: 4, pts: [[43.3,5.3],[42,6],[40.5,8.5],[38,10],[36.8,10.2],[36,12.5],[35.5,15],[34,20],[33,25],[31.2,29.9]] },
+  /* South China Sea (Hong Kong → Manila → Ho Chi Minh) */
+  { n: 5, pts: [[22.3,114.2],[20,116.5],[17,118],[14.6,120.9],[12,118],[10.7,117],[10.5,115],[10.3,110],[10.8,106.7]] },
+  /* South China Sea (Singapore → Hong Kong) */
+  { n: 5, pts: [[1.15,103.9],[3,106],[6,109],[10,112],[14,114],[18,114.5],[22.3,114.2]] },
+  /* More Caribbean (Kingston → Cartagena → Colon) */
+  { n: 4, pts: [[17.9,-76.8],[16,-77.5],[14,-78],[12.5,-78.5],[10.4,-75.5],[9.4,-79.9]] },
+  /* Norwegian coast / North Sea (Bergen → Tromsø → Murmansk) */
+  { n: 4, pts: [[60.4,5.3],[62,5.5],[63.5,8],[66,13],[68,15.5],[69.5,18.5],[69.6,19],[69.7,25],[69,33.1]] },
+  /* North Sea (Rotterdam → Bergen) */
+  { n: 3, pts: [[51.2,2.2],[53,3.5],[55.5,4],[57.5,5],[60.4,5.3]] },
 ];
 
 export interface Port {
@@ -224,6 +250,24 @@ export const PORTS: readonly Port[] = [
   { ll: [-5.8, 106.8], name: "Jakarta" },
   { ll: [33.6, -118.3], name: "Los Angeles" },
   { ll: [48.4, -125.8], name: "Seattle" },
+  { ll: [69, 33.1], name: "Murmansk" },
+  { ll: [43.1, 131.9], name: "Vladivostok" },
+  { ll: [-33.9, 151.2], name: "Sydney" },
+  { ll: [-33, -71.6], name: "Valparaiso" },
+  { ll: [-17.5, -149.5], name: "Tahiti" },
+  { ll: [14.7, -17.4], name: "Dakar" },
+  { ll: [-8.8, 13.2], name: "Luanda" },
+  { ll: [-29.9, 31], name: "Durban" },
+  { ll: [-31.9, 115.8], name: "Perth" },
+  { ll: [41.3, 2.1], name: "Barcelona" },
+  { ll: [37.9, 23.7], name: "Piraeus" },
+  { ll: [31.2, 29.9], name: "Alexandria" },
+  { ll: [22.3, 114.2], name: "Hong Kong" },
+  { ll: [14.6, 120.9], name: "Manila" },
+  { ll: [10.8, 106.7], name: "Ho Chi Minh" },
+  { ll: [17.9, -76.8], name: "Kingston" },
+  { ll: [9.4, -79.9], name: "Colon" },
+  { ll: [60.4, 5.3], name: "Bergen" },
 ];
 
 // ---- lane geometry -------------------------------------------------------
