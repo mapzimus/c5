@@ -31,7 +31,7 @@ const DIRS = [
   { x: 1, y: 0 },
 ];
 
-class KnockaboutGame implements MinigameInstance {
+export class KnockaboutGame implements MinigameInstance {
   private phase: GamePhase = "intro";
   private phaseT = 0;
   private time = 0;
@@ -131,8 +131,8 @@ class KnockaboutGame implements MinigameInstance {
   }
 
   private findGrabbableDisc(wx: number, wy: number): Disc | null {
-    if (this.phase !== "plan" && this.phase !== "aim") return null;
-    const discs = this.world.aliveDiscs(this.currentPlayer);
+    if (this.phase !== "plan") return null;
+    const discs = this.world.aliveDiscs().filter((d) => this.players[d.owner]!.kind === "human");
     let best: Disc | null = null;
     let bd = Infinity;
     for (const d of discs) {
@@ -155,7 +155,7 @@ class KnockaboutGame implements MinigameInstance {
       case "intro":
         this.phaseT += jdt;
         this.world.updateVisuals(jdt);
-        if (this.phaseT > 2) {
+        if (this.phaseT > 1.1) {
           this.phase = "plan";
           this.phaseT = 0;
           this.startTurn();
@@ -166,10 +166,12 @@ class KnockaboutGame implements MinigameInstance {
         this.phaseT += jdt;
         this.world.updateVisuals(jdt);
         this.handleBotAim(jdt);
-        if (this.allReady()) {
+        this.hurryTimer = Math.max(0, 8 - this.phaseT);
+        if (this.allReady() || this.hurryTimer === 0) {
           this.phase = "aim";
           this.phaseT = 0;
-          this.hurryTimer = TUNING.hurrySeconds;
+          this.hurryTimer = 0.7;
+          this.callouts.show("LOCKED IN!", "#FFB020", { life: 0.7 });
         }
         break;
 
@@ -184,10 +186,6 @@ class KnockaboutGame implements MinigameInstance {
             this.phase = "sim";
             this.phaseT = 0;
           }
-        }
-        if (this.allLaunched()) {
-          this.phase = "sim";
-          this.phaseT = 0;
         }
         break;
 
@@ -262,9 +260,11 @@ class KnockaboutGame implements MinigameInstance {
 
   private startTurn(): void {
     this.turn++;
+    this.input.reset();
+    this.accumulator = 0;
     for (const p of this.players) p.ready = false;
     this.readyCount = 0;
-    this.hurryTimer = null;
+    this.hurryTimer = 8;
 
     if (this.ctx.rng.next() < TUNING.powerupChance && this.world.powerups.filter((p) => !p.gone).length < TUNING.maxPowerups) {
       this.world.spawnPowerup();
@@ -292,8 +292,7 @@ class KnockaboutGame implements MinigameInstance {
         const shot = botChooseShot(this.world, d, this.players, diff, () => this.ctx.rng.next());
         if (shot) {
           d.aim = { dx: shot.dx, dy: shot.dy, power: shot.power, px: d.x, py: d.y };
-          applyLaunchPerks(d, p);
-          this.world.launchDisc(d);
+
         }
       }
       p.ready = true;
@@ -302,21 +301,7 @@ class KnockaboutGame implements MinigameInstance {
   }
 
   private allReady(): boolean {
-    for (const p of this.players) {
-      if (this.world.aliveDiscs(p.id).length === 0) continue;
-      const discs = this.world.aliveDiscs(p.id);
-      if (discs.some((d) => d.grab != null)) return false;
-    }
-    let launched = 0;
-    for (const d of this.world.aliveDiscs()) {
-      if (d.aim == null && Math.hypot(d.vx, d.vy) < 0.01) continue;
-      launched++;
-    }
-    return launched > 0 && this.world.aliveDiscs().every((d) => d.aim != null || Math.hypot(d.vx, d.vy) > 0.01 || d.grab != null);
-  }
-
-  private allLaunched(): boolean {
-    return this.world.aliveDiscs().every((d) => d.aim == null && d.grab == null);
+    return this.world.aliveDiscs().every((d) => d.aim != null && d.grab == null);
   }
 
   private launchAll(): void {
@@ -327,6 +312,7 @@ class KnockaboutGame implements MinigameInstance {
         this.world.launchDisc(d);
       }
     }
+    this.input.reset();
   }
 
   private endRound(): void {
@@ -426,7 +412,7 @@ class KnockaboutGame implements MinigameInstance {
     for (const d of this.world.discs) {
       const p = this.players[d.owner]!;
       drawDisc(g, d, this.world.arena, p.color, p.light);
-      drawAim(g, d, this.world.arena, this.world, p.color, hiddenAim && d.owner !== this.currentPlayer);
+      drawAim(g, d, this.world.arena, this.world, p.color, hiddenAim && this.players[d.owner]!.kind === "bot");
     }
 
     drawHUD(g, this.players, this.round, this.totalRounds, this.phase, this.turn, this.currentPlayer, this.hurryTimer);
@@ -442,6 +428,12 @@ class KnockaboutGame implements MinigameInstance {
       drawBanner(g, `${name} wins the round!`, `Round ${this.round} / ${this.totalRounds}`, color);
     }
 
+    if (this.phase === "plan") {
+      g.fillStyle = "#F4F7FB";
+      g.font = "600 18px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.fillText("AIM BOTH DISCS • EVERYONE FIRES TOGETHER", GAME_WIDTH / 2, GAME_HEIGHT - 28);
+    }
     this.juice.end(g);
   }
 
@@ -506,7 +498,7 @@ const knockabout: MinigameDefinition = {
   tagline: "Flick to survive",
   description: "Pull back and launch your discs to knock opponents off the platform. Last player standing wins!",
   durationMs: 0,
-  controls: "Drag disc to aim, release to launch",
+  controls: "Drag both discs to lock in · Everyone launches together after 8 seconds",
   create(ctx) {
     return new ModePicker(ctx, "KNOCKABOUT", modes, allBots(ctx));
   },

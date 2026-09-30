@@ -27,8 +27,8 @@ export const eyeOfTheStorm: MinigameDefinition = {
   name: "Eye of the Storm",
   tagline: "Everyone fires at once. Land in the eye.",
   description:
-    "Slingshot six pucks each from your corner into the eye. Center 10, middle 5, outer 2. The swirl bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a storm cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
-  durationMs: 60_000,
+    "Three volleys of six pucks. Each volley banks your points and resets the field. Slingshot from your corner into the eye. Center 10, middle 5, outer 2. The swirl bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a storm cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
+  durationMs: 90_000,
   controls: "Drag back from your corner pad, release to fire",
   create: (ctx) => new EyeOfTheStorm(ctx),
 };
@@ -57,6 +57,10 @@ class EyeOfTheStorm implements MinigameInstance {
   private swirlTimer: number;
   private flash = 0;
   private settled = 0;
+  private volley = 1;
+  private volleyTime = 0;
+  private intermission = 0;
+  private readonly bank = new Map<string, number>();
   private time = 0;
   private scores = new Map<string, number>();
   private readonly juice: Juice;
@@ -105,6 +109,24 @@ class EyeOfTheStorm implements MinigameInstance {
     this.callouts.update(realDt);
     const dt = this.juice.update(realDt);
     this.time += dt;
+    if (this.intermission > 0) {
+      this.intermission -= realDt;
+      if (this.intermission <= 0) {
+        this.volley++;
+        this.volleyTime = 0;
+        this.world.pucks.length = 0;
+        this.lastHit.clear();
+        this.lastPoints.clear();
+        this.bullseyes.clear();
+        this.cell = null;
+        this.settled = 0;
+        for (const seat of this.seats) { seat.left = PUCKS_EACH; seat.reload = 0; seat.aim = null; }
+        this.callouts.show(this.volley === 3 ? "FINAL VOLLEY!" : "VOLLEY 2!", "#FFB020");
+      }
+      return;
+    }
+    this.volleyTime += dt;
+    if (this.volleyTime >= 24) for (const seat of this.seats) seat.left = 0;
     this.flash = Math.max(0, this.flash - dt);
 
     this.swirlTimer -= dt;
@@ -151,6 +173,7 @@ class EyeOfTheStorm implements MinigameInstance {
       this.seats.map((s) => s.player.id),
       this.center,
     );
+    for (const seat of this.seats) this.scores.set(seat.player.id, (this.scores.get(seat.player.id) ?? 0) + (this.bank.get(seat.player.id) ?? 0));
     const humanTop = Math.max(0, ...this.seats.filter((s) => s.player.kind === "human").map((s) => this.scores.get(s.player.id) ?? 0));
     if (!this.newBestShown && this.best > 0 && humanTop > this.best) {
       this.newBestShown = true;
@@ -160,11 +183,19 @@ class EyeOfTheStorm implements MinigameInstance {
 
     const allOut = this.seats.every((s) => s.left === 0);
     const still = this.world.pucks.every(isResting);
-    this.settled = allOut && still ? this.settled + dt : 0;
+    this.settled = allOut && (still || this.volleyTime >= 27) ? this.settled + dt : 0;
+    if (this.settled >= SETTLE_GRACE_S && this.volley < 3) {
+      for (const seat of this.seats) this.bank.set(seat.player.id, this.scores.get(seat.player.id) ?? 0);
+      this.intermission = 1.5;
+      this.grabs.clear();
+      for (const seat of this.seats) seat.aim = null;
+      this.callouts.show("POINTS BANKED!", "#B8FF3D");
+      this.ctx.sfx.collect();
+    }
   }
 
   isFinished(): boolean {
-    return this.settled >= SETTLE_GRACE_S;
+    return this.volley === 3 && this.settled >= SETTLE_GRACE_S;
   }
 
   getScores(): { playerId: string; score: number }[] {
@@ -245,7 +276,7 @@ class EyeOfTheStorm implements MinigameInstance {
   }
 
   private fire(seat: Seat, release: Point): void {
-    if (seat.left <= 0 || seat.reload > 0) return;
+    if (this.intermission > 0 || this.volleyTime >= 24 || seat.left <= 0 || seat.reload > 0) return;
     const v = launchVelocity(seat.pad, release);
     if (!v) return;
     const puck: Puck = { id: this.nextId++, owner: seat.player.id, x: seat.pad.x, y: seat.pad.y, r: PUCK_RADIUS, ...v };
@@ -340,6 +371,10 @@ class EyeOfTheStorm implements MinigameInstance {
       g.textBaseline = "top";
       g.fillText(`BEST ${this.best}`, width / 2, 10);
     }
+    g.fillStyle = "#F4F7FB";
+    g.font = "600 18px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.fillText(`VOLLEY ${this.volley}/3 • ${Math.ceil(Math.max(0, 24 - this.volleyTime))}s • POINTS BANK BETWEEN VOLLEYS`, width / 2, height - 18);
     this.callouts.draw(g, width, height);
   }
 
