@@ -39,7 +39,7 @@ export class World {
       x, y,
       vx: 0, vy: 0,
       r, baseR: r,
-      mass: 1,
+      mass: 1, baseMass: 1,
       inst: null,
       aim: null,
       grab: null,
@@ -326,7 +326,7 @@ export class World {
         const n: Disc = {
           id: this.nextId++, owner: d.owner, x: sx, y: sy,
           vx: d.vx * 0.3, vy: d.vy * 0.3,
-          r: d.baseR, baseR: d.baseR, mass: 1,
+          r: d.baseR, baseR: d.baseR, mass: d.baseMass, baseMass: d.baseMass,
           inst: d.inst, aim: null, grab: null,
           falling: false, fallT: 0, dead: false, spawnT: 0,
           look: d.look, giant: 0, turbo: false, bomb: false, life: false, saveT: 0,
@@ -395,7 +395,7 @@ export class World {
       if (d.spawnT < 1) d.spawnT = Math.min(1, d.spawnT + dt * 3);
       const rT = d.baseR * (d.giant > 0 ? 1.42 : 1);
       d.r = d.r + (rT - d.r) * Math.min(1, dt * 8);
-      d.mass = d.giant > 0 ? 2.6 : 1;
+      d.mass = d.giant > 0 ? 2.6 : d.baseMass;
       if (d.saveT > 0) d.saveT -= dt * 2;
       const sp = Math.hypot(d.vx, d.vy);
       if (d.aim) d.look = Math.atan2(d.aim.dy, d.aim.dx);

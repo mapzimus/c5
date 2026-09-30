@@ -23,7 +23,7 @@ function makePlayer(id = 0): MatchPlayer {
 function makeDisc(owner = 0): Disc {
   return {
     id: 1, owner, x: 0, y: 0, vx: 0, vy: 0,
-    r: TUNING.discRadius, baseR: TUNING.discRadius, mass: 1,
+    r: TUNING.discRadius, baseR: TUNING.discRadius, mass: 1, baseMass: 1,
     inst: null, aim: null, grab: null,
     falling: false, fallT: 0, dead: false, spawnT: 1,
     look: 0, giant: 0, turbo: false, bomb: false, life: false, saveT: 0,

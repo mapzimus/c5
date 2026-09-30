@@ -91,6 +91,7 @@ class ParkYourPirateGame implements MinigameInstance {
   private goldRush: GoldRush | null = null;
   private goldRushSpawnCooldown = 0;
   private convoyTimer = 0;
+  private activeHumanIdx = 0;
   private readonly wheelHandler: (e: WheelEvent) => void;
 
   constructor(private readonly ctx: MinigameContext) {
@@ -263,7 +264,12 @@ class ParkYourPirateGame implements MinigameInstance {
 
     const humans = this.ctx.players.filter((p) => p.kind === "human");
     if (humans.length === 0) return;
-    const human = humans[0]!;
+
+    if (humans.length > 1 && input.justPressed("Tab")) {
+      this.activeHumanIdx = (this.activeHumanIdx + 1) % humans.length;
+    }
+    if (this.activeHumanIdx >= humans.length) this.activeHumanIdx = 0;
+    const human = humans[this.activeHumanIdx]!;
 
     for (let i = 0; i < DOORS.length && i < 9; i++) {
       if (input.justPressed(`Digit${i + 1}` as `Digit${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`)) {
@@ -329,7 +335,9 @@ class ParkYourPirateGame implements MinigameInstance {
     for (const p of this.ctx.players) {
       if (p.kind !== "bot") continue;
       const state = this.playerStates.get(p.id)!;
-      if (state.parked && this.elapsed % 4 < 1) this.raid(p.id);
+      const beatPhase = this.elapsed % 4;
+      const hitWindow = beatPhase < 1.4 && this.ctx.rng.next() < 0.35;
+      if (state.parked && hitWindow) this.raid(p.id);
       if (!state.parked && this.elapsed > 0.8 + this.ctx.rng.next() * 1.5) {
         const takenSpots = [...this.playerStates.values()]
           .filter((s) => s.parked)
@@ -708,14 +716,16 @@ class ParkYourPirateGame implements MinigameInstance {
       lx += g.measureText(label).width + 22;
     }
 
-    const human = this.ctx.players.find((p) => p.kind === "human");
+    const humans = this.ctx.players.filter((p) => p.kind === "human");
+    const humanIdx = Math.min(this.activeHumanIdx, humans.length - 1);
+    const human = humans[humanIdx];
     if (human) {
       const hState = this.playerStates.get(human.id)!;
       if (!hState.parked) {
         const promptY = Math.min(GLOBE_CY + this.globeRadius + 16, GAME_HEIGHT - 50);
         g.fillStyle = "rgba(3,8,16,0.6)";
         g.beginPath();
-        g.roundRect(GLOBE_CX - 170, promptY, 340, 40, 8);
+        g.roundRect(GLOBE_CX - 200, promptY, 400, 40, 8);
         g.fill();
         g.font = "600 14px Outfit, sans-serif";
         g.textAlign = "center";
@@ -727,6 +737,12 @@ class ParkYourPirateGame implements MinigameInstance {
         g.textAlign = "center";
         g.fillStyle = "rgba(148,163,184,0.5)";
         g.fillText(`${hState.reparks} moves ready • next in ${Math.ceil(6 - hState.moveCharge)}s`, GLOBE_CX, GAME_HEIGHT - 8);
+      }
+      if (humans.length > 1) {
+        g.font = "600 12px Outfit, sans-serif";
+        g.textAlign = "left";
+        g.fillStyle = human.color;
+        g.fillText(`Playing as: ${human.name}  ·  Tab to switch`, 14, GAME_HEIGHT - 36);
       }
     }
 
