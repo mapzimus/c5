@@ -29,21 +29,26 @@ export interface RacerSpec {
   arms: "normal" | "noodle" | "stubby";
   legs: "normal" | "long" | "stubby";
   feet: "sneaker" | "clown" | "bare";
+  /**
+   * Hidden handicap on running speed so no body shape has an edge (round and wide runners
+   * fall more and take longer to get up). Calibrated from simulated races; see world.test.ts.
+   */
+  pace: number;
 }
 
 export const RACER_POOL: readonly RacerSpec[] = [
-  { id: "gary", name: "Gary", color: "#ef2b2b", shape: "bean", w: 38, h: 60, eyes: "two", gait: "sprint", hat: "cap", extras: ["mustache", "nose"], pattern: "none", arms: "normal", legs: "normal", feet: "sneaker" },
-  { id: "linda", name: "Big Linda", color: "#ff4fb3", shape: "ball", w: 56, h: 56, eyes: "two", gait: "waddle", hat: "bow", extras: ["lashes", "lipstick"], pattern: "belly", arms: "stubby", legs: "stubby", feet: "sneaker" },
-  { id: "noodle", name: "Noodle", color: "#ffe14d", shape: "noodle", w: 24, h: 84, eyes: "mismatch", gait: "flail", hat: "antenna", extras: ["tongue"], pattern: "none", arms: "noodle", legs: "long", feet: "bare" },
-  { id: "bones", name: "Dr. Bones", color: "#f4f4f5", shape: "pear", w: 36, h: 70, eyes: "two", gait: "powerwalk", hat: "tophat", extras: ["monocle", "nose"], pattern: "none", arms: "normal", legs: "long", feet: "sneaker" },
-  { id: "meatball", name: "Meatball", color: "#8a5a2b", shape: "ball", w: 50, h: 50, eyes: "two", gait: "waddle", hat: "none", extras: ["bucktooth", "unibrow"], pattern: "spots", arms: "stubby", legs: "stubby", feet: "clown" },
-  { id: "kevin", name: "Kevin", color: "#2f6bff", shape: "cube", w: 44, h: 58, eyes: "three", gait: "sprint", hat: "headband", extras: [], pattern: "none", arms: "normal", legs: "normal", feet: "sneaker" },
-  { id: "nana", name: "Nana", color: "#9b4dff", shape: "ball", w: 32, h: 42, eyes: "two", gait: "waddle", hat: "bun", extras: ["glasses"], pattern: "belly", arms: "stubby", legs: "stubby", feet: "sneaker" },
-  { id: "chad", name: "Chad", color: "#ff8a1f", shape: "wide", w: 58, h: 52, eyes: "two", gait: "flail", hat: "none", extras: ["shades", "bucktooth"], pattern: "stripes", arms: "normal", legs: "normal", feet: "clown" },
-  { id: "sprout", name: "Sprout", color: "#9eff3d", shape: "jelly", w: 30, h: 42, eyes: "two", gait: "hop", hat: "sprout", extras: ["lashes"], pattern: "none", arms: "stubby", legs: "stubby", feet: "bare" },
-  { id: "blorp", name: "Blorp", color: "#1fe0e0", shape: "jelly", w: 46, h: 54, eyes: "cyclops", gait: "hop", hat: "propeller", extras: ["tongue"], pattern: "spots", arms: "noodle", legs: "stubby", feet: "bare" },
-  { id: "pickles", name: "Pickles", color: "#138a3a", shape: "pickle", w: 32, h: 70, eyes: "mismatch", gait: "sprint", hat: "none", extras: ["unibrow"], pattern: "spots", arms: "noodle", legs: "normal", feet: "clown" },
-  { id: "boris", name: "Boris", color: "#262a33", shape: "bean", w: 40, h: 62, eyes: "two", gait: "flail", hat: "mohawk", extras: ["unibrow", "bucktooth"], pattern: "stripes", arms: "normal", legs: "normal", feet: "sneaker" },
+  { id: "gary", name: "Gary", color: "#ef2b2b", shape: "bean", w: 38, h: 60, eyes: "two", gait: "sprint", hat: "cap", extras: ["mustache", "nose"], pattern: "none", arms: "normal", legs: "normal", feet: "sneaker", pace: 0.994 },
+  { id: "linda", name: "Big Linda", color: "#ff4fb3", shape: "ball", w: 56, h: 56, eyes: "two", gait: "waddle", hat: "bow", extras: ["lashes", "lipstick"], pattern: "belly", arms: "stubby", legs: "stubby", feet: "sneaker", pace: 1.074 },
+  { id: "noodle", name: "Noodle", color: "#ffe14d", shape: "noodle", w: 24, h: 84, eyes: "mismatch", gait: "flail", hat: "antenna", extras: ["tongue"], pattern: "none", arms: "noodle", legs: "long", feet: "bare", pace: 0.976 },
+  { id: "bones", name: "Dr. Bones", color: "#f4f4f5", shape: "pear", w: 36, h: 70, eyes: "two", gait: "powerwalk", hat: "tophat", extras: ["monocle", "nose"], pattern: "none", arms: "normal", legs: "long", feet: "sneaker", pace: 1.005 },
+  { id: "meatball", name: "Meatball", color: "#8a5a2b", shape: "ball", w: 50, h: 50, eyes: "two", gait: "waddle", hat: "none", extras: ["bucktooth", "unibrow"], pattern: "spots", arms: "stubby", legs: "stubby", feet: "clown", pace: 1.042 },
+  { id: "kevin", name: "Kevin", color: "#2f6bff", shape: "cube", w: 44, h: 58, eyes: "three", gait: "sprint", hat: "headband", extras: [], pattern: "none", arms: "normal", legs: "normal", feet: "sneaker", pace: 1.013 },
+  { id: "nana", name: "Nana", color: "#9b4dff", shape: "ball", w: 32, h: 42, eyes: "two", gait: "waddle", hat: "bun", extras: ["glasses"], pattern: "belly", arms: "stubby", legs: "stubby", feet: "sneaker", pace: 0.979 },
+  { id: "chad", name: "Chad", color: "#ff8a1f", shape: "wide", w: 58, h: 52, eyes: "two", gait: "flail", hat: "none", extras: ["shades", "bucktooth"], pattern: "stripes", arms: "normal", legs: "normal", feet: "clown", pace: 1.072 },
+  { id: "sprout", name: "Sprout", color: "#9eff3d", shape: "jelly", w: 30, h: 42, eyes: "two", gait: "hop", hat: "sprout", extras: ["lashes"], pattern: "none", arms: "stubby", legs: "stubby", feet: "bare", pace: 0.982 },
+  { id: "blorp", name: "Blorp", color: "#1fe0e0", shape: "jelly", w: 46, h: 54, eyes: "cyclops", gait: "hop", hat: "propeller", extras: ["tongue"], pattern: "spots", arms: "noodle", legs: "stubby", feet: "bare", pace: 1.007 },
+  { id: "pickles", name: "Pickles", color: "#138a3a", shape: "pickle", w: 32, h: 70, eyes: "mismatch", gait: "sprint", hat: "none", extras: ["unibrow"], pattern: "spots", arms: "noodle", legs: "normal", feet: "clown", pace: 0.997 },
+  { id: "boris", name: "Boris", color: "#262a33", shape: "bean", w: 40, h: 62, eyes: "two", gait: "flail", hat: "mohawk", extras: ["unibrow", "bucktooth"], pattern: "stripes", arms: "normal", legs: "normal", feet: "sneaker", pace: 0.992 },
 ];
 
 /** Perceptual distance between two hex colours (weighted "redmean" RGB). */

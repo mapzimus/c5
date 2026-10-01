@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../core/rng";
 import { MIN_COLOR_GAP, RACER_COUNT, RACER_POOL, backersOf, colorDistance, draftRacers, placings, scoreBets } from "./rules";
-import { DerbyWorld, FINISH_X, MAX_RACE_S, type Runner } from "./world";
+import { DerbyWorld, FINISH_X, MAX_RACE_S, severityOdds, type Runner } from "./world";
 
 interface RaceLog {
   world: DerbyWorld;
@@ -99,6 +99,60 @@ describe("chaos derby world", () => {
     expect(winners.size).toBeGreaterThanOrEqual(4);
     expect(fastestWon).toBeLessThanOrEqual(6);
   }, 60_000);
+
+  it("makes bad luck more likely to be severe the further up the order you are", () => {
+    const odds = [0, 1, 2, 3, 4, 5].map((p) => severityOdds(p, 6));
+    for (const o of odds) expect(o[0] + o[1] + o[2]).toBeCloseTo(1);
+    for (let p = 1; p < 6; p += 1) {
+      expect(odds[p]![2]).toBeLessThan(odds[p - 1]![2]);
+      expect(odds[p]![0]).toBeGreaterThan(odds[p - 1]![0]);
+    }
+    expect(odds[0]![2]).toBeGreaterThan(0.5);
+    expect(odds[5]![2]).toBeLessThan(0.1);
+    // a leader running away with it gets even more
+    expect(severityOdds(0, 6, 900)[2]).toBeGreaterThan(odds[0]![2]);
+    expect(severityOdds(1, 6, 900)[2]).toBe(odds[1]![2]);
+  });
+
+  it("lands the severe stuff on the front-runners in real races", () => {
+    const severe = [0, 0, 0, 0, 0, 0];
+    const mild = [0, 0, 0, 0, 0, 0];
+    for (let seed = 40; seed < 64; seed += 1) {
+      const rng = new Rng(seed);
+      const world = new DerbyWorld(draftRacers(rng), rng);
+      while (!world.runners.every((r) => r.finished) && world.time < MAX_RACE_S) {
+        for (const e of world.step()) {
+          if (e.position === undefined || e.kind === "fall") continue;
+          if (e.severity === 2) severe[e.position]! += 1;
+          if (e.severity === 0) mild[e.position]! += 1;
+        }
+      }
+      world.destroy();
+    }
+    const front = (xs: number[]): number => xs[0]! + xs[1]!;
+    const back = (xs: number[]): number => xs[4]! + xs[5]!;
+    expect(front(severe)).toBeGreaterThan(back(severe) * 4);
+    expect(back(mild)).toBeGreaterThan(front(mild));
+  }, 60_000);
+
+  it("gives no body shape a built-in edge", () => {
+    const rel = new Map<string, number[]>();
+    for (let seed = 1; seed <= 72; seed += 1) {
+      const rng = new Rng(seed * 3571 + 11);
+      const world = new DerbyWorld(draftRacers(rng), rng);
+      while (!world.runners.every((r) => r.finished) && world.time < MAX_RACE_S) world.step();
+      const times = world.runners.map((r) => (r.finished ? r.finishTime : MAX_RACE_S)).sort((a, b) => a - b);
+      const median = (times[2]! + times[3]!) / 2;
+      for (const r of world.runners) rel.set(r.spec.id, [...(rel.get(r.spec.id) ?? []), (r.finished ? r.finishTime : MAX_RACE_S) / median]);
+      world.destroy();
+    }
+    expect(rel.size).toBe(RACER_POOL.length);
+    for (const [, xs] of rel) {
+      const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+      expect(mean).toBeGreaterThan(0.94);
+      expect(mean).toBeLessThan(1.06);
+    }
+  }, 120_000);
 
   it("slips a runner who steps on a banana", () => {
     const rng = new Rng(5);
