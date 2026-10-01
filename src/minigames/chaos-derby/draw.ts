@@ -21,6 +21,10 @@ export interface RacerLook {
   vy: number;
   /** 0..1 squash after a landing. */
   squash: number;
+  /** Face full of cream pie. */
+  pie?: boolean;
+  /** Strapped into a jetpack. */
+  jet?: boolean;
 }
 
 const INK = "#131a2a";
@@ -54,7 +58,7 @@ interface Eye {
 }
 
 function frameOf(spec: RacerSpec): Frame {
-  const share = spec.legs === "long" ? 0.4 : spec.legs === "stubby" ? 0.2 : 0.3;
+  const share = spec.gait === "float" ? 0.12 : spec.legs === "long" ? 0.4 : spec.legs === "stubby" ? 0.2 : 0.3;
   const legLen = spec.h * share;
   const top = -spec.h / 2;
   const bottom = spec.h / 2 - legLen;
@@ -104,6 +108,49 @@ function blobPath(g: CanvasRenderingContext2D, spec: RacerSpec, f: Frame, time: 
       g.closePath();
       return;
     }
+    case "egg":
+      g.moveTo(0, top);
+      g.bezierCurveTo(hw * 0.85, top, hw * 1.05, top + bh * 0.55, hw * 0.95, top + bh * 0.75);
+      g.bezierCurveTo(hw * 0.85, bottom, hw * 0.35, bottom, 0, bottom);
+      g.bezierCurveTo(-hw * 0.35, bottom, -hw * 0.85, bottom, -hw * 0.95, top + bh * 0.75);
+      g.bezierCurveTo(-hw * 1.05, top + bh * 0.55, -hw * 0.85, top, 0, top);
+      g.closePath();
+      return;
+    case "ghost": {
+      const mid = top + hw;
+      g.moveTo(-hw, mid);
+      g.arc(0, mid, hw, Math.PI, 0);
+      g.lineTo(hw, bottom);
+      for (let i = 0; i <= 8; i += 1) {
+        const x = hw - (hw * 2 * i) / 8;
+        g.lineTo(x, bottom + (i % 2 ? -6 : 2) + Math.sin(time * 7 + i) * 2.5);
+      }
+      g.closePath();
+      return;
+    }
+    case "slug":
+      g.moveTo(hw, bottom);
+      g.lineTo(-hw * 0.7, bottom);
+      g.quadraticCurveTo(-hw * 1.05, bottom, -hw, bottom - bh * 0.25);
+      g.quadraticCurveTo(-hw * 0.5, top + bh * 0.25, hw * 0.35, top);
+      g.quadraticCurveTo(hw * 1.05, top - 2, hw, bottom - bh * 0.35);
+      g.closePath();
+      return;
+    case "taco":
+      g.moveTo(-hw, top + bh * 0.32);
+      g.ellipse(0, top + bh * 0.32, hw, bh * 0.68, 0, Math.PI, 0, true);
+      g.closePath();
+      return;
+    case "cone":
+      g.moveTo(-hw * 0.12, top + 3);
+      g.lineTo(-hw, bottom - 5);
+      g.quadraticCurveTo(-hw, bottom, -hw + 6, bottom);
+      g.lineTo(hw - 6, bottom);
+      g.quadraticCurveTo(hw, bottom, hw, bottom - 5);
+      g.lineTo(hw * 0.12, top + 3);
+      g.quadraticCurveTo(0, top - 3, -hw * 0.12, top + 3);
+      g.closePath();
+      return;
     case "bean":
       g.roundRect(-hw, top, hw * 2, bh, hw * 0.95);
   }
@@ -126,14 +173,26 @@ export function drawRacer(g: CanvasRenderingContext2D, look: RacerLook): void {
   if (look.squash > 0) g.scale(1 + look.squash * 0.35, 1 - look.squash * 0.3);
   if (spec.gait === "hop" && look.vy < -1.5) g.scale(0.88, 1.14);
   if (running && spec.gait === "waddle") g.rotate(Math.sin(phase) * 0.16);
-  if (running && spec.gait !== "hop") g.translate(0, -Math.abs(Math.sin(phase)) * spec.h * 0.035);
+  if (running && spec.gait === "shuffle") g.rotate(0.14 + Math.sin(phase) * 0.03);
+  if (running && spec.gait === "skip") g.translate(0, -Math.abs(Math.sin(phase)) * spec.h * 0.1);
+  else if (running && spec.gait !== "hop") g.translate(0, -Math.abs(Math.sin(phase)) * spec.h * 0.035);
+  if (spec.gait === "float") g.translate(0, Math.sin(time * 3.2 + look.lane) * 3 - 4);
   g.translate(0, -feet);
 
+  const extras = new Set<Extra>(spec.extras);
   if (look.boost) drawFlames(g, f, time);
+  if (extras.has("cape")) drawCape(g, f, time, look.legs === "run");
+  if (look.jet) drawJetpack(g, f, time);
+  if (spec.shape === "taco") drawTacoFilling(g, f, time);
 
   drawArm(g, look, f, phase + Math.PI, true);
-  drawLeg(g, look, f, phase + Math.PI, -f.hw * 0.25, true);
-  drawLeg(g, look, f, phase, f.hw * 0.2, false);
+  if (spec.gait === "scuttle") {
+    for (let i = 0; i < 3; i += 1) drawLeg(g, look, f, phase * 1.6 + i * 2.1 + Math.PI, -f.hw * 0.55 + i * f.hw * 0.5, true);
+    for (let i = 0; i < 3; i += 1) drawLeg(g, look, f, phase * 1.6 + i * 2.1, -f.hw * 0.45 + i * f.hw * 0.5, false);
+  } else if (spec.gait !== "float") {
+    drawLeg(g, look, f, phase + Math.PI, -f.hw * 0.25, true);
+    drawLeg(g, look, f, phase, f.hw * 0.2, false);
+  }
 
   blobPath(g, spec, f, time);
   g.fillStyle = color;
@@ -158,10 +217,96 @@ export function drawRacer(g: CanvasRenderingContext2D, look: RacerLook): void {
 
   drawBib(g, look, f);
   drawFace(g, look, f, color, phase);
+  if (look.pie) drawPie(g, look, f, time);
   drawHat(g, spec.hat, f, time, look.vy);
   drawArm(g, look, f, phase, false);
   if (look.charred) drawSmoke(g, f, time);
   g.restore();
+}
+
+function drawCape(g: CanvasRenderingContext2D, f: Frame, time: number, running: boolean): void {
+  const flap = Math.sin(time * (running ? 14 : 4));
+  const y0 = f.top + f.bh * 0.18;
+  const len = f.bh + f.legLen * 0.6;
+  g.fillStyle = "#b91c1c";
+  g.strokeStyle = "#111827";
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(f.hw * 0.1, y0);
+  g.quadraticCurveTo(-f.hw - 14 - flap * 6, y0 + len * 0.3, -f.hw - 22 - flap * 10, y0 + len * 0.95);
+  for (let i = 0; i <= 3; i += 1) g.lineTo(-f.hw - 22 + i * 7 - flap * (10 - i * 3), y0 + len * (0.95 + (i % 2 ? -0.08 : 0)));
+  g.quadraticCurveTo(-f.hw * 0.4, y0 + len * 0.5, -f.hw * 0.2, y0);
+  g.closePath();
+  g.fill();
+  g.stroke();
+  g.fillStyle = "#111827";
+  g.fillRect(-f.hw * 0.7, y0 - 3, f.hw * 1.1, 5);
+}
+
+function drawJetpack(g: CanvasRenderingContext2D, f: Frame, time: number): void {
+  const x = -f.hw - 9;
+  const y = f.top + f.bh * 0.25;
+  for (let i = 0; i < 2; i += 1) {
+    g.fillStyle = i ? "#94a3b8" : "#64748b";
+    g.beginPath();
+    g.roundRect(x - i * 7, y, 9, f.bh * 0.6, 4);
+    g.fill();
+    for (let k = 0; k < 3; k += 1) {
+      g.fillStyle = ["#fde047", "#fb923c", "#ef4444"][k]!;
+      g.beginPath();
+      g.ellipse(x - i * 7 + 4.5, y + f.bh * 0.6 + 6 + k * 5, 4 - k, 7 + Math.sin(time * 40 + i + k) * 3, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+}
+
+function drawTacoFilling(g: CanvasRenderingContext2D, f: Frame, time: number): void {
+  const y = f.top + f.bh * 0.32;
+  g.fillStyle = "#7c2d12";
+  g.beginPath();
+  g.ellipse(0, y - 2, f.hw * 0.85, 7, 0, Math.PI, 0);
+  g.fill();
+  g.fillStyle = "#4ade80";
+  g.beginPath();
+  g.moveTo(-f.hw * 0.95, y);
+  for (let i = 0; i <= 10; i += 1) g.lineTo(-f.hw * 0.95 + (f.hw * 1.9 * i) / 10, y - 6 - (i % 2) * 6 - Math.sin(time * 6 + i) * 1.5);
+  g.lineTo(f.hw * 0.95, y + 2);
+  g.closePath();
+  g.fill();
+  g.fillStyle = "#ef4444";
+  for (const dx of [-0.5, 0.05, 0.55]) {
+    g.beginPath();
+    g.arc(f.hw * dx, y - 6, 4.5, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = "#fde047";
+  for (const dx of [-0.25, 0.3]) g.fillRect(f.hw * dx, y - 11, 3, 8);
+}
+
+function drawPie(g: CanvasRenderingContext2D, look: RacerLook, f: Frame, time: number): void {
+  const eyes = eyesOf(look.spec, f);
+  const cx = eyes.reduce((s, e) => s + e.x, 0) / eyes.length + 2;
+  const cy = eyes[0]!.y + 4;
+  const r = Math.max(10, f.hw * 0.75);
+  g.fillStyle = "#fffbeb";
+  g.beginPath();
+  for (let i = 0; i < 12; i += 1) {
+    const a = (i / 12) * Math.PI * 2;
+    const rr = r * (i % 2 ? 0.8 : 1.05);
+    g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.85);
+  }
+  g.closePath();
+  g.fill();
+  for (let i = 0; i < 3; i += 1) {
+    const drip = ((time * 0.5 + i * 0.3) % 1) * 10;
+    g.beginPath();
+    g.ellipse(cx - r * 0.5 + i * r * 0.5, cy + r * 0.7 + drip * 0.5, 2.5, 4 + drip * 0.4, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  g.fillStyle = "#ef4444";
+  g.beginPath();
+  g.arc(cx + r * 0.2, cy - r * 0.35, 3.5, 0, Math.PI * 2);
+  g.fill();
 }
 
 function drawPattern(g: CanvasRenderingContext2D, spec: RacerSpec, f: Frame, color: string): void {
@@ -222,6 +367,18 @@ function legAngles(look: RacerLook, phase: number, back: boolean): [number, numb
       if (gait === "powerwalk") {
         const a = Math.sin(phase) * 0.6;
         return [a, a + 0.05];
+      }
+      if (gait === "shuffle") {
+        const a = Math.sin(phase) * 0.25;
+        return [a + 0.1, a + 0.1];
+      }
+      if (gait === "skip") {
+        const a = Math.sin(phase) * 0.7;
+        return [a, a - Math.max(0, Math.sin(phase * 2)) * 1.5];
+      }
+      if (gait === "scuttle") {
+        const a = Math.sin(phase) * 0.7;
+        return [a, a - 0.4];
       }
       {
         const a = Math.sin(phase) * 0.85;
@@ -313,6 +470,22 @@ function drawArm(g: CanvasRenderingContext2D, look: RacerLook, f: Frame, phase: 
           a = -Math.sin(phase) * 1.3;
           bend = 1.6;
           break;
+        case "float":
+          a = 1.45 + Math.sin(time * 4 + (back ? 1 : 0)) * 0.25;
+          bend = 0.2;
+          break;
+        case "scuttle":
+          a = 0.8 + Math.sin(time * 20 + (back ? 1.5 : 0)) * 0.6;
+          bend = 0.4;
+          break;
+        case "skip":
+          a = Math.PI - 0.6 + Math.sin(phase + (back ? Math.PI : 0)) * 0.8;
+          bend = -0.2;
+          break;
+        case "shuffle":
+          a = -0.55;
+          bend = 0.9;
+          break;
         default:
           a = -Math.sin(phase) * 1.1;
           bend = 1.1;
@@ -390,8 +563,14 @@ function eyesOf(spec: RacerSpec, f: Frame): Eye[] {
   const base = Math.max(4.5, Math.min(9.5, Math.min(f.hw * 0.36, f.bh * 0.17)));
   const er = spec.shape === "noodle" ? 6.5 : base;
   const fx = f.hw * 0.25;
-  const ey = f.top + f.bh * (spec.shape === "noodle" ? 0.16 : spec.shape === "cube" ? 0.26 : 0.3);
+  const rows: Partial<Record<RacerSpec["shape"], number>> = { noodle: 0.16, cube: 0.26, cone: 0.5, taco: 0.58, egg: 0.38, ghost: 0.34 };
+  const ey = f.top + f.bh * (rows[spec.shape] ?? 0.3);
   switch (spec.eyes) {
+    case "stalks":
+      return [
+        { x: f.hw * 0.42, y: f.top - 12, r: 6 },
+        { x: f.hw * 0.78, y: f.top - 17, r: 6 },
+      ];
     case "cyclops":
       return [{ x: fx * 0.6, y: ey + er * 0.2, r: er * 1.75 }];
     case "three":
@@ -405,6 +584,7 @@ function eyesOf(spec: RacerSpec, f: Frame): Eye[] {
         { x: fx - er * 0.7, y: ey, r: er * 1.35 },
         { x: fx + er * 1.35, y: ey + er * 0.35, r: er * 0.7 },
       ];
+    case "hollow":
     case "two":
       return [
         { x: fx - er * 0.85, y: ey, r: er },
@@ -422,14 +602,27 @@ function drawFace(g: CanvasRenderingContext2D, look: RacerLook, f: Frame, color:
   const cx = eyes.reduce((s, e) => s + e.x, 0) / eyes.length;
   const lowest = Math.max(...eyes.map((e) => e.y + e.r));
   const unit = Math.max(...eyes.map((e) => e.r)) / (spec.eyes === "cyclops" ? 1.75 : spec.eyes === "mismatch" ? 1.35 : spec.eyes === "three" ? 0.78 : 1);
-  const mx = cx + unit * 0.4;
-  const my = lowest + unit * (extras.has("nose") ? 1.5 : 0.9);
+  const stalks = spec.eyes === "stalks";
+  const hollow = spec.eyes === "hollow";
+  const mx = stalks ? f.hw * 0.68 : cx + unit * 0.4;
+  const my = stalks ? f.top + f.bh * 0.55 : lowest + unit * (extras.has("nose") ? 1.5 : 0.9);
+  if (stalks) {
+    g.strokeStyle = shade(color, -0.25);
+    g.lineWidth = 3;
+    g.lineCap = "round";
+    g.beginPath();
+    for (const e of eyes) {
+      g.moveTo(e.x - 4, f.top + 8);
+      g.quadraticCurveTo(e.x - 6 + Math.sin(time * 5 + e.x) * 3, (f.top + e.y) / 2, e.x, e.y);
+    }
+    g.stroke();
+  }
   const blink = (time + look.lane * 1.37) % 4.3 < 0.12;
   const googly = Math.max(-0.4, Math.min(0.4, -look.vy * 0.05)) + (look.legs === "run" ? Math.sin(phase * 2) * 0.12 : 0);
 
   const whites = (scale = 1): void => {
     for (const e of eyes) {
-      g.fillStyle = "#fff";
+      g.fillStyle = hollow ? INK : "#fff";
       g.strokeStyle = INK;
       g.lineWidth = 1.5;
       g.beginPath();
@@ -444,7 +637,7 @@ function drawFace(g: CanvasRenderingContext2D, look: RacerLook, f: Frame, color:
       const py = e.y + (dy + googly) * e.r;
       g.fillStyle = INK;
       g.beginPath();
-      g.arc(px, py, e.r * size, 0, Math.PI * 2);
+      if (!hollow) g.arc(px, py, e.r * size, 0, Math.PI * 2);
       g.fill();
       g.fillStyle = "#fff";
       g.beginPath();
@@ -762,6 +955,71 @@ function drawFace(g: CanvasRenderingContext2D, look: RacerLook, f: Frame, color:
     g.fill();
   }
   mouth(mouthKind);
+  if (extras.has("blush") || extras.has("freckles")) {
+    for (const [i, e] of [eyes[0]!, eyes[eyes.length - 1]!].entries()) {
+      const bx = e.x + (i === 0 ? -unit * 0.6 : unit * 0.6);
+      const by = e.y + e.r + unit * 0.55;
+      if (extras.has("blush")) {
+        g.fillStyle = "rgba(244,114,182,0.6)";
+        g.beginPath();
+        g.ellipse(bx, by, unit * 0.65, unit * 0.35, 0, 0, Math.PI * 2);
+        g.fill();
+      }
+      if (extras.has("freckles")) {
+        g.fillStyle = "rgba(120,53,15,0.75)";
+        for (let k = 0; k < 3; k += 1) {
+          g.beginPath();
+          g.arc(bx - unit * 0.4 + k * unit * 0.4, by + (k % 2) * 2, 1.2, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+    }
+  }
+  if (extras.has("eyepatch")) {
+    const e = eyes[0]!;
+    g.strokeStyle = "#0b0f19";
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(-f.hw, e.y - e.r * 1.6);
+    g.lineTo(e.x + e.r * 1.5, e.y - e.r * 0.2);
+    g.stroke();
+    g.fillStyle = "#0b0f19";
+    g.beginPath();
+    g.ellipse(e.x, e.y, e.r * 1.15, e.r * 1.2, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  if (extras.has("beard") || extras.has("gingerbeard")) {
+    const top = my - unit * 0.3;
+    const w = Math.max(unit * 2.4, f.hw * 0.95);
+    g.fillStyle = extras.has("beard") ? "#f1f5f9" : "#c2410c";
+    g.beginPath();
+    g.moveTo(mx - w * 0.6, top);
+    for (let i = 0; i <= 6; i += 1) {
+      const t = i / 6;
+      g.lineTo(mx - w * 0.6 + w * 1.2 * t, top + unit * 1.8 + Math.sin(t * Math.PI) * unit * 1.4 + (i % 2) * 3);
+    }
+    g.lineTo(mx + w * 0.6, top);
+    g.closePath();
+    g.fill();
+    g.fillStyle = "#3b0d16";
+    g.beginPath();
+    g.ellipse(mx, my + unit * 0.2, unit * 0.45, unit * 0.25, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  if (extras.has("fangs")) {
+    g.fillStyle = "#fff";
+    g.strokeStyle = INK;
+    g.lineWidth = 1;
+    for (const dx of [-0.45, 0.45]) {
+      g.beginPath();
+      g.moveTo(mx + dx * unit - unit * 0.22, my);
+      g.lineTo(mx + dx * unit + unit * 0.22, my);
+      g.lineTo(mx + dx * unit, my + unit * 0.75);
+      g.closePath();
+      g.fill();
+      g.stroke();
+    }
+  }
   if (extras.has("mustache")) {
     const y = my - unit * 0.35;
     g.fillStyle = "#3f2a14";
@@ -967,6 +1225,91 @@ function drawHat(g: CanvasRenderingContext2D, hat: Hat, f: Frame, time: number, 
       g.fill();
       return;
     }
+    case "crown":
+      g.fillStyle = "#fbbf24";
+      g.strokeStyle = "#92400e";
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(-hw * 0.55, top + 4);
+      g.lineTo(-hw * 0.55, top - 10);
+      g.lineTo(-hw * 0.28, top - 3);
+      g.lineTo(0, top - 14);
+      g.lineTo(hw * 0.28, top - 3);
+      g.lineTo(hw * 0.55, top - 10);
+      g.lineTo(hw * 0.55, top + 4);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      for (const [x, c] of [[-0.3, "#ef4444"], [0, "#3b82f6"], [0.3, "#22c55e"]] as const) {
+        g.fillStyle = c;
+        g.beginPath();
+        g.arc(hw * x, top + 0.5, 2.2, 0, Math.PI * 2);
+        g.fill();
+      }
+      return;
+    case "slick":
+      g.fillStyle = "#0b0f19";
+      g.beginPath();
+      g.moveTo(-hw * 1.02, top + f.bh * 0.28);
+      g.quadraticCurveTo(-hw * 1.05, top - 4, 0, top - 3);
+      g.quadraticCurveTo(hw * 1.05, top - 4, hw * 1.02, top + f.bh * 0.18);
+      g.lineTo(hw * 0.45, top + f.bh * 0.08);
+      g.lineTo(hw * 0.2, top + f.bh * 0.2);
+      g.lineTo(-hw * 0.1, top + f.bh * 0.08);
+      g.closePath();
+      g.fill();
+      g.fillStyle = "rgba(255,255,255,0.35)";
+      g.fillRect(-hw * 0.5, top, hw * 0.6, 2);
+      return;
+    case "pirate":
+      g.fillStyle = "#111827";
+      g.beginPath();
+      g.moveTo(-hw * 1.1, top + 4);
+      g.quadraticCurveTo(-hw * 0.6, top - 16, 0, top - 12);
+      g.quadraticCurveTo(hw * 0.6, top - 16, hw * 1.1, top + 4);
+      g.quadraticCurveTo(0, top - 3, -hw * 1.1, top + 4);
+      g.fill();
+      g.fillStyle = "#f8fafc";
+      g.beginPath();
+      g.arc(0, top - 6, 3, 0, Math.PI * 2);
+      g.fill();
+      g.fillRect(-3.5, top - 2.5, 7, 1.2);
+      return;
+    case "party": {
+      const stripes = ["#3b82f6", "#facc15", "#22c55e"];
+      g.save();
+      g.beginPath();
+      g.moveTo(-8, top + 2);
+      g.lineTo(2, top - 26);
+      g.lineTo(9, top + 2);
+      g.closePath();
+      g.clip();
+      for (let i = 0; i < 6; i += 1) {
+        g.fillStyle = stripes[i % 3]!;
+        g.fillRect(-10, top + 2 - i * 5, 22, 5);
+      }
+      g.restore();
+      g.fillStyle = "#f472b6";
+      g.beginPath();
+      g.arc(2, top - 27, 4, 0, Math.PI * 2);
+      g.fill();
+      return;
+    }
+    case "flatcap":
+      g.fillStyle = "#57534e";
+      g.beginPath();
+      g.ellipse(-1, top + 3, hw * 0.95, 7, 0, Math.PI, 0);
+      g.fill();
+      g.beginPath();
+      g.ellipse(hw * 0.65, top + 3, hw * 0.45, 3, 0.1, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = "#78716c";
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(-hw * 0.6, top - 1);
+      g.lineTo(hw * 0.5, top - 1);
+      g.stroke();
+      return;
     case "none":
   }
 }
