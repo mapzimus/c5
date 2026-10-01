@@ -23,7 +23,7 @@ function runRace(seed: number): RaceLog {
       const d = r.mode === "fallen" || r.mode === "getup" ? (down.get(r.lane) ?? 0) + 1 / 60 : 0;
       down.set(r.lane, d);
       longestDown = Math.max(longestDown, d);
-      deepest = Math.max(deepest, r.body.position.y + world.heightAt(r.body.position.x));
+      if (r.mode !== "ride") deepest = Math.max(deepest, r.body.position.y + world.heightAt(r.body.position.x));
       if (!Number.isFinite(r.body.position.x) || !Number.isFinite(r.body.position.y)) finite = false;
     }
   }
@@ -137,7 +137,8 @@ describe("chaos derby world", () => {
 
   it("gives no body shape a built-in edge", () => {
     const rel = new Map<string, number[]>();
-    for (let seed = 1; seed <= 72; seed += 1) {
+    // 20 runners: enough races that each one shows up ~35 times
+    for (let seed = 1; seed <= 120; seed += 1) {
       const rng = new Rng(seed * 3571 + 11);
       const world = new DerbyWorld(draftRacers(rng), rng);
       while (!world.runners.every((r) => r.finished) && world.time < MAX_RACE_S) world.step();
@@ -152,7 +153,36 @@ describe("chaos derby world", () => {
       expect(mean).toBeGreaterThan(0.94);
       expect(mean).toBeLessThan(1.06);
     }
-  }, 120_000);
+  }, 180_000);
+
+  it("survives every event: nobody stays down, gets stuck in the air, or stays giant", () => {
+    expect(DerbyWorld.EVENTS.length).toBeGreaterThanOrEqual(29);
+    for (const kind of DerbyWorld.EVENTS) {
+      const rng = new Rng(kind.length * 31 + 7);
+      const world = new DerbyWorld(draftRacers(rng), rng, { events: false });
+      for (let i = 0; i < 60 * 4; i += 1) world.step();
+      const fired = world.fire(kind, 2);
+      expect(fired.length, kind).toBeGreaterThan(0);
+      const down = new Map<number, number>();
+      let longestDown = 0;
+      for (let i = 0; i < 60 * 12; i += 1) {
+        world.step();
+        for (const r of world.runners) {
+          const d = r.mode === "run" || r.mode === "finished" ? 0 : (down.get(r.lane) ?? 0) + 1 / 60;
+          down.set(r.lane, d);
+          longestDown = Math.max(longestDown, d);
+        }
+      }
+      expect(longestDown, kind).toBeLessThan(9);
+      for (const r of world.runners) {
+        expect(Number.isFinite(r.body.position.x) && Number.isFinite(r.body.position.y), kind).toBe(true);
+        expect(r.ride, kind).toBeNull();
+        expect(r.body.position.y + world.heightAt(r.body.position.x), kind).toBeLessThan(40);
+        expect(r.scale, kind).toBe(1);
+      }
+      world.destroy();
+    }
+  }, 60_000);
 
   it("slips a runner who steps on a banana", () => {
     const rng = new Rng(5);
