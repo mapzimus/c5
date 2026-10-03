@@ -85,17 +85,17 @@ export function botRelease(rng: Rng, pad: Point, center: Point): Point {
   return { x: pad.x - Math.cos(angle) * pull, y: pad.y - Math.sin(angle) * pull };
 }
 
-/** Storm cells: glowing pickups that give the owner of the first puck through them an extra puck. */
+/** Bonus cells: glowing pickups that give the owner of the first puck through them an extra puck. */
 export const CELL_RADIUS = 26;
 export const CELL_LIFE_S = 7;
 export const CELL_EVERY_S: readonly [number, number] = [5, 9];
 
-export interface StormCell extends Point {
+export interface BonusCell extends Point {
   life: number;
 }
 
 /** Somewhere open: off the bullseye, away from pads and pegs. Null if no spot found. */
-export function placeCell(rng: Rng, width: number, height: number, pads: readonly Point[], pegs: readonly Peg[]): StormCell | null {
+export function placeCell(rng: Rng, width: number, height: number, pads: readonly Point[], pegs: readonly Peg[]): BonusCell | null {
   const center = { x: width / 2, y: height / 2 };
   for (let tries = 0; tries < 100; tries += 1) {
     const cell = { x: rng.float(120, width - 120), y: rng.float(90, height - 90), life: CELL_LIFE_S };

@@ -19,15 +19,15 @@ import {
   touchesCell,
   scoreBoard,
   type Point,
-  type StormCell,
+  type BonusCell,
 } from "./rules";
 
 export const eyeOfTheStorm: MinigameDefinition = {
   id: "eye-of-the-storm",
-  name: "Eye of the Storm",
-  tagline: "Everyone fires at once. Land in the eye.",
+  name: "Bullseye",
+  tagline: "Everyone fires at once. Land in the centre.",
   description:
-    "Three volleys of six pucks. Each volley banks your points and resets the field. Slingshot from your corner into the eye. Center 10, middle 5, outer 2. The swirl bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a storm cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
+    "Three volleys of six pucks. Each volley banks your points and resets the field. Slingshot from your corner into the bullseye. Centre 10, middle 5, outer 2. The vortex bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a bonus cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
   durationMs: 90_000,
   controls: "Drag back from your corner pad, release to fire",
   create: (ctx) => new EyeOfTheStorm(ctx),
@@ -65,7 +65,7 @@ class EyeOfTheStorm implements MinigameInstance {
   private scores = new Map<string, number>();
   private readonly juice: Juice;
   private readonly callouts = new Callouts();
-  private cell: StormCell | null = null;
+  private cell: BonusCell | null = null;
   private cellTimer: number;
   /** puck id -> who last hit it and when, to credit knockouts. */
   private readonly lastHit = new Map<number, { owner: string; at: number }>();
@@ -248,7 +248,7 @@ class EyeOfTheStorm implements MinigameInstance {
     }
   }
 
-  /** Storm cells: shoot a puck through one for an extra puck. */
+  /** Bonus cells: shoot a puck through one for an extra puck. */
   private updateCell(dt: number): void {
     if (this.cell) {
       this.cell.life -= dt;
@@ -378,7 +378,7 @@ class EyeOfTheStorm implements MinigameInstance {
     this.callouts.draw(g, width, height);
   }
 
-  private drawCell(g: CanvasRenderingContext2D, cell: StormCell): void {
+  private drawCell(g: CanvasRenderingContext2D, cell: BonusCell): void {
     const pulse = 1 + Math.sin(this.time * 8) * 0.12;
     const fade = Math.min(1, cell.life / 1.5);
     g.save();
