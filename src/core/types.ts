@@ -52,7 +52,7 @@ export interface SessionStanding {
 
 export const PLAYER_COLORS = ["#3EE0FF", "#FF3D7A", "#FFB020", "#B8FF3D"] as const;
 
-export const DEFAULT_NAMES = ["Gale", "Surge", "Squall", "Tempest"] as const;
+export const DEFAULT_NAMES = ["Ace", "Blitz", "Clash", "Dash"] as const;
 
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
