@@ -5,7 +5,7 @@ export const PUCKS_EACH = 6;
 export const MAX_PULL = 170;
 export const MAX_LAUNCH_SPEED = 1500;
 export const MIN_PULL = 14;
-export const PAD_RADIUS = 70;
+export const PAD_RADIUS = 75;
 export const RELOAD_S = 0.55;
 
 /** Target rings from the inside out. A puck scores the best ring its centre sits in. */

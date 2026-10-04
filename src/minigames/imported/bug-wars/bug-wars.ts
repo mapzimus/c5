@@ -22,7 +22,7 @@ import {
   tilesOwned,
 } from "./rules";
 
-const HEX_R = 38;
+const HEX_R = 44;
 const HEX_W = HEX_R * Math.sqrt(3);
 const HEX_H = HEX_R * 2;
 
@@ -160,7 +160,7 @@ class BugWarsGame implements MinigameInstance {
 
     const bx = GAME_WIDTH / 2;
     const by = GAME_HEIGHT - 36;
-    if (click.x >= bx - 90 && click.x <= bx + 90 && click.y >= by - 16 && click.y <= by + 16) {
+    if (click.x >= bx - 110 && click.x <= bx + 110 && click.y >= by - 30 && click.y <= by + 30) {
       this.advanceTurn();
       return;
     }
@@ -376,7 +376,7 @@ class BugWarsGame implements MinigameInstance {
 
   private hitTile(x: number, y: number): number | null {
     let best = -1;
-    let bestDist = HEX_R * 1.1;
+    let bestDist = HEX_R * 1.5;
     for (let i = 0; i < this.hexCenters.length; i++) {
       const center = this.hexCenters[i]!;
       const dx = x - center.x;
@@ -606,17 +606,17 @@ class BugWarsGame implements MinigameInstance {
     const bx = GAME_WIDTH / 2;
     const by = GAME_HEIGHT - 36;
     const hover = this.ctx.input.hover;
-    const hovered = hover && hover.x >= bx - 90 && hover.x <= bx + 90 && hover.y >= by - 16 && hover.y <= by + 16;
+    const hovered = hover && hover.x >= bx - 110 && hover.x <= bx + 110 && hover.y >= by - 30 && hover.y <= by + 30;
 
     g.beginPath();
-    roundRect(g, bx - 90, by - 16, 180, 32, 8);
+    roundRect(g, bx - 110, by - 30, 220, 60, 12);
     g.fillStyle = hovered ? "rgba(100,116,139,0.35)" : "rgba(100,116,139,0.15)";
     g.fill();
     g.strokeStyle = "#64748b";
     g.lineWidth = 1;
     g.stroke();
 
-    g.font = "600 13px Outfit, sans-serif";
+    g.font = "600 18px Outfit, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = hovered ? "#e2e8f0" : "#94a3b8";

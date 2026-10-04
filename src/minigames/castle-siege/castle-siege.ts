@@ -683,7 +683,7 @@ export class CastleSiege implements MinigameInstance {
   }
 
   private rotateButton(team: Team): Button {
-    return { x: ZONES[team].x1 - 76, y: TRAY_Y + 8, w: 76, h: 84 };
+    return { x: ZONES[team].x1 - 100, y: TRAY_Y, w: 100, h: 100 };
   }
 
   private readonly onDown = (event: PointerEvent): void => {

@@ -109,6 +109,7 @@ export class App {
       );
       card.addEventListener("click", () => {
         this.sfx.unlock();
+        this.sfx.select();
         this.launch(game);
       });
       cards.append(card);
@@ -186,6 +187,25 @@ export class App {
     this.selected = game;
     const screen = this.screens.get("play")!;
     clear(screen);
+
+    const info = el("div", { class: "pregame" });
+    info.append(
+      el("p", { class: "brand", text: game.durationMs > 0 ? `${game.durationMs / 1000}s` : "Turn-based" }),
+      el("h2", { class: "display", text: game.name }),
+      el("p", { class: "lede", text: game.description }),
+      el("p", { class: "controls-hint", text: game.controls }),
+      el("div", { class: "row" },
+        button("Play", () => { this.sfx.select(); this.startPlay(game); }),
+        ghost("Back", () => { this.renderMenu(); this.show("menu"); }),
+      ),
+    );
+    screen.append(info);
+    this.show("play");
+  }
+
+  private startPlay(game: MinigameDefinition): void {
+    const screen = this.screens.get("play")!;
+    clear(screen);
     const bar = el("div", { class: "hud-bar" });
     bar.append(
       el("strong", { text: game.name }),
@@ -202,7 +222,6 @@ export class App {
     const hint = el("p", { class: "rotate-hint", text: "Turn your phone sideways for a bigger board" });
     screen.append(bar, wrap, hint);
     enterLandscape();
-    this.show("play");
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
     this.engine.start(game, this.players, (scores) => this.finishGame(scores));

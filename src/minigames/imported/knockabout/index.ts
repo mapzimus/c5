@@ -141,7 +141,7 @@ export class KnockaboutGame implements MinigameInstance {
     for (const d of discs) {
       if (d.grab != null) continue;
       const dist = Math.hypot(d.x - wx, d.y - wy);
-      if (dist < d.r * 3 && dist < bd) {
+      if (dist < d.r * 4 && dist < bd) {
         bd = dist;
         best = d;
       }
