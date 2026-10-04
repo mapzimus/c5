@@ -1,4 +1,5 @@
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "./types";
+import { drawTimerBar } from "./draw";
 import type { InputManager } from "./input";
 import type { Sfx } from "./audio";
 import type { Player } from "./types";
@@ -17,6 +18,9 @@ export class Engine {
   private raf = 0;
   private last = 0;
   private countdown = 3;
+  private goTimer = 0;
+  private finishDelay = 0;
+  private pendingScores: { playerId: string; score: number }[] | null = null;
   private onDone: ((scores: { playerId: string; score: number }[]) => void) | null = null;
 
   constructor(
@@ -89,6 +93,7 @@ export class Engine {
       this.countdown -= dt;
       if (this.countdown <= 0) {
         this.phase = "playing";
+        this.goTimer = 0.7;
         this.sfx.go();
       } else if (this.countdown <= 2 && this.countdown + dt > 2) {
         this.sfx.countdown();
@@ -97,6 +102,7 @@ export class Engine {
       }
     } else if (this.phase === "playing" && this.instance && this.definition) {
       this.elapsed += dt;
+      if (this.goTimer > 0) this.goTimer -= dt;
       if (this.definition.durationMs > 0) {
         this.remaining = Math.max(0, this.definition.durationMs / 1000 - this.elapsed);
       }
@@ -105,12 +111,22 @@ export class Engine {
       if (timedOut || this.instance.isFinished()) {
         this.finish();
       }
+    } else if (this.phase === "finished" && this.pendingScores) {
+      this.finishDelay -= dt;
+      if (this.finishDelay <= 0) {
+        const scores = this.pendingScores;
+        this.pendingScores = null;
+        this.onDone?.(scores);
+      }
     }
 
     this.instance?.render(this.ctx);
+    if (this.phase === "playing" && this.definition && this.definition.durationMs > 0) {
+      drawTimerBar(this.ctx, GAME_WIDTH, this.remaining, this.definition.durationMs / 1000);
+    }
     this.drawOverlay();
     this.input.endFrame();
-    if (this.phase !== "finished") {
+    if (!(this.phase === "finished" && !this.pendingScores)) {
       this.raf = requestAnimationFrame(this.tick);
     }
   };
@@ -129,15 +145,34 @@ export class Engine {
       ctx.font = "600 28px Outfit, sans-serif";
       ctx.fillStyle = "#3EE0FF";
       ctx.fillText(this.definition?.name ?? "", GAME_WIDTH / 2, GAME_HEIGHT / 2 + 110);
+    } else if (this.goTimer > 0) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, this.goTimer / 0.3);
+      ctx.fillStyle = "#B8FF3D";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "700 100px Bebas Neue, Impact, sans-serif";
+      ctx.fillText("GO!", GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      ctx.restore();
+    } else if (this.phase === "finished" && this.pendingScores) {
+      ctx.save();
+      ctx.fillStyle = "rgba(7,11,20,0.5)";
+      ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+      ctx.fillStyle = "#F4F7FB";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "700 72px Bebas Neue, Impact, sans-serif";
+      ctx.fillText("Time!", GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      ctx.restore();
     }
   }
 
   private finish(): void {
     if (this.phase === "finished") return;
     this.phase = "finished";
-    const scores = this.instance?.getScores() ?? [];
+    this.pendingScores = this.instance?.getScores() ?? [];
+    this.finishDelay = 1.4;
     this.sfx.win();
-    this.onDone?.(scores);
   }
 
   abort(): void {

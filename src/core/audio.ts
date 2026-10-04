@@ -71,4 +71,8 @@ export class Sfx {
   tick(): void {
     this.tone(320, 0.04, "square", 0.03);
   }
+
+  select(): void {
+    this.tone(520, 0.06, "triangle", 0.05);
+  }
 }
