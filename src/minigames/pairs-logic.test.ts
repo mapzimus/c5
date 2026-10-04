@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CRESTS, PAIR_COUNT, PAIR_FACES } from "./crests";
+import { FLAGS, PAIR_COUNT, PAIR_FACES } from "./flags";
 import {
   BOT_MEMORY_LIMIT,
   CLOSER_BONUS,
@@ -23,16 +23,16 @@ import {
   type PairCard,
 } from "./pairs-logic";
 
-describe("crest pool", () => {
+describe("flag pool", () => {
   it("is large enough to randomize a 6x6 round", () => {
-    expect(PAIR_FACES.length).toBe(CRESTS.length);
-    expect(CRESTS.length).toBeGreaterThan(PAIR_COUNT);
+    expect(PAIR_FACES.length).toBe(FLAGS.length);
+    expect(FLAGS.length).toBeGreaterThan(PAIR_COUNT);
     expect(new Set(PAIR_FACES).size).toBe(PAIR_FACES.length);
   });
 });
 
 describe("dealPairs", () => {
-  it("deals two of each selected crest", () => {
+  it("deals two of each selected flag", () => {
     const faces = pickFaces(PAIR_FACES, PAIR_COUNT, (max) => max - 1);
     expect(faces).toHaveLength(PAIR_COUNT);
     expect(new Set(faces).size).toBe(PAIR_COUNT);
