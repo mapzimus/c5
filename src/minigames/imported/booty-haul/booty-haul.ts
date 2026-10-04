@@ -93,6 +93,9 @@ class ParkYourPirateGame implements MinigameInstance {
   private convoyTimer = 0;
   private activeHumanIdx = 0;
   private readonly wheelHandler: (e: WheelEvent) => void;
+  private readonly touchStartHandler: (e: TouchEvent) => void;
+  private readonly touchMoveHandler: (e: TouchEvent) => void;
+  private pinchDist = 0;
 
   constructor(private readonly ctx: MinigameContext) {
     this.lanes = buildLanes();
@@ -112,6 +115,28 @@ class ParkYourPirateGame implements MinigameInstance {
       this.globeRadius = Math.max(GLOBE_R_MIN, Math.min(GLOBE_R_MAX, this.globeRadius + delta));
     };
     ctx.canvas.addEventListener("wheel", this.wheelHandler, { passive: false });
+
+    // Pinch-to-zoom for touch
+    this.touchStartHandler = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
+        const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
+        this.pinchDist = Math.hypot(dx, dy);
+      }
+    };
+    this.touchMoveHandler = (e: TouchEvent) => {
+      if (e.touches.length === 2 && this.pinchDist > 0) {
+        e.preventDefault();
+        const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
+        const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
+        const dist = Math.hypot(dx, dy);
+        const delta = (dist - this.pinchDist) * 0.8;
+        this.globeRadius = Math.max(GLOBE_R_MIN, Math.min(GLOBE_R_MAX, this.globeRadius + delta));
+        this.pinchDist = dist;
+      }
+    };
+    ctx.canvas.addEventListener("touchstart", this.touchStartHandler, { passive: true });
+    ctx.canvas.addEventListener("touchmove", this.touchMoveHandler, { passive: false });
 
     for (let i = 0; i < 120; i++) {
       this.stars.push({
@@ -278,7 +303,7 @@ class ParkYourPirateGame implements MinigameInstance {
       }
     }
 
-    if (input.justPressed("Space") || (click && click.x >= 850 && click.x <= 1230 && click.y >= 390 && click.y <= 458)) {
+    if (input.justPressed("Space") || (click && click.x >= 850 && click.x <= 1230 && click.y >= 370 && click.y <= 480)) {
       this.raid(human.id);
       return;
     }
@@ -522,7 +547,7 @@ class ParkYourPirateGame implements MinigameInstance {
       if (dp.z < 0.1) continue;
       const hovered = this.hoveredDoor === door;
       const pulse = 1 + Math.sin(this.elapsed * 3.5) * 0.2;
-      const r = (hovered ? 7 : 4) * pulse;
+      const r = (hovered ? 10 : 6) * pulse;
 
       g.beginPath();
       g.arc(dp.x, dp.y, r + 3, 0, Math.PI * 2);
@@ -534,7 +559,7 @@ class ParkYourPirateGame implements MinigameInstance {
       g.fillStyle = hovered ? "#fcd34d" : "rgba(252,211,77,0.5)";
       g.fill();
 
-      g.font = "600 10px Outfit, sans-serif";
+      g.font = "600 13px Outfit, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "bottom";
       g.fillStyle = hovered ? "#fef3c7" : "rgba(252,211,77,0.6)";
@@ -752,16 +777,16 @@ class ParkYourPirateGame implements MinigameInstance {
       const ready = state.parked && state.raidCooldown === 0;
       g.fillStyle = ready ? (perfect ? "#fbbf24" : "#164e63") : "#182334";
       g.beginPath();
-      g.roundRect(850, 390, 380, 68, 12);
+      g.roundRect(850, 370, 380, 110, 14);
       g.fill();
       g.fillStyle = ready && perfect ? "#030810" : "#F4F7FB";
       g.textAlign = "center";
-      g.font = "700 25px Bebas Neue, Impact, sans-serif";
-      g.fillText(state.raidCooldown > 0 ? `RELOADING ${state.raidCooldown.toFixed(1)}s` : perfect ? "RAID NOW! DOUBLE GOLD" : "RAID • SPACE / TAP", 1040, 419);
-      g.font = "400 12px Outfit, sans-serif";
-      g.fillText("Chase traffic • build x4 • raid on the gold flash", 1040, 443);
+      g.font = "700 30px Bebas Neue, Impact, sans-serif";
+      g.fillText(state.raidCooldown > 0 ? `RELOADING ${state.raidCooldown.toFixed(1)}s` : perfect ? "RAID NOW! DOUBLE GOLD" : "RAID • SPACE / TAP", 1040, 414);
+      g.font = "400 14px Outfit, sans-serif";
+      g.fillText("Chase traffic • build x4 • raid on the gold flash", 1040, 446);
       g.fillStyle = "#fbbf24";
-      g.fillRect(850, 463, 380 * ((this.elapsed % 4) / 4), 4);
+      g.fillRect(850, 484, 380 * ((this.elapsed % 4) / 4), 4);
     }
 
     // Zoom level indicator
@@ -813,5 +838,7 @@ class ParkYourPirateGame implements MinigameInstance {
 
   destroy(): void {
     this.ctx.canvas.removeEventListener("wheel", this.wheelHandler);
+    this.ctx.canvas.removeEventListener("touchstart", this.touchStartHandler);
+    this.ctx.canvas.removeEventListener("touchmove", this.touchMoveHandler);
   }
 }

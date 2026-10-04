@@ -12,7 +12,7 @@ const LIME = UI.lime, MUTED = UI.muted;
 const BY = 78;
 const BOARD_X = [40, 760] as const;
 const HEADER_H = 64;
-const SHAKE_W = 150, SHAKE_H = 40;
+const SHAKE_W = 150, SHAKE_H = 80;
 const INTERMISSION_S = 2.5;
 const BEST_KEY = "c5-lucky-drop-best";
 

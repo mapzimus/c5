@@ -25,9 +25,9 @@ import {
 
 const COLS = 6;
 const ROWS = 6;
-const CARD_W = 102;
-const CARD_H = 96;
-const GAP = 8;
+const CARD_W = 120;
+const CARD_H = 110;
+const GAP = 6;
 const PEEK_SECONDS = 5;
 const FLIP_SECONDS = 0.22;
 const HOLD_SECONDS = 0.5;

@@ -23,6 +23,7 @@ body,
   background: var(--bg);
   color: var(--ink);
   font-family: Outfit, system-ui, sans-serif;
+  overscroll-behavior: none;
 }
 
 button,
@@ -169,7 +170,8 @@ input {
 }
 
 .seats .btn {
-  padding: 8px 14px;
+  min-height: 44px;
+  padding: 10px 14px;
 }
 
 .card.empty-card {
@@ -246,6 +248,7 @@ input {
   color: var(--ink);
   border-radius: 10px;
   padding: 10px 12px;
+  min-height: 44px;
   transition: border-color 0.15s;
 }
 
@@ -423,6 +426,8 @@ footer.fine {
 #screen-play .hud-bar .btn {
   padding: 6px 12px;
   font-size: 13px;
+  min-height: 44px;
+  min-width: 44px;
   background: rgba(7, 11, 20, 0.72);
 }
 
@@ -469,7 +474,7 @@ footer.fine {
 
   .seats {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 10px;
   }
 
@@ -491,5 +496,15 @@ footer.fine {
   .card {
     min-height: 0;
     padding: 16px 18px;
+  }
+
+  .btn {
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
   }
 }

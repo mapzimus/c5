@@ -24,6 +24,8 @@ export interface MinigameContext {
   input: import("./input").InputManager;
   rng: import("./rng").Rng;
   sfx: import("./audio").Sfx;
+  /** Minimum interactive element size in game coords to reach 44 CSS px. */
+  minTap: number;
 }
 
 export interface MinigameInstance {

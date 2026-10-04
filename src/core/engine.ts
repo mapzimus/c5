@@ -63,6 +63,9 @@ export class Engine {
     this.countdown = 3;
     this.elapsed = 0;
     this.remaining = definition.durationMs / 1000;
+    const parent = this.canvas.parentElement;
+    const cssWidth = parent?.clientWidth || window.innerWidth;
+    const scale = Math.min(cssWidth / GAME_WIDTH, (parent?.clientHeight || window.innerHeight) / GAME_HEIGHT);
     const context: MinigameContext = {
       canvas: this.canvas,
       width: GAME_WIDTH,
@@ -71,6 +74,7 @@ export class Engine {
       input: this.input,
       rng: new Rng(),
       sfx: this.sfx,
+      minTap: Math.max(44, 44 / scale),
     };
     this.instance = definition.create(context);
     this.input.bindPointer(this.canvas, GAME_WIDTH, GAME_HEIGHT);
