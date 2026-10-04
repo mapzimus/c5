@@ -2,7 +2,7 @@ import { fillArena } from "../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../fx/juice";
 import { PLAYER_BINDS } from "../core/input";
 import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
-import { CRESTS, PAIR_COUNT } from "./crests";
+import { FLAGS, PAIR_COUNT } from "./flags";
 import {
   BOT_MEMORY_LIMIT,
   bestHumanScore,
@@ -59,7 +59,7 @@ class PairsGame implements MinigameInstance {
   private readonly scores: number[];
   private readonly memory = new Map<string, number[]>();
   private readonly recency: number[] = [];
-  private readonly logos = new Map<string, HTMLImageElement>();
+  private readonly emojis = new Map<string, string>();
   private readonly names = new Map<string, string>();
   private readonly visuals: Visual[];
   private readonly juice: Juice;
@@ -82,7 +82,7 @@ class PairsGame implements MinigameInstance {
 
   constructor(private readonly ctx: MinigameContext) {
     const faces = pickFaces(
-      CRESTS.map((crest) => crest.id),
+      FLAGS.map((flag) => flag.id),
       PAIR_COUNT,
       (max) => this.ctx.rng.int(0, max - 1),
     );
@@ -97,21 +97,18 @@ class PairsGame implements MinigameInstance {
       bounce: 0,
       miss: 0,
     }));
-    this.preloadLogos(new Set(faces));
+    this.loadFlags(new Set(faces));
     for (const index of glimpseIndices(this.cards.length, BOT_MEMORY_LIMIT, (max) => this.ctx.rng.int(0, max - 1))) {
       const card = this.cards[index];
       if (card) rememberCard(this.memory, this.recency, index, card.face);
     }
   }
 
-  private preloadLogos(faces: Set<string>): void {
-    const base = import.meta.env.BASE_URL;
-    for (const crest of CRESTS) {
-      if (!faces.has(crest.id)) continue;
-      const img = new Image();
-      img.src = `${base}crests/${crest.file}`;
-      this.logos.set(crest.id, img);
-      this.names.set(crest.id, crest.name);
+  private loadFlags(faces: Set<string>): void {
+    for (const flag of FLAGS) {
+      if (!faces.has(flag.id)) continue;
+      this.emojis.set(flag.id, flag.emoji);
+      this.names.set(flag.id, flag.name);
     }
   }
 
@@ -410,7 +407,7 @@ class PairsGame implements MinigameInstance {
     g.font = "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
       g.fillStyle = "#FFB020";
-      g.fillText("Memorize the crests", 40, 56);
+      g.fillText("Memorize the flags", 40, 56);
       if (this.phase === "peek") {
         g.font = "600 14px Outfit, sans-serif";
         g.fillStyle = "#64748b";
@@ -542,7 +539,7 @@ class PairsGame implements MinigameInstance {
       g.strokeStyle = shown === "matched" ? "#34d399" : "#cbd5e1";
       g.lineWidth = 2;
       g.stroke();
-      this.drawLogo(g, 0, 0, card.face);
+      this.drawFlag(g, 0, 0, card.face);
       if (!peeking && card.face === this.goldenFace) this.drawShimmer(g);
     }
     if (visual.miss > 0) {
@@ -553,25 +550,22 @@ class PairsGame implements MinigameInstance {
     g.restore();
   }
 
-  private drawLogo(g: CanvasRenderingContext2D, x: number, y: number, face: string): void {
-    const img = this.logos.get(face);
-    const pad = 10;
-    const boxW = CARD_W - pad * 2;
-    const boxH = CARD_H - pad * 2;
+  private drawFlag(g: CanvasRenderingContext2D, x: number, y: number, face: string): void {
     const cx = x + CARD_W / 2;
     const cy = y + CARD_H / 2;
-    if (!img || !img.complete || img.naturalWidth === 0) {
+    const emoji = this.emojis.get(face);
+    if (emoji) {
+      g.font = `${Math.min(CARD_W, CARD_H) - 30}px sans-serif`;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(emoji, cx, cy);
+    } else {
       g.fillStyle = "#94a3b8";
       g.font = "600 11px Outfit, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
       g.fillText(this.names.get(face) ?? face, cx, cy);
-      return;
     }
-    const scale = Math.min(boxW / img.naturalWidth, boxH / img.naturalHeight);
-    const dw = img.naturalWidth * scale;
-    const dh = img.naturalHeight * scale;
-    g.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
   }
 
   /** Gold border + sweeping sheen, drawn in card-local space on a face-up golden card. */
@@ -683,7 +677,7 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 export const pairs: MinigameDefinition = {
   id: "pairs",
   name: "Pairs",
-  tagline: "Match crests. Stack a streak.",
+  tagline: "Match flags. Stack a streak.",
   description:
     "A short peek (click or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, 3 in a row starts FEVER (x2, then x3 at 5), one secret golden pair pays double, and the last pair is worth extra. A miss flips them back and play moves on.",
   durationMs: 0,
