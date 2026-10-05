@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { shouldCommitCancel, velocityFromGesture, type FlickGesture } from "./flick";
+import { flickFeelScale } from "./pointer";
 
 function pathUp({ px, ms, holdMs = 0, steps = 6 }: { px: number; ms: number; holdMs?: number; steps?: number }) {
   const samples = [];
@@ -32,6 +33,14 @@ function upSpeed(opts: { px: number; ms: number; holdMs?: number; pointerType?: 
   });
   return v ? -v.vy : 0;
 }
+
+describe("flick feel scale", () => {
+  it("does not explode a letterboxed phone flick", () => {
+    expect(flickFeelScale(844)).toBeCloseTo(1, 2);
+    expect(flickFeelScale(219)).toBeLessThanOrEqual(1.2);
+    expect(flickFeelScale(219)).toBeGreaterThan(1);
+  });
+});
 
 describe("flick velocity", () => {
   it("puts a typical 140px / 90ms finger toss in the make window", () => {

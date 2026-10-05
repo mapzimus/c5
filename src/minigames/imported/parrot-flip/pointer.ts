@@ -8,6 +8,15 @@ import {
 /** Phone-height the original flick was tuned against (parrot-flip on a tall handset). */
 export const FEEL_HEIGHT = 844;
 
+/**
+ * Letterboxed phones used to multiply finger speed by 844 / ~219 and launch off the table.
+ * Keep a flick's CSS speed, with only a small correction when the canvas is unusually short or tall.
+ */
+export function flickFeelScale(cssHeight: number): number {
+  const raw = FEEL_HEIGHT / Math.max(cssHeight, 1);
+  return Math.min(1.2, Math.max(0.85, raw));
+}
+
 export interface DragState {
   startX: number;
   startY: number;
@@ -159,7 +168,7 @@ export class FlickPointer {
   private fireIfFlick(): void {
     const velocity = velocityFromGesture(this.gesture());
     if (!velocity) return;
-    const scale = FEEL_HEIGHT / Math.max(this.cssH, 1);
+    const scale = flickFeelScale(this.cssH);
     this.onFlick(velocity.vx * scale, velocity.vy * scale);
   }
 

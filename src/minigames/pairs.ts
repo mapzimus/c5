@@ -1,8 +1,9 @@
 import { fillArena } from "../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../fx/juice";
 import { PLAYER_BINDS } from "../core/input";
-import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
+import { type MinigameContext, MinigameDefinition, MinigameInstance } from "../core/types";
 import { FLAGS, PAIR_COUNT } from "./flags";
+import { hitCard, layoutPairBoard, midpoint, PAIR_COLS, PAIR_ROWS, type BoardLayout } from "./pairs-layout";
 import {
   BOT_MEMORY_LIMIT,
   bestHumanScore,
@@ -23,11 +24,6 @@ import {
   type PairCard,
 } from "./pairs-logic";
 
-const COLS = 6;
-const ROWS = 6;
-const CARD_W = 120;
-const CARD_H = 110;
-const GAP = 6;
 const PEEK_SECONDS = 5;
 const FLIP_SECONDS = 0.22;
 const HOLD_SECONDS = 0.5;
@@ -78,7 +74,8 @@ class PairsGame implements MinigameInstance {
   private phase: Phase = "peek";
   private peekLeft = PEEK_SECONDS;
   private cursor = 0;
-  private readonly board = layoutBoard();
+  private useCursor = false;
+  private layout: BoardLayout = layoutPairBoard(1280, 720, 2);
 
   constructor(private readonly ctx: MinigameContext) {
     const faces = pickFaces(
@@ -102,6 +99,11 @@ class PairsGame implements MinigameInstance {
       const card = this.cards[index];
       if (card) rememberCard(this.memory, this.recency, index, card.face);
     }
+    this.syncLayout();
+  }
+
+  private syncLayout(): void {
+    this.layout = layoutPairBoard(this.ctx.width, this.ctx.height, this.ctx.players.length);
   }
 
   private loadFlags(faces: Set<string>): void {
@@ -113,6 +115,7 @@ class PairsGame implements MinigameInstance {
   }
 
   update(realDt: number): void {
+    this.syncLayout();
     const dt = this.juice.update(realDt);
     this.callouts.update(realDt);
     this.time += realDt;
@@ -173,7 +176,8 @@ class PairsGame implements MinigameInstance {
   private handleHumanInput(slot: 0 | 1 | 2 | 3): void {
     const click = this.ctx.input.consumeClick();
     if (click) {
-      const index = hitCard(this.board, click.x, click.y);
+      this.useCursor = false;
+      const index = hitCard(this.layout, click.x, click.y);
       if (index !== null) {
         this.cursor = index;
         this.tryFlip(index);
@@ -186,6 +190,7 @@ class PairsGame implements MinigameInstance {
     const right = this.pressed(slot, "right") || this.ctx.input.justPressed("ArrowRight") || this.ctx.input.justPressed("KeyD");
     const up = this.pressed(slot, "up") || this.ctx.input.justPressed("ArrowUp") || this.ctx.input.justPressed("KeyW");
     const down = this.pressed(slot, "down") || this.ctx.input.justPressed("ArrowDown") || this.ctx.input.justPressed("KeyS");
+    if (left || right || up || down) this.useCursor = true;
     if (left) this.moveCursor(-1, 0);
     else if (right) this.moveCursor(1, 0);
     else if (up) this.moveCursor(0, -1);
@@ -196,6 +201,7 @@ class PairsGame implements MinigameInstance {
       this.ctx.input.justPressed("Space") ||
       this.ctx.input.justPressed("Enter")
     ) {
+      this.useCursor = true;
       this.tryFlip(this.cursor);
     }
   }
@@ -205,7 +211,7 @@ class PairsGame implements MinigameInstance {
   }
 
   private moveCursor(dx: number, dy: number): void {
-    this.cursor = stepCursor(this.cursor, dx, dy, COLS, ROWS, (index) => canFlip(this.cards[index]));
+    this.cursor = stepCursor(this.cursor, dx, dy, PAIR_COLS, PAIR_ROWS, (index) => canFlip(this.cards[index]));
   }
 
   private parkCursor(): void {
@@ -296,7 +302,7 @@ class PairsGame implements MinigameInstance {
   private burst(aIndex: number, bIndex: number, points: number, face: string, golden: boolean): void {
     const player = this.ctx.players[this.turn];
     const color = player?.color ?? "#3EE0FF";
-    const mid = midpoint(this.board[aIndex]!, this.board[bIndex]!);
+    const mid = midpoint(this.layout, aIndex, bIndex);
     this.floaters.push({
       text: `+${points}`,
       x: mid.x,
@@ -339,9 +345,9 @@ class PairsGame implements MinigameInstance {
       });
     }
     const fever = inFever(this.streak);
-    for (const slot of [this.board[aIndex]!, this.board[bIndex]!]) {
-      const cx = slot.x + CARD_W / 2;
-      const cy = slot.y + CARD_H / 2;
+    for (const slot of [this.layout.slots[aIndex]!, this.layout.slots[bIndex]!]) {
+      const cx = slot.x + this.layout.cardW / 2;
+      const cy = slot.y + this.layout.cardH / 2;
       this.juice.burst(cx, cy, color, { count: 14, speed: 220, gravity: 300 });
       if (fever) this.juice.burst(cx, cy, ["#FFB020", "#FF4FD8", "#F4F7FB"], { count: 12 + this.streak * 2, speed: 340, size: 5 });
       if (golden) this.juice.burst(cx, cy, ["#FFD54A", "#FFF3B0", "#FFB020"], { count: 40, speed: 460, size: 6, life: 1 });
@@ -391,36 +397,39 @@ class PairsGame implements MinigameInstance {
   }
 
   render(g: CanvasRenderingContext2D): void {
+    this.syncLayout();
     fillArena(g, this.ctx.width, this.ctx.height);
     const hover = this.ctx.input.hover;
-    const hoverIndex = hover ? hitCard(this.board, hover.x, hover.y) : null;
+    const hoverIndex = hover ? hitCard(this.layout, hover.x, hover.y) : null;
     const player = this.ctx.players[this.turn];
     const left = remainingPairs(this.cards);
     const humanTurn = player?.kind === "human" && this.phase === "play";
+    const narrow = this.layout.narrow;
+    const inset = narrow ? 16 : 40;
 
     g.textAlign = "left";
     g.textBaseline = "alphabetic";
-    g.font = "600 15px Outfit, sans-serif";
+    g.font = narrow ? "600 13px Outfit, sans-serif" : "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs  ·  memorize" : `Pairs  ·  ${left} left`, 40, 26);
+    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, inset, narrow ? 22 : 26);
 
-    g.font = "700 30px Bebas Neue, sans-serif";
+    g.font = narrow ? "700 26px Bebas Neue, sans-serif" : "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
       g.fillStyle = "#FFB020";
-      g.fillText("Memorize the flags", 40, 56);
+      g.fillText("Memorize the flags", inset, narrow ? 48 : 56);
       if (this.phase === "peek") {
         g.font = "600 14px Outfit, sans-serif";
         g.fillStyle = "#64748b";
-        g.fillText("Click or Space to skip", 40, 78);
+        g.fillText(narrow ? "Tap to skip" : "Click or Space to skip", inset, narrow ? 70 : 78);
       }
     } else {
       g.fillStyle = player?.color ?? "#F4F7FB";
-      g.fillText(`${player?.name ?? "Player"}'s turn`, 40, 56);
+      g.fillText(`${player?.name ?? "Player"}'s turn`, inset, narrow ? 48 : 56);
       if (this.streak >= 2) {
         const mult = feverMultiplier(this.streak);
         const pulse = 1 + 0.08 * Math.sin(this.time * 12);
         g.save();
-        g.translate(40, 78);
+        g.translate(inset, narrow ? 70 : 78);
         if (mult > 1) g.scale(pulse, pulse);
         g.font = mult > 1 ? "700 22px Bebas Neue, sans-serif" : "700 16px Outfit, sans-serif";
         g.fillStyle = mult >= 3 ? "#FF4FD8" : "#FFB020";
@@ -435,8 +444,8 @@ class PairsGame implements MinigameInstance {
     this.juice.begin(g);
     this.drawFeverGlow(g);
     this.cards.forEach((card, index) => {
-      const slot = this.board[index]!;
-      const selected = humanTurn && this.cursor === index && card.state === "down";
+      const slot = this.layout.slots[index]!;
+      const selected = humanTurn && this.useCursor && this.cursor === index && card.state === "down";
       const hovered = hoverIndex === index && card.state === "down" && this.phase === "play";
       this.drawCard(g, slot.x, slot.y, card, index, hovered || selected, selected);
     });
@@ -451,14 +460,15 @@ class PairsGame implements MinigameInstance {
     g.font = "700 18px Bebas Neue, sans-serif";
     g.textAlign = "right";
     g.fillStyle = this.beatBest ? "#B8FF3D" : "#64748b";
-    g.fillText(`BEST ${this.best}`, GAME_WIDTH - 36, 78);
+    const right = this.layout.narrow ? this.ctx.width - 16 : this.ctx.width - 36;
+    g.fillText(`BEST ${this.best}`, right, this.layout.narrow ? 22 : 78);
     g.textAlign = "left";
   }
 
   private drawFeverGlow(g: CanvasRenderingContext2D): void {
     if (this.phase !== "play" || !inFever(this.streak)) return;
-    const first = this.board[0]!;
-    const last = this.board[this.board.length - 1]!;
+    const first = this.layout.slots[0]!;
+    const last = this.layout.slots[this.layout.slots.length - 1]!;
     const mult = feverMultiplier(this.streak);
     const color = mult >= 3 ? "#FF4FD8" : "#FFB020";
     const pulse = 0.55 + 0.45 * Math.sin(this.time * 6);
@@ -468,32 +478,37 @@ class PairsGame implements MinigameInstance {
     g.strokeStyle = color;
     g.globalAlpha = 0.5 + 0.4 * pulse;
     g.lineWidth = 3 + mult;
-    roundRect(g, first.x - 10, first.y - 10, last.x + CARD_W - first.x + 20, last.y + CARD_H - first.y + 20, 18);
+    roundRect(g, first.x - 10, first.y - 10, last.x + this.layout.cardW - first.x + 20, last.y + this.layout.cardH - first.y + 20, 18);
     g.stroke();
     g.restore();
   }
 
   private drawScores(g: CanvasRenderingContext2D): void {
-    const chipW = 158;
-    const chipH = 36;
-    const gap = 10;
-    const total = this.ctx.players.length * chipW + (this.ctx.players.length - 1) * gap;
-    let x = GAME_WIDTH - 36 - total;
+    const count = this.ctx.players.length;
+    const narrow = this.layout.narrow;
+    const gap = narrow ? 8 : 10;
+    const chipH = narrow ? 32 : 36;
+    const inset = narrow ? 16 : 36;
+    const chipW = narrow
+      ? Math.min(160, (this.ctx.width - inset * 2 - gap * (count - 1)) / count)
+      : 158;
+    let x = narrow ? inset : this.ctx.width - inset - (count * chipW + (count - 1) * gap);
+    const y = narrow ? 86 : 22;
     this.ctx.players.forEach((seat, index) => {
       const active = index === this.turn && this.phase === "play";
-      roundRect(g, x, 22, chipW, chipH, 18);
+      roundRect(g, x, y, chipW, chipH, 16);
       g.fillStyle = active ? seat.color : "rgba(15, 23, 42, 0.82)";
       g.fill();
       g.strokeStyle = seat.color;
       g.lineWidth = active ? 0 : 1.5;
       if (!active) g.stroke();
-      g.font = "600 16px Outfit, sans-serif";
+      g.font = narrow ? "600 13px Outfit, sans-serif" : "600 16px Outfit, sans-serif";
       g.textAlign = "left";
       g.fillStyle = active ? "#071018" : seat.color;
-      g.fillText(`${seat.name}`, x + 14, 45);
+      g.fillText(`${seat.name}`, x + 10, y + 21);
       g.textAlign = "right";
-      g.font = "700 20px Bebas Neue, sans-serif";
-      g.fillText(String(this.scores[index] ?? 0), x + chipW - 14, 46);
+      g.font = "700 18px Bebas Neue, sans-serif";
+      g.fillText(String(this.scores[index] ?? 0), x + chipW - 10, y + 22);
       x += chipW + gap;
     });
     g.textAlign = "left";
@@ -515,13 +530,16 @@ class PairsGame implements MinigameInstance {
     const bounce = 1 + visual.bounce * 0.16;
     const lift = hover && shown === "down" ? -3 : 0;
     const wobble = visual.miss > 0 ? Math.sin(visual.miss * 28) * 6 * visual.miss : 0;
+    const cardW = this.layout.cardW;
+    const cardH = this.layout.cardH;
+    const radius = Math.max(8, Math.round(cardW * 0.12));
 
     g.save();
-    g.translate(x + CARD_W / 2 + wobble, y + CARD_H / 2 + lift);
+    g.translate(x + cardW / 2 + wobble, y + cardH / 2 + lift);
     g.scale(Math.max(0.06, flipScale) * bounce, bounce);
-    g.translate(-CARD_W / 2, -CARD_H / 2);
+    g.translate(-cardW / 2, -cardH / 2);
 
-    roundRect(g, 0, 0, CARD_W, CARD_H, 12);
+    roundRect(g, 0, 0, cardW, cardH, radius);
     if (shown === "down") {
       g.fillStyle = hover ? "#1d4e63" : "#122033";
       g.fill();
@@ -529,33 +547,33 @@ class PairsGame implements MinigameInstance {
       g.lineWidth = selected ? 3 : 2;
       g.stroke();
       g.fillStyle = "#3EE0FF";
-      g.font = "700 20px Bebas Neue, sans-serif";
+      g.font = `700 ${Math.max(16, Math.round(cardW * 0.2))}px Bebas Neue, sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.fillText("C5", CARD_W / 2, CARD_H / 2);
+      g.fillText("C5", cardW / 2, cardH / 2);
     } else {
       g.fillStyle = shown === "matched" ? "#d1fae5" : "#f8fafc";
       g.fill();
       g.strokeStyle = shown === "matched" ? "#34d399" : "#cbd5e1";
       g.lineWidth = 2;
       g.stroke();
-      this.drawFlag(g, 0, 0, card.face);
-      if (!peeking && card.face === this.goldenFace) this.drawShimmer(g);
+      this.drawFlag(g, 0, 0, card.face, cardW, cardH);
+      if (!peeking && card.face === this.goldenFace) this.drawShimmer(g, cardW, cardH);
     }
     if (visual.miss > 0) {
-      roundRect(g, 0, 0, CARD_W, CARD_H, 12);
+      roundRect(g, 0, 0, cardW, cardH, radius);
       g.fillStyle = `rgba(255, 70, 90, ${0.45 * visual.miss})`;
       g.fill();
     }
     g.restore();
   }
 
-  private drawFlag(g: CanvasRenderingContext2D, x: number, y: number, face: string): void {
-    const cx = x + CARD_W / 2;
-    const cy = y + CARD_H / 2;
+  private drawFlag(g: CanvasRenderingContext2D, x: number, y: number, face: string, cardW: number, cardH: number): void {
+    const cx = x + cardW / 2;
+    const cy = y + cardH / 2;
     const emoji = this.emojis.get(face);
     if (emoji) {
-      g.font = `${Math.min(CARD_W, CARD_H) - 30}px sans-serif`;
+      g.font = `${Math.max(28, Math.min(cardW, cardH) - 18)}px sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "middle";
       g.fillText(emoji, cx, cy);
@@ -569,23 +587,23 @@ class PairsGame implements MinigameInstance {
   }
 
   /** Gold border + sweeping sheen, drawn in card-local space on a face-up golden card. */
-  private drawShimmer(g: CanvasRenderingContext2D): void {
+  private drawShimmer(g: CanvasRenderingContext2D, cardW: number, cardH: number): void {
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 7);
     g.save();
-    roundRect(g, 0, 0, CARD_W, CARD_H, 12);
+    roundRect(g, 0, 0, cardW, cardH, Math.max(8, Math.round(cardW * 0.12)));
     g.shadowColor = "#FFD54A";
     g.shadowBlur = 10 + 10 * pulse;
     g.strokeStyle = "#FFC21A";
     g.lineWidth = 4;
     g.stroke();
     g.clip();
-    const sweep = ((this.time * 0.9) % 1.6) * (CARD_W + 80) - 60;
-    const grad = g.createLinearGradient(sweep - 30, 0, sweep + 30, CARD_H);
+    const sweep = ((this.time * 0.9) % 1.6) * (cardW + 80) - 60;
+    const grad = g.createLinearGradient(sweep - 30, 0, sweep + 30, cardH);
     grad.addColorStop(0, "rgba(255, 230, 120, 0)");
     grad.addColorStop(0.5, "rgba(255, 240, 160, 0.55)");
     grad.addColorStop(1, "rgba(255, 230, 120, 0)");
     g.fillStyle = grad;
-    g.fillRect(0, 0, CARD_W, CARD_H);
+    g.fillRect(0, 0, cardW, cardH);
     g.restore();
   }
 
@@ -616,42 +634,6 @@ class PairsGame implements MinigameInstance {
   destroy(): void {}
 }
 
-interface Slot {
-  x: number;
-  y: number;
-}
-
-function layoutBoard(): Slot[] {
-  const width = COLS * CARD_W + (COLS - 1) * GAP;
-  const height = ROWS * CARD_H + (ROWS - 1) * GAP;
-  const left = (GAME_WIDTH - width) / 2;
-  const top = GAME_HEIGHT - height - 20;
-  const slots: Slot[] = [];
-  for (let row = 0; row < ROWS; row += 1) {
-    for (let col = 0; col < COLS; col += 1) {
-      slots.push({
-        x: left + col * (CARD_W + GAP),
-        y: top + row * (CARD_H + GAP),
-      });
-    }
-  }
-  return slots;
-}
-
-function hitCard(board: Slot[], x: number, y: number): number | null {
-  const index = board.findIndex(
-    (slot) => x >= slot.x && x <= slot.x + CARD_W && y >= slot.y && y <= slot.y + CARD_H,
-  );
-  return index >= 0 ? index : null;
-}
-
-function midpoint(a: Slot, b: Slot): { x: number; y: number } {
-  return {
-    x: (a.x + b.x) / 2 + CARD_W / 2,
-    y: (a.y + b.y) / 2 + CARD_H / 2,
-  };
-}
-
 function shownFace(visual: Visual, state: CardState): CardState {
   if (visual.flipT > 0 && visual.flipT < 1) {
     return visual.flipT < 0.5 ? visual.from : visual.to;
@@ -676,11 +658,12 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 
 export const pairs: MinigameDefinition = {
   id: "pairs",
-  name: "Pairs",
+  name: "Pairs FC",
   tagline: "Match flags. Stack a streak.",
   description:
-    "A short peek (click or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, 3 in a row starts FEVER (x2, then x3 at 5), one secret golden pair pays double, and the last pair is worth extra. A miss flips them back and play moves on.",
+    "A short peek (tap or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, 3 in a row starts FEVER (x2, then x3 at 5), one secret golden pair pays double, and the last pair is worth extra. A miss flips them back and play moves on.",
   durationMs: 0,
-  controls: "Click two face-down cards, or WASD / arrows and Space / Enter.",
+  controls: "Tap two face-down cards, or use WASD / arrows and Space / Enter.",
+  fillsScreen: true,
   create: (ctx) => new PairsGame(ctx),
 };
