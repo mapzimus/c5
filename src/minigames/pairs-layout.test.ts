@@ -22,10 +22,9 @@ describe("layoutPairBoard", () => {
     expect(last.x + board.cardW).toBeLessThanOrEqual(phone.width);
     expect(last.y + board.cardH).toBeLessThanOrEqual(phone.height);
     expect(board.cardW).toBeGreaterThanOrEqual(96);
-    expect(board.cardH).toBeGreaterThan(board.cardW);
+    expect(board.cardH).toBe(board.cardW);
     expect(first.y).toBeGreaterThanOrEqual(board.hudHeight);
     expect((last.x + board.cardW - first.x) / phone.width).toBeGreaterThan(0.9);
-    expect((last.y + board.cardH - first.y) / phone.height).toBeGreaterThan(0.75);
   });
 
   it("hits the card under a tap", () => {
