@@ -23,25 +23,28 @@ export function layoutPairBoard(width: number, height: number, playerCount: numb
   const availW = Math.max(120, width - padX * 2);
   const availH = Math.max(120, height - hudHeight - padBottom);
   const gap = Math.max(4, Math.min(narrow ? 8 : 10, Math.floor(availW * 0.012)));
-  const cell = Math.max(
-    36,
-    Math.floor(Math.min((availW - gap * (PAIR_COLS - 1)) / PAIR_COLS, (availH - gap * (PAIR_ROWS - 1)) / PAIR_ROWS)),
-  );
-  const boardW = cell * PAIR_COLS + gap * (PAIR_COLS - 1);
-  const boardH = cell * PAIR_ROWS + gap * (PAIR_ROWS - 1);
+  let cardW = Math.max(36, Math.floor((availW - gap * (PAIR_COLS - 1)) / PAIR_COLS));
+  let cardH = Math.max(36, Math.floor((availH - gap * (PAIR_ROWS - 1)) / PAIR_ROWS));
+  if (!narrow) {
+    const cell = Math.min(cardW, cardH);
+    cardW = cell;
+    cardH = cell;
+  }
+  const boardW = cardW * PAIR_COLS + gap * (PAIR_COLS - 1);
+  const boardH = cardH * PAIR_ROWS + gap * (PAIR_ROWS - 1);
   const left = (width - boardW) / 2;
   const slack = Math.max(0, availH - boardH);
-  const top = hudHeight + slack * (narrow ? 0.35 : 0.15);
+  const top = hudHeight + slack * (narrow ? 0.5 : 0.15);
   const slots: Slot[] = [];
   for (let row = 0; row < PAIR_ROWS; row += 1) {
     for (let col = 0; col < PAIR_COLS; col += 1) {
       slots.push({
-        x: left + col * (cell + gap),
-        y: top + row * (cell + gap),
+        x: left + col * (cardW + gap),
+        y: top + row * (cardH + gap),
       });
     }
   }
-  return { slots, cardW: cell, cardH: cell, gap, hudHeight, narrow };
+  return { slots, cardW, cardH, gap, hudHeight, narrow };
 }
 
 export function hitCard(layout: BoardLayout, x: number, y: number): number | null {
