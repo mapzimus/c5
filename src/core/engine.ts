@@ -4,6 +4,7 @@ import type { InputManager } from "./input";
 import type { Sfx } from "./audio";
 import type { Player } from "./types";
 import { Rng } from "./rng";
+import { layoutLogicalSize, viewSize } from "./viewport";
 
 export type EnginePhase = "countdown" | "playing" | "finished";
 
@@ -15,6 +16,9 @@ export class Engine {
   elapsed = 0;
   private instance: MinigameInstance | null = null;
   private definition: MinigameDefinition | null = null;
+  private context: MinigameContext | null = null;
+  private fill = false;
+  private logical = { width: GAME_WIDTH, height: GAME_HEIGHT };
   private raf = 0;
   private last = 0;
   private countdown = 3;
@@ -34,20 +38,26 @@ export class Engine {
     this.ctx = ctx;
     this.fit();
     window.addEventListener("resize", this.fit);
+    window.visualViewport?.addEventListener("resize", this.fit);
   }
 
   readonly fit = (): void => {
-    const parent = this.canvas.parentElement;
-    const cssWidth = parent?.clientWidth || window.innerWidth;
-    const cssHeight = parent?.clientHeight || window.innerHeight;
-    const scale = Math.min(cssWidth / GAME_WIDTH, cssHeight / GAME_HEIGHT);
-    const width = Math.floor(GAME_WIDTH * scale);
-    const height = Math.floor(GAME_HEIGHT * scale);
+    const view = viewSize(this.canvas.parentElement);
+    this.logical = this.fill ? layoutLogicalSize(view.width, view.height) : { width: GAME_WIDTH, height: GAME_HEIGHT };
+    const scale = Math.min(view.width / this.logical.width, view.height / this.logical.height);
+    if (this.context) {
+      this.context.width = this.logical.width;
+      this.context.height = this.logical.height;
+      this.context.minTap = Math.max(44, 44 / Math.max(scale, 0.01));
+    }
+    this.input.setLogical(this.logical.width, this.logical.height);
+    const width = Math.max(1, Math.floor(this.logical.width * scale));
+    const height = Math.max(1, Math.floor(this.logical.height * scale));
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
-    this.canvas.width = Math.floor(GAME_WIDTH * dpr);
-    this.canvas.height = Math.floor(GAME_HEIGHT * dpr);
+    this.canvas.width = Math.floor(this.logical.width * dpr);
+    this.canvas.height = Math.floor(this.logical.height * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   };
 
@@ -63,21 +73,22 @@ export class Engine {
     this.countdown = 3;
     this.elapsed = 0;
     this.remaining = definition.durationMs / 1000;
-    const parent = this.canvas.parentElement;
-    const cssWidth = parent?.clientWidth || window.innerWidth;
-    const scale = Math.min(cssWidth / GAME_WIDTH, (parent?.clientHeight || window.innerHeight) / GAME_HEIGHT);
+    this.fill = !!definition.fillsScreen;
+    this.fit();
     const context: MinigameContext = {
       canvas: this.canvas,
-      width: GAME_WIDTH,
-      height: GAME_HEIGHT,
+      width: this.logical.width,
+      height: this.logical.height,
       players,
       input: this.input,
       rng: new Rng(),
       sfx: this.sfx,
-      minTap: Math.max(44, 44 / scale),
+      minTap: 44,
     };
+    this.context = context;
+    this.fit();
     this.instance = definition.create(context);
-    this.input.bindPointer(this.canvas, GAME_WIDTH, GAME_HEIGHT);
+    this.input.bindPointer(this.canvas, this.logical.width, this.logical.height);
     this.last = performance.now();
     if (definition.durationMs <= 0) {
       this.phase = "playing";
@@ -126,7 +137,7 @@ export class Engine {
 
     this.instance?.render(this.ctx);
     if (this.phase === "playing" && this.definition && this.definition.durationMs > 0) {
-      drawTimerBar(this.ctx, GAME_WIDTH, this.remaining, this.definition.durationMs / 1000);
+      drawTimerBar(this.ctx, this.logical.width, this.remaining, this.definition.durationMs / 1000);
     }
     this.drawOverlay();
     this.input.endFrame();
@@ -139,16 +150,16 @@ export class Engine {
     const ctx = this.ctx;
     if (this.phase === "countdown") {
       ctx.fillStyle = "rgba(7,11,20,0.45)";
-      ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+      ctx.fillRect(0, 0, this.logical.width, this.logical.height);
       ctx.fillStyle = "#F4F7FB";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.font = "700 140px Bebas Neue, Impact, sans-serif";
       const n = Math.max(1, Math.ceil(this.countdown));
-      ctx.fillText(String(n), GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      ctx.fillText(String(n), this.logical.width / 2, this.logical.height / 2);
       ctx.font = "600 28px Outfit, sans-serif";
       ctx.fillStyle = "#3EE0FF";
-      ctx.fillText(this.definition?.name ?? "", GAME_WIDTH / 2, GAME_HEIGHT / 2 + 110);
+      ctx.fillText(this.definition?.name ?? "", this.logical.width / 2, this.logical.height / 2 + 110);
     } else if (this.goTimer > 0) {
       ctx.save();
       ctx.globalAlpha = Math.min(1, this.goTimer / 0.3);
@@ -156,17 +167,17 @@ export class Engine {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.font = "700 100px Bebas Neue, Impact, sans-serif";
-      ctx.fillText("GO!", GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      ctx.fillText("GO!", this.logical.width / 2, this.logical.height / 2);
       ctx.restore();
     } else if (this.phase === "finished" && this.pendingScores) {
       ctx.save();
       ctx.fillStyle = "rgba(7,11,20,0.5)";
-      ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+      ctx.fillRect(0, 0, this.logical.width, this.logical.height);
       ctx.fillStyle = "#F4F7FB";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.font = "700 72px Bebas Neue, Impact, sans-serif";
-      ctx.fillText("Time!", GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      ctx.fillText("Time!", this.logical.width / 2, this.logical.height / 2);
       ctx.restore();
     }
   }
@@ -188,11 +199,14 @@ export class Engine {
     cancelAnimationFrame(this.raf);
     this.instance?.destroy();
     this.instance = null;
+    this.context = null;
+    this.fill = false;
     this.input.unbindPointer();
   }
 
   destroy(): void {
     this.stop();
     window.removeEventListener("resize", this.fit);
+    window.visualViewport?.removeEventListener("resize", this.fit);
   }
 }

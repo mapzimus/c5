@@ -219,12 +219,15 @@ export class App {
     const wrap = el("div", { class: "play-wrap" });
     const canvas = el("canvas", { id: "game" });
     wrap.append(canvas);
-    const hint = el("p", { class: "rotate-hint", text: "Turn your phone sideways for a bigger board" });
-    screen.append(bar, wrap, hint);
-    enterLandscape();
+    screen.append(bar, wrap);
+    if (!game.fillsScreen) {
+      screen.append(el("p", { class: "rotate-hint", text: "Turn your phone sideways for a bigger board" }));
+      enterLandscape();
+    }
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
     this.engine.start(game, this.players, (scores) => this.finishGame(scores));
+    requestAnimationFrame(() => this.engine?.fit());
   }
 
   private finishGame(scores: { playerId: string; score: number }[]): void {

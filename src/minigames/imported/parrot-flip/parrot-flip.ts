@@ -106,17 +106,22 @@ class ParrotFlipGame implements MinigameInstance {
   render(g: CanvasRenderingContext2D): void {
     const player = this.current();
     this.juice.begin(g);
+    const made = this.result === "MAKE";
+    const perfect = made && !!this.physics.getLastLandingInfo()?.perfect;
     this.scene.frame(g, 1 / 60, GAME_WIDTH, GAME_HEIGHT, {
       bottle: this.physics.getBottle(),
       liquid: this.physics.liquid,
       groundY: this.physics.getGroundY(),
       drag: this.phase === "ready" ? this.pointer.getDrag() : null,
       result: this.phase === "result" ? this.result : null,
+      resultText: this.phase === "result" ? (perfect ? "PERFECT!" : made ? "MAKE!" : "MISS") : null,
       resultAlpha: this.resultAlpha,
       showGlow: this.showGlow,
       isOnFire: !!this.table.seats[this.table.turn]?.onFire,
       liquidColor: this.golden ? GOLD : (player?.color ?? "#d62828"),
       golden: this.golden,
+      aim: this.aimAngle(),
+      showHint: this.phase === "ready" && player?.kind === "human",
     });
     this.juice.end(g);
     this.drawHud(g);
@@ -138,6 +143,16 @@ class ParrotFlipGame implements MinigameInstance {
 
   private current() {
     return this.ctx.players[this.table.turn];
+  }
+
+  private aimAngle(): number {
+    if (this.phase !== "ready") return 0;
+    const drag = this.pointer.getDrag();
+    if (!drag) return 0;
+    const dx = drag.curX - drag.startX;
+    const dy = drag.curY - drag.startY;
+    if (Math.hypot(dx, dy) < 12) return 0;
+    return Math.max(-0.55, Math.min(0.55, dx / 240 - dy / 700));
   }
 
   private beginTurn(): void {
@@ -169,7 +184,7 @@ class ParrotFlipGame implements MinigameInstance {
     this.physics.applyFlick(vx, vy);
     this.phase = "flight";
     this.golden = rollGolden(this.ctx.rng);
-    this.ctx.sfx.hit();
+    this.ctx.sfx.whoosh();
     if (this.golden) {
       this.callouts.show("GOLDEN FLIP", GOLD, { life: 1.1, y: 0.2, size: 56 });
       this.ctx.sfx.streak(2);

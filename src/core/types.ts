@@ -43,6 +43,8 @@ export interface MinigameDefinition {
   description: string;
   durationMs: number;
   controls: string;
+  /** Match the phone viewport instead of letterboxing a 16:9 board. */
+  fillsScreen?: boolean;
   create(ctx: MinigameContext): MinigameInstance;
 }
 
