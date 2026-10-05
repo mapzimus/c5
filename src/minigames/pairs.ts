@@ -55,7 +55,7 @@ class PairsGame implements MinigameInstance {
   private readonly scores: number[];
   private readonly memory = new Map<string, number[]>();
   private readonly recency: number[] = [];
-  private readonly emojis = new Map<string, string>();
+  private readonly images = new Map<string, HTMLImageElement>();
   private readonly names = new Map<string, string>();
   private readonly visuals: Visual[];
   private readonly juice: Juice;
@@ -107,9 +107,12 @@ class PairsGame implements MinigameInstance {
   }
 
   private loadFlags(faces: Set<string>): void {
+    const base = import.meta.env.BASE_URL;
     for (const flag of FLAGS) {
       if (!faces.has(flag.id)) continue;
-      this.emojis.set(flag.id, flag.emoji);
+      const img = new Image();
+      img.src = `${base}flags/${flag.file}`;
+      this.images.set(flag.id, img);
       this.names.set(flag.id, flag.name);
     }
   }
@@ -411,25 +414,25 @@ class PairsGame implements MinigameInstance {
     g.textBaseline = "alphabetic";
     g.font = narrow ? "600 13px Outfit, sans-serif" : "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, inset, narrow ? 22 : 26);
+    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, inset, narrow ? 122 : 26);
 
     g.font = narrow ? "700 26px Bebas Neue, sans-serif" : "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
       g.fillStyle = "#FFB020";
-      g.fillText("Memorize the flags", inset, narrow ? 48 : 56);
+      g.fillText("Memorize the flags", inset, narrow ? 148 : 56);
       if (this.phase === "peek") {
         g.font = "600 14px Outfit, sans-serif";
         g.fillStyle = "#64748b";
-        g.fillText(narrow ? "Tap to skip" : "Click or Space to skip", inset, narrow ? 70 : 78);
+        g.fillText(narrow ? "Tap to skip" : "Click or Space to skip", inset, narrow ? 170 : 78);
       }
     } else {
       g.fillStyle = player?.color ?? "#F4F7FB";
-      g.fillText(`${player?.name ?? "Player"}'s turn`, inset, narrow ? 48 : 56);
+      g.fillText(`${player?.name ?? "Player"}'s turn`, inset, narrow ? 148 : 56);
       if (this.streak >= 2) {
         const mult = feverMultiplier(this.streak);
         const pulse = 1 + 0.08 * Math.sin(this.time * 12);
         g.save();
-        g.translate(inset, narrow ? 70 : 78);
+        g.translate(inset, narrow ? 170 : 78);
         if (mult > 1) g.scale(pulse, pulse);
         g.font = mult > 1 ? "700 22px Bebas Neue, sans-serif" : "700 16px Outfit, sans-serif";
         g.fillStyle = mult >= 3 ? "#FF4FD8" : "#FFB020";
@@ -461,7 +464,7 @@ class PairsGame implements MinigameInstance {
     g.textAlign = "right";
     g.fillStyle = this.beatBest ? "#B8FF3D" : "#64748b";
     const right = this.layout.narrow ? this.ctx.width - 16 : this.ctx.width - 36;
-    g.fillText(`BEST ${this.best}`, right, this.layout.narrow ? 22 : 78);
+    g.fillText(`BEST ${this.best}`, right, this.layout.narrow ? 122 : 78);
     g.textAlign = "left";
   }
 
@@ -493,7 +496,7 @@ class PairsGame implements MinigameInstance {
       ? Math.min(160, (this.ctx.width - inset * 2 - gap * (count - 1)) / count)
       : 158;
     let x = narrow ? inset : this.ctx.width - inset - (count * chipW + (count - 1) * gap);
-    const y = narrow ? 86 : 22;
+    const y = narrow ? 186 : 22;
     this.ctx.players.forEach((seat, index) => {
       const active = index === this.turn && this.phase === "play";
       roundRect(g, x, y, chipW, chipH, 16);
@@ -571,19 +574,32 @@ class PairsGame implements MinigameInstance {
   private drawFlag(g: CanvasRenderingContext2D, x: number, y: number, face: string, cardW: number, cardH: number): void {
     const cx = x + cardW / 2;
     const cy = y + cardH / 2;
-    const emoji = this.emojis.get(face);
-    if (emoji) {
-      g.font = `${Math.max(28, Math.min(cardW, cardH) - 18)}px sans-serif`;
-      g.textAlign = "center";
-      g.textBaseline = "middle";
-      g.fillText(emoji, cx, cy);
-    } else {
+    const img = this.images.get(face);
+    const pad = Math.max(6, Math.round(Math.min(cardW, cardH) * 0.08));
+    const boxW = cardW - pad * 2;
+    const boxH = cardH - pad * 2;
+    if (!img || !img.complete || img.naturalWidth === 0) {
       g.fillStyle = "#94a3b8";
-      g.font = "600 11px Outfit, sans-serif";
+      g.font = "600 12px Outfit, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "middle";
       g.fillText(this.names.get(face) ?? face, cx, cy);
+      return;
     }
+    const aspect = img.naturalWidth / img.naturalHeight;
+    let dw = boxW;
+    let dh = dw / aspect;
+    if (dh > boxH) {
+      dh = boxH;
+      dw = dh * aspect;
+    }
+    const dx = cx - dw / 2;
+    const dy = cy - dh / 2;
+    g.save();
+    roundRect(g, dx, dy, dw, dh, Math.max(4, Math.round(Math.min(dw, dh) * 0.06)));
+    g.clip();
+    g.drawImage(img, dx, dy, dw, dh);
+    g.restore();
   }
 
   /** Gold border + sweeping sheen, drawn in card-local space on a face-up golden card. */
