@@ -414,7 +414,7 @@ class PairsGame implements MinigameInstance {
     g.textBaseline = "alphabetic";
     g.font = narrow ? "600 13px Outfit, sans-serif" : "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs FC  ·  memorize" : `Pairs FC  ·  ${left} left`, inset, narrow ? 122 : 26);
+    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs  ·  memorize" : `Pairs  ·  ${left} left`, inset, narrow ? 122 : 26);
 
     g.font = narrow ? "700 26px Bebas Neue, sans-serif" : "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
@@ -674,7 +674,7 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 
 export const pairs: MinigameDefinition = {
   id: "pairs",
-  name: "Pairs FC",
+  name: "Pairs",
   tagline: "Match flags. Stack a streak.",
   description:
     "A short peek (tap or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, 3 in a row starts FEVER (x2, then x3 at 5), one secret golden pair pays double, and the last pair is worth extra. A miss flips them back and play moves on.",
