@@ -10,6 +10,7 @@ export interface Disc {
   r: number;
   baseR: number;
   mass: number;
+  baseMass: number;
   /** Who last launched this disc (for KO credit). null = nobody yet. */
   inst: number | null;
   aim: Aim | null;

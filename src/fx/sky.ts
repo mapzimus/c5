@@ -1,19 +1,21 @@
-interface Drop {
+interface Mote {
   x: number;
   y: number;
-  z: number;
-  len: number;
+  vx: number;
+  vy: number;
+  size: number;
+  alpha: number;
+  hue: number;
 }
 
 export class Sky {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly drops: Drop[] = [];
-  private flash = 0;
-  private angle = 0;
+  private readonly motes: Mote[] = [];
   private raf = 0;
   private last = 0;
   private running = false;
+  private time = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -22,12 +24,16 @@ export class Sky {
     this.ctx = ctx;
     this.resize();
     window.addEventListener("resize", this.resize);
-    for (let i = 0; i < 140; i += 1) {
-      this.drops.push({
+    const hues = [190, 340, 40, 80];
+    for (let i = 0; i < 60; i += 1) {
+      this.motes.push({
         x: Math.random(),
         y: Math.random(),
-        z: 0.4 + Math.random() * 0.8,
-        len: 8 + Math.random() * 16,
+        vx: (Math.random() - 0.5) * 0.02,
+        vy: (Math.random() - 0.5) * 0.02,
+        size: 2 + Math.random() * 4,
+        alpha: 0.15 + Math.random() * 0.35,
+        hue: hues[i % hues.length]!,
       });
     }
   }
@@ -54,9 +60,7 @@ export class Sky {
   private readonly tick = (now: number): void => {
     const dt = Math.min((now - this.last) / 1000, 0.05);
     this.last = now;
-    this.angle += dt * 0.18;
-    this.flash = Math.max(0, this.flash - dt);
-    if (Math.random() < 0.004) this.flash = 0.35 + Math.random() * 0.4;
+    this.time += dt;
     this.draw(dt);
     if (this.running) this.raf = requestAnimationFrame(this.tick);
   };
@@ -71,39 +75,33 @@ export class Sky {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
 
-    ctx.save();
-    ctx.translate(w * 0.72, h * 0.18);
-    ctx.rotate(this.angle);
-    for (let i = 6; i >= 1; i -= 1) {
+    for (const mote of this.motes) {
+      mote.x += mote.vx * dt;
+      mote.y += mote.vy * dt;
+      if (mote.x < -0.05) mote.x = 1.05;
+      if (mote.x > 1.05) mote.x = -0.05;
+      if (mote.y < -0.05) mote.y = 1.05;
+      if (mote.y > 1.05) mote.y = -0.05;
+      const pulse = mote.alpha + Math.sin(this.time * 1.2 + mote.x * 10) * 0.1;
       ctx.beginPath();
-      ctx.strokeStyle = `rgba(62,224,255,${0.04 + i * 0.015})`;
-      ctx.lineWidth = 10 - i;
-      ctx.arc(0, 0, 40 + i * 42, i * 0.4, i * 0.4 + Math.PI * 1.3);
+      ctx.arc(mote.x * w, mote.y * h, mote.size, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${mote.hue}, 80%, 65%, ${pulse})`;
+      ctx.fill();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.04;
+    ctx.strokeStyle = "#3ee0ff";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 8; i += 1) {
+      const cx = w * (0.15 + (i % 4) * 0.22);
+      const cy = h * (i < 4 ? 0.3 : 0.7);
+      const r = 60 + Math.sin(this.time * 0.5 + i) * 20;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.restore();
-
-    ctx.strokeStyle = "rgba(170,210,255,0.35)";
-    ctx.lineWidth = 1;
-    for (const drop of this.drops) {
-      drop.y += dt * (0.55 + drop.z * 0.9);
-      drop.x += dt * 0.08 * drop.z;
-      if (drop.y > 1.1) {
-        drop.y = -0.05;
-        drop.x = Math.random();
-      }
-      const x = drop.x * w;
-      const y = drop.y * h;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + 4 * drop.z, y + drop.len * drop.z);
-      ctx.stroke();
-    }
-
-    if (this.flash > 0) {
-      ctx.fillStyle = `rgba(210,230,255,${this.flash * 0.28})`;
-      ctx.fillRect(0, 0, w, h);
-    }
   }
 
   destroy(): void {

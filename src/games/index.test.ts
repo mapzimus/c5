@@ -5,7 +5,6 @@ describe("game catalog", () => {
   it("lists registered games for the main menu", () => {
     const ids = allGames.map((game) => game.id);
     expect(ids).toContain("pairs");
-    expect(ids).toContain("flag-pairs");
     expect(ids).toContain("parrot-flip");
     expect(ids).toContain("castle-siege");
     expect(ids).toContain("lucky-drop");
@@ -15,7 +14,6 @@ describe("game catalog", () => {
     expect(ids).toContain("bug-wars");
     expect(new Set(ids).size).toBe(ids.length);
     expect(createRegistry().get("pairs").name).toBe("Pairs");
-    expect(createRegistry().get("flag-pairs").name).toBe("Flag Pairs");
     expect(createRegistry().get("parrot-flip").name).toBe("Parrot Flip");
     expect(createRegistry().get("lucky-drop").durationMs).toBe(0);
     expect(createRegistry().get("chaos-derby").durationMs).toBe(0);

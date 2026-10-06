@@ -198,6 +198,8 @@ export class ParrotScene {
   private shakeAmp = 0;
   private shakeDecay = 0;
   private fireFrame = 0;
+  private hintT = 0;
+  private trail: { x: number; y: number; life: number; rot: number }[] = [];
   private shooting: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
   private bgKey = "";
   private sky: CanvasGradient | null = null;
@@ -232,6 +234,9 @@ export class ParrotScene {
       liquidColor: string;
       /** Golden flip: gold aura + sparkles around the parrot. */
       golden?: boolean;
+      aim?: number;
+      showHint?: boolean;
+      resultText?: string | null;
     },
   ): void {
     this.updateParticles(dt);
@@ -275,14 +280,18 @@ export class ParrotScene {
       g.lineTo(this.shooting.x - this.shooting.vx * 0.12, this.shooting.y - this.shooting.vy * 0.12);
       g.stroke();
     }
-    this.drawFlickIndicator(g, state.drag, state.bottle);
+    this.noteTrail(state.bottle, dt);
+    this.drawTrail(g, state.liquidColor);
+    this.drawFlickIndicator(g, state.drag, state.bottle, height);
+    if (state.showHint && !state.drag && state.bottle) this.drawHint(g, state.bottle, dt);
     if (state.showGlow && state.bottle) this.drawLandingGlow(g, state.bottle, state.groundY);
     if (state.golden && state.bottle) this.drawGoldenAura(g, state.bottle);
-    this.drawBottle(g, state.bottle, state.liquid, state.isOnFire, state.liquidColor, state.groundY);
+    this.drawBottle(g, state.bottle, state.liquid, state.isOnFire, state.liquidColor, state.groundY, state.aim ?? 0);
     this.drawParticles(g);
     if (state.result) {
       const color = state.result === "MAKE" ? "#7dcea0" : "#c23b22";
-      this.drawResult(g, width, height, state.result === "MAKE" ? "MAKE!" : "MISS", color, state.resultAlpha);
+      const label = state.resultText ?? (state.result === "MAKE" ? "MAKE!" : "MISS");
+      this.drawResult(g, width, height, label, color, state.resultAlpha);
     }
     g.restore();
   }
@@ -387,10 +396,11 @@ export class ParrotScene {
     isOnFire: boolean,
     liquidColor: string,
     groundY: number,
+    aim = 0,
   ): void {
     if (!bottle) return;
     const { x, y } = bottle.position;
-    const angle = bottle.angle;
+    const angle = bottle.angle + aim;
     const flap = Math.max(-0.45, Math.min(0.45, (liquid.slosh || 0) * 0.55));
     const spr = getParrotSprite(liquidColor);
 
@@ -417,6 +427,7 @@ export class ParrotScene {
     g.save();
     g.translate(x, y);
     g.rotate(angle);
+    if (aim) g.scale(1 + Math.abs(aim) * 0.12, 1 - Math.abs(aim) * 0.08);
     if (spr.ready) {
       g.drawImage(spr.body, DEST_X, DEST_Y, DEST_W, DEST_H);
       g.save();
@@ -479,6 +490,7 @@ export class ParrotScene {
     g: CanvasRenderingContext2D,
     drag: { startX: number; startY: number; curX: number; curY: number } | null,
     bottle: Pose | null,
+    height: number,
   ): void {
     if (!drag || !bottle) return;
     const dx = drag.curX - drag.startX;
@@ -493,12 +505,15 @@ export class ParrotScene {
     const oy = bottle.position.y - 40;
     const ex = ox + ux * reach;
     const ey = oy + uy * reach;
-    const color = `hsl(${190 - strength * 150}, 95%, 62%)`;
+    const up = Math.max(0, -dy) / Math.max(height, 1);
+    const word = dy > 24 && dy > Math.abs(dx) ? "FLICK UP" : up < 0.08 ? "SOFT" : up < 0.2 ? "SWEET" : "SEND IT";
+    const color = word === "SWEET" ? "#b8ff3d" : word === "FLICK UP" ? "#ffb020" : `hsl(${190 - strength * 150}, 95%, 62%)`;
     g.save();
     g.strokeStyle = color;
-    g.lineWidth = 4;
+    g.fillStyle = color;
+    g.lineWidth = 5;
     g.lineCap = "round";
-    g.globalAlpha = 0.88;
+    g.globalAlpha = 0.92;
     g.beginPath();
     g.moveTo(ox, oy);
     g.lineTo(ex, ey);
@@ -506,11 +521,64 @@ export class ParrotScene {
     const a = Math.atan2(uy, ux);
     g.beginPath();
     g.moveTo(ex, ey);
-    g.lineTo(ex - 14 * Math.cos(a - 0.45), ey - 14 * Math.sin(a - 0.45));
+    g.lineTo(ex - 16 * Math.cos(a - 0.45), ey - 16 * Math.sin(a - 0.45));
     g.moveTo(ex, ey);
-    g.lineTo(ex - 14 * Math.cos(a + 0.45), ey - 14 * Math.sin(a + 0.45));
+    g.lineTo(ex - 16 * Math.cos(a + 0.45), ey - 16 * Math.sin(a + 0.45));
     g.stroke();
+    g.font = "700 18px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(word, ex, ey - 22);
     g.restore();
+  }
+
+  private drawHint(g: CanvasRenderingContext2D, bottle: Pose, dt: number): void {
+    this.hintT += dt;
+    const bob = Math.sin(this.hintT * 5) * 10;
+    const x = bottle.position.x;
+    const y = bottle.position.y - 168 + bob;
+    g.save();
+    g.strokeStyle = "rgba(244, 239, 227, 0.9)";
+    g.fillStyle = "rgba(244, 239, 227, 0.9)";
+    g.lineWidth = 4;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    g.beginPath();
+    g.moveTo(x - 18, y + 16);
+    g.lineTo(x, y);
+    g.lineTo(x + 18, y + 16);
+    g.stroke();
+    g.font = "700 15px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.fillText("FLICK", x, y - 16);
+    g.restore();
+  }
+
+  private noteTrail(bottle: Pose | null, dt: number): void {
+    if (bottle) {
+      const x = bottle.position.x;
+      const y = bottle.position.y - 28;
+      const last = this.trail[0];
+      if (!last || Math.hypot(x - last.x, y - last.y) > 18) {
+        this.trail.unshift({ x, y, life: 0.4, rot: bottle.angle });
+        if (this.trail.length > 12) this.trail.pop();
+      }
+    }
+    for (const bit of this.trail) bit.life -= dt;
+    if (this.trail.some((bit) => bit.life <= 0)) this.trail = this.trail.filter((bit) => bit.life > 0);
+  }
+
+  private drawTrail(g: CanvasRenderingContext2D, color: string): void {
+    for (const bit of this.trail) {
+      g.save();
+      g.globalAlpha = Math.max(0, bit.life / 0.4) * 0.5;
+      g.translate(bit.x, bit.y);
+      g.rotate(bit.rot + 0.6);
+      g.fillStyle = color;
+      fillEllipse(g, 0, 0, 8, 3.2);
+      g.restore();
+    }
+    g.globalAlpha = 1;
   }
 
   private drawResult(

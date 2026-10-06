@@ -24,6 +24,8 @@ export interface GameContext {
   input: import("./input").InputManager;
   rng: import("./rng").Rng;
   sfx: import("./audio").Sfx;
+  /** Minimum interactive element size in game coords to reach 44 CSS px. */
+  minTap: number;
 }
 
 export interface GameInstance {
@@ -41,6 +43,8 @@ export interface GameDefinition {
   description: string;
   durationMs: number;
   controls: string;
+  /** Match the phone viewport instead of letterboxing a 16:9 board. */
+  fillsScreen?: boolean;
   create(ctx: GameContext): GameInstance;
 }
 
@@ -52,7 +56,7 @@ export interface SessionStanding {
 
 export const PLAYER_COLORS = ["#3EE0FF", "#FF3D7A", "#FFB020", "#B8FF3D"] as const;
 
-export const DEFAULT_NAMES = ["Gale", "Surge", "Squall", "Tempest"] as const;
+export const DEFAULT_NAMES = ["Ace", "Blitz", "Clash", "Dash"] as const;
 
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;

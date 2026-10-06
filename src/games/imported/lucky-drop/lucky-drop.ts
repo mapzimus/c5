@@ -24,7 +24,7 @@ export const luckyDrop: GameDefinition = {
 
 const LIME = UI.lime;
 const BX = 400, BY = 48;
-const SHAKE = { x: 950, y: 290, w: 220, h: 68 };
+const SHAKE = { x: 950, y: 252, w: 220, h: 145 };
 interface Floater { x: number; y: number; text: string; color: string; life: number }
 interface Ring { x: number; y: number; radius: number; color: string; life: number }
 

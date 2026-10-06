@@ -229,12 +229,16 @@ class ChaosDerby implements GameInstance {
     if (event.shake) this.juice.shake(event.shake);
     if (event.callout) this.callouts.show(event.callout, "#FFB020", { life: 1.5, size: 64, y: 0.3 });
     if (r && event.pop) {
-      const good = ["BOING", "ZOOM", "SECOND WIND", "HUP"].includes(event.pop);
+      const good = ["BOING", "ZOOM", "SECOND WIND", "HUP", "JETPACK", "KABOOM", "MEGA", "TA-DA", "YOINK"].includes(event.pop);
       this.pops.push({ lane: r.lane, text: event.pop, life: 1.3, max: 1.3, color: good ? "#B8FF3D" : "#FFE066", tilt: this.ctx.rng.float(-0.18, 0.18) });
     }
     if (r && event.kind === "fall") this.puff(r, 8, "#d6c3a5");
     if (r && event.kind === "banana") this.puff(r, 5, "#fde047");
     if (r && event.kind === "flattened") this.puff(r, 12, "#94a3b8");
+    if (r && event.kind === "anvil") this.puff(r, 16, "#cbd5e1");
+    if (r && event.kind === "cannon") this.puff(r, 14, "#475569");
+    if (r && (event.kind === "hole" || event.kind === "popout")) this.puff(r, 12, "#7c5a34");
+    if (r && event.kind === "mega") this.puff(r, 10, "#fde047");
     if (r && event.kind === "finish") this.onFinish(r);
   }
 
@@ -319,7 +323,9 @@ class ChaosDerby implements GameInstance {
   render(g: CanvasRenderingContext2D): void {
     this.juice.begin(g);
     this.drawStadium(g);
+    if (this.world.lowGravT > 0) this.drawLowGravity(g);
     this.drawTrack(g);
+    if (this.world.iceT > 0) this.drawIce(g);
     for (let lane = 0; lane < RACER_COUNT; lane += 1) {
       this.drawLane(g, lane);
       if (lane === 2) this.drawBoulders(g);
@@ -450,6 +456,108 @@ class ChaosDerby implements GameInstance {
     g.fillText("FINISH", fx, postTop - 4 + 17 * this.zoom);
   }
 
+  private drawLowGravity(g: CanvasRenderingContext2D): void {
+    const a = Math.min(1, this.world.lowGravT / 0.6);
+    g.fillStyle = `rgba(124,58,237,${0.2 * a})`;
+    g.fillRect(-40, -40, GAME_WIDTH + 80, GROUND_SY);
+    g.fillStyle = `rgba(233,213,255,${0.7 * a})`;
+    for (let i = 0; i < 40; i += 1) {
+      const x = (i * 137.5 - this.camX * 0.3) % (GAME_WIDTH + 40);
+      const y = GROUND_SY - ((this.time * (20 + (i % 7) * 6) + i * 53) % GROUND_SY);
+      g.beginPath();
+      g.arc(x < 0 ? x + GAME_WIDTH + 40 : x, y, 1.5 + (i % 3), 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+
+  private drawIce(g: CanvasRenderingContext2D): void {
+    const a = Math.min(1, this.world.iceT / 0.6);
+    const top = this.sy(0, 0) - 12 * this.zoom;
+    const bottom = this.sy(0, 5) + 12 * this.zoom;
+    g.fillStyle = `rgba(186,230,253,${0.55 * a})`;
+    g.fillRect(-40, top, GAME_WIDTH + 80, bottom - top);
+    g.strokeStyle = `rgba(255,255,255,${0.7 * a})`;
+    g.lineWidth = 2;
+    for (let i = 0; i < 18; i += 1) {
+      const x = ((i * 211 - this.camX * this.zoom) % (GAME_WIDTH + 200) + GAME_WIDTH + 200) % (GAME_WIDTH + 200) - 100;
+      const y = top + ((i * 37) % (bottom - top));
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + 40, y - 6);
+      g.stroke();
+    }
+  }
+
+  private drawProps(g: CanvasRenderingContext2D, lane: number): void {
+    const z = this.zoom;
+    for (const prop of this.world.props) {
+      if (prop.lane !== lane || !this.visible(prop.x)) continue;
+      const x = this.sx(prop.x);
+      const y = this.sy(-this.world.heightAt(prop.x), lane);
+      const t = 1 - prop.life / prop.max;
+      if (prop.kind === "hole") {
+        const open = Math.min(1, t * 6, prop.life * 3);
+        g.fillStyle = "#7c5a34";
+        g.beginPath();
+        g.ellipse(x, y, 28 * z * open, 7 * z * open, 0, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = "#0b0f19";
+        g.beginPath();
+        g.ellipse(x, y, 22 * z * open, 5 * z * open, 0, 0, Math.PI * 2);
+        g.fill();
+      } else if (prop.kind === "cannon") {
+        g.save();
+        g.globalAlpha = Math.min(1, prop.life * 2);
+        g.translate(x, y - 12 * z);
+        g.scale(z, z);
+        g.rotate(-0.75);
+        g.fillStyle = "#1f2937";
+        g.beginPath();
+        g.roundRect(-10, -12, 52, 24, 8);
+        g.fill();
+        g.fillStyle = "#374151";
+        g.fillRect(36, -14, 10, 28);
+        g.restore();
+        g.fillStyle = "#78350f";
+        g.beginPath();
+        g.arc(x - 6 * z, y - 6 * z, 10 * z, 0, Math.PI * 2);
+        g.fill();
+      } else {
+        g.fillStyle = `rgba(241,245,249,${0.9 * (1 - t)})`;
+        for (let i = 0; i < 7; i += 1) {
+          const a = (i / 7) * Math.PI * 2;
+          g.beginPath();
+          g.arc(x + Math.cos(a) * 28 * t * z, y - 30 * z + Math.sin(a) * 22 * t * z, (10 + 8 * t) * z, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+    }
+    for (const fish of this.world.fish) {
+      if (fish.lane !== lane || !this.visible(fish.body.position.x)) continue;
+      const b = fish.body;
+      g.save();
+      g.globalAlpha = Math.min(1, fish.life);
+      g.translate(this.sx(b.position.x), this.sy(b.position.y, lane));
+      g.scale(z, z);
+      g.rotate(b.angle);
+      g.fillStyle = fish.lane % 2 ? "#fb923c" : "#cbd5e1";
+      g.beginPath();
+      g.ellipse(0, 0, 12, 6, 0, 0, Math.PI * 2);
+      g.fill();
+      g.beginPath();
+      g.moveTo(-10, 0);
+      g.lineTo(-18, -6);
+      g.lineTo(-18, 6);
+      g.closePath();
+      g.fill();
+      g.fillStyle = "#0b0f19";
+      g.beginPath();
+      g.arc(6, -1.5, 1.6, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+  }
+
   private visible(x: number, pad = 120): boolean {
     const s = this.sx(x);
     return s > -pad && s < GAME_WIDTH + pad;
@@ -551,6 +659,7 @@ class ChaosDerby implements GameInstance {
     }
     g.globalAlpha = 1;
 
+    this.drawProps(g, lane);
     const r = this.world.runners.find((x) => x.lane === lane);
     if (r) this.drawRunner(g, r);
   }
@@ -587,7 +696,19 @@ class ChaosDerby implements GameInstance {
     const b = r.body;
     let legs: RacerLook["legs"] = "run";
     let arms: RacerLook["arms"] = "swing";
-    if (r.mode === "fallen") {
+    let stride = r.stride;
+    if (r.mode === "ride") {
+      const kind = r.ride?.kind;
+      legs = kind === "balloon" ? "air" : kind === "hole" ? "idle" : "flail";
+      arms = kind === "balloon" || kind === "hole" ? "up" : "flail";
+    } else if (r.jetT > 0 && r.mode === "run") {
+      legs = "air";
+      arms = "up";
+    } else if (r.danceT > 0 && r.mode === "run") {
+      legs = "run";
+      arms = "up";
+      stride = this.time * 260;
+    } else if (r.mode === "fallen") {
       const flail = !r.sleeping && r.modeT < 0.9;
       legs = flail ? "flail" : "limp";
       arms = flail ? "flail" : "limp";
@@ -612,7 +733,7 @@ class ChaosDerby implements GameInstance {
       lane: r.lane,
       mood: r.mood,
       dir: r.dir,
-      stride: r.stride,
+      stride,
       legs,
       arms,
       time: this.time,
@@ -620,6 +741,8 @@ class ChaosDerby implements GameInstance {
       charred: r.charT > 0,
       vy: b.velocity.y,
       squash: r.landT / 0.22,
+      pie: r.pieT > 0,
+      jet: r.jetT > 0 && r.mode === "run",
     };
   }
 
@@ -627,23 +750,52 @@ class ChaosDerby implements GameInstance {
     const b = r.body;
     if (!this.visible(b.position.x, 160)) return;
     const z = this.zoom;
+    const ride = r.ride;
     const ground = -this.world.heightAt(b.position.x);
     const lift = Math.max(0, ground - b.bounds.max.y);
-    g.fillStyle = `rgba(0,0,0,${0.3 * Math.max(0.2, 1 - lift / 200)})`;
-    g.beginPath();
-    g.ellipse(this.sx(b.position.x), this.sy(ground, r.lane), (r.w * 0.6 + 6) * z * Math.max(0.4, 1 - lift / 300), 4 * z, 0, 0, Math.PI * 2);
-    g.fill();
+    const groundY = this.sy(ground, r.lane);
+    if (ride?.kind !== "hole") {
+      g.fillStyle = `rgba(0,0,0,${0.3 * Math.max(0.2, 1 - lift / 200)})`;
+      g.beginPath();
+      g.ellipse(this.sx(b.position.x), groundY, (r.w * r.scale * 0.6 + 6) * z * Math.max(0.4, 1 - lift / 300), 4 * z, 0, 0, Math.PI * 2);
+      g.fill();
+    }
 
     const x = this.sx(b.position.x);
     const y = this.sy(b.position.y, r.lane);
+    const h = r.h * r.scale;
+    if (ride?.kind === "ufo") this.drawUfo(g, x, y, h, true);
+    if (ride?.kind === "balloon") this.drawBalloons(g, x, y, h, r.lane);
+
     g.save();
+    if (ride?.kind === "hole") {
+      g.beginPath();
+      g.rect(-40, -1000, GAME_WIDTH + 80, groundY + 1000);
+      g.clip();
+    }
     g.translate(x, y);
-    g.scale(z, z);
+    g.scale(z * r.scale, z * r.scale);
     g.rotate(b.angle);
+    if (r.danceT > 0 && r.mode === "run") g.rotate(Math.sin(this.time * 10) * 0.22);
+    if (r.flatT > 0) {
+      g.translate(0, r.h / 2);
+      g.scale(1.5, 0.3);
+      g.translate(0, -r.h / 2);
+    }
     drawRacer(g, this.lookOf(r));
     g.restore();
 
-    const headY = y - (r.h / 2 + 14) * z;
+    if (ride?.kind === "hole" && b.position.y > ground - (r.h * r.scale) / 4) {
+      g.fillStyle = "#7c5a34";
+      g.beginPath();
+      g.ellipse(x, groundY, 20 * z, 9 * z, 0, Math.PI, 0);
+      g.fill();
+    }
+    if (ride?.kind === "eagle") this.drawEagle(g, x, y - (h / 2 + 16) * z);
+    if (ride?.kind === "ufo") this.drawUfo(g, x, y, h, false);
+    if (r.flatT > 0) this.drawAnvil(g, x, groundY - r.h * 0.3 * z, 2.4 - r.flatT);
+
+    const headY = y - (h / 2 + 14) * z;
     if (r.mood === "sleep") {
       g.fillStyle = "#e2e8f0";
       g.font = `700 ${Math.round(18 * z + 4)}px Bebas Neue, Impact, sans-serif`;
@@ -674,6 +826,137 @@ class ChaosDerby implements GameInstance {
       drawPlayerOrb(g, ox, headY, 8, player);
       ox += 18;
     }
+  }
+
+  private drawEagle(g: CanvasRenderingContext2D, x: number, y: number): void {
+    const z = this.zoom;
+    const flap = Math.sin(this.time * 14);
+    g.save();
+    g.translate(x, y);
+    g.scale(z, z);
+    g.strokeStyle = "#f59e0b";
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(-6, 6);
+    g.lineTo(-8, 18);
+    g.moveTo(6, 6);
+    g.lineTo(8, 18);
+    g.stroke();
+    g.fillStyle = "#6b3f1d";
+    for (const side of [-1, 1]) {
+      g.beginPath();
+      g.moveTo(side * 8, -6);
+      g.quadraticCurveTo(side * 40, -30 - flap * 22, side * 70, -10 - flap * 30);
+      g.quadraticCurveTo(side * 40, -4, side * 8, 4);
+      g.fill();
+    }
+    g.beginPath();
+    g.ellipse(0, -2, 16, 11, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#f8fafc";
+    g.beginPath();
+    g.arc(14, -12, 9, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#f59e0b";
+    g.beginPath();
+    g.moveTo(21, -14);
+    g.lineTo(31, -9);
+    g.lineTo(21, -7);
+    g.fill();
+    g.fillStyle = "#0b0f19";
+    g.beginPath();
+    g.arc(16, -14, 1.8, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+  }
+
+  /** Saucer above the runner; the beam goes behind them, the saucer in front. */
+  private drawUfo(g: CanvasRenderingContext2D, x: number, y: number, h: number, beam: boolean): void {
+    const z = this.zoom;
+    const sy = y - (h / 2 + 62) * z + Math.sin(this.time * 3) * 4;
+    if (beam) {
+      const grad = g.createLinearGradient(0, sy, 0, y + (h / 2) * z);
+      grad.addColorStop(0, "rgba(190,242,100,0.55)");
+      grad.addColorStop(1, "rgba(190,242,100,0.05)");
+      g.fillStyle = grad;
+      g.beginPath();
+      g.moveTo(x - 18 * z, sy);
+      g.lineTo(x + 18 * z, sy);
+      g.lineTo(x + 46 * z, y + (h / 2) * z);
+      g.lineTo(x - 46 * z, y + (h / 2) * z);
+      g.closePath();
+      g.fill();
+      return;
+    }
+    g.save();
+    g.translate(x, sy);
+    g.scale(z, z);
+    g.fillStyle = "rgba(125,211,252,0.7)";
+    g.beginPath();
+    g.ellipse(0, -8, 18, 15, 0, Math.PI, 0);
+    g.fill();
+    g.fillStyle = "#94a3b8";
+    g.beginPath();
+    g.ellipse(0, 0, 48, 12, 0, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#475569";
+    g.beginPath();
+    g.ellipse(0, 4, 30, 6, 0, 0, Math.PI);
+    g.fill();
+    for (let i = 0; i < 5; i += 1) {
+      g.fillStyle = (Math.floor(this.time * 8) + i) % 2 ? "#fde047" : "#f472b6";
+      g.beginPath();
+      g.arc(-32 + i * 16, 1, 3, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.restore();
+  }
+
+  private drawBalloons(g: CanvasRenderingContext2D, x: number, y: number, h: number, lane: number): void {
+    const z = this.zoom;
+    const colors = ["#ef4444", "#3b82f6", "#facc15"];
+    const handY = y - (h / 2) * z;
+    colors.forEach((c, i) => {
+      const bx = x + (i - 1) * 16 * z + Math.sin(this.time * 2 + i + lane) * 5 * z;
+      const by = handY - (62 + (i % 2) * 12) * z;
+      g.strokeStyle = "rgba(226,232,240,0.8)";
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(x, handY);
+      g.lineTo(bx, by + 14 * z);
+      g.stroke();
+      g.fillStyle = c;
+      g.beginPath();
+      g.ellipse(bx, by, 11 * z, 14 * z, 0, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = "rgba(255,255,255,0.45)";
+      g.beginPath();
+      g.ellipse(bx - 4 * z, by - 5 * z, 3 * z, 4 * z, -0.4, 0, Math.PI * 2);
+      g.fill();
+    });
+  }
+
+  private drawAnvil(g: CanvasRenderingContext2D, x: number, y: number, t: number): void {
+    const z = this.zoom;
+    const drop = t < 0.18 ? (1 - t / 0.18) * 320 * z : 0;
+    g.save();
+    g.translate(x, y - drop);
+    g.scale(z, z);
+    g.fillStyle = "#374151";
+    g.beginPath();
+    g.moveTo(-26, -24);
+    g.lineTo(30, -24);
+    g.quadraticCurveTo(30, -14, 14, -12);
+    g.lineTo(10, -4);
+    g.lineTo(18, 0);
+    g.lineTo(-16, 0);
+    g.lineTo(-8, -4);
+    g.lineTo(-12, -12);
+    g.quadraticCurveTo(-34, -14, -26, -24);
+    g.fill();
+    g.fillStyle = "rgba(255,255,255,0.25)";
+    g.fillRect(-20, -22, 40, 3);
+    g.restore();
   }
 
   private drawPops(g: CanvasRenderingContext2D): void {
@@ -743,10 +1026,13 @@ class ChaosDerby implements GameInstance {
   }
 
   private drawOffscreen(g: CanvasRenderingContext2D): void {
-    for (const r of this.world.runners) {
-      const x = this.sx(r.body.position.x);
-      if (x > -10) continue;
-      const y = this.sy(r.body.position.y, r.lane);
+    // stack the markers so runners left behind together don't pile up on one spot
+    const behind = this.world.runners
+      .filter((r) => this.sx(r.body.position.x) <= -10)
+      .map((r) => ({ r, y: this.sy(r.body.position.y, r.lane) }))
+      .sort((a, b) => a.y - b.y);
+    for (let n = 1; n < behind.length; n += 1) behind[n]!.y = Math.max(behind[n]!.y, behind[n - 1]!.y + 36);
+    for (const { r, y } of behind) {
       g.fillStyle = "rgba(7,11,20,0.75)";
       g.beginPath();
       g.roundRect(8, y - 16, 86, 32, 16);

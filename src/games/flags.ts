@@ -1,77 +1,91 @@
-import us from "flag-icons/flags/4x3/us.svg?url";
-import ca from "flag-icons/flags/4x3/ca.svg?url";
-import mx from "flag-icons/flags/4x3/mx.svg?url";
-import br from "flag-icons/flags/4x3/br.svg?url";
-import ar from "flag-icons/flags/4x3/ar.svg?url";
-import cl from "flag-icons/flags/4x3/cl.svg?url";
-import pe from "flag-icons/flags/4x3/pe.svg?url";
-import jm from "flag-icons/flags/4x3/jm.svg?url";
-import gb from "flag-icons/flags/4x3/gb.svg?url";
-import fr from "flag-icons/flags/4x3/fr.svg?url";
-import de from "flag-icons/flags/4x3/de.svg?url";
-import it from "flag-icons/flags/4x3/it.svg?url";
-import es from "flag-icons/flags/4x3/es.svg?url";
-import pt from "flag-icons/flags/4x3/pt.svg?url";
-import se from "flag-icons/flags/4x3/se.svg?url";
-import no from "flag-icons/flags/4x3/no.svg?url";
-import fi from "flag-icons/flags/4x3/fi.svg?url";
-import gr from "flag-icons/flags/4x3/gr.svg?url";
-import ch from "flag-icons/flags/4x3/ch.svg?url";
-import ua from "flag-icons/flags/4x3/ua.svg?url";
-import tr from "flag-icons/flags/4x3/tr.svg?url";
-import za from "flag-icons/flags/4x3/za.svg?url";
-import ke from "flag-icons/flags/4x3/ke.svg?url";
-import ng from "flag-icons/flags/4x3/ng.svg?url";
-import gh from "flag-icons/flags/4x3/gh.svg?url";
-import ma from "flag-icons/flags/4x3/ma.svg?url";
-import eg from "flag-icons/flags/4x3/eg.svg?url";
-import jp from "flag-icons/flags/4x3/jp.svg?url";
-import cn from "flag-icons/flags/4x3/cn.svg?url";
-import kr from "flag-icons/flags/4x3/kr.svg?url";
-import india from "flag-icons/flags/4x3/in.svg?url";
-import np from "flag-icons/flags/4x3/np.svg?url";
-import au from "flag-icons/flags/4x3/au.svg?url";
-import nz from "flag-icons/flags/4x3/nz.svg?url";
-import ph from "flag-icons/flags/4x3/ph.svg?url";
-import vn from "flag-icons/flags/4x3/vn.svg?url";
+export interface Flag {
+  id: string;
+  name: string;
+  file: string;
+}
 
-/** National flag artwork from flag-icons (MIT); bundled for offline play. */
-export const FLAGS = [
-  { id: "us", name: "United States", src: us },
-  { id: "ca", name: "Canada", src: ca },
-  { id: "mx", name: "Mexico", src: mx },
-  { id: "br", name: "Brazil", src: br },
-  { id: "ar", name: "Argentina", src: ar },
-  { id: "cl", name: "Chile", src: cl },
-  { id: "pe", name: "Peru", src: pe },
-  { id: "jm", name: "Jamaica", src: jm },
-  { id: "gb", name: "United Kingdom", src: gb },
-  { id: "fr", name: "France", src: fr },
-  { id: "de", name: "Germany", src: de },
-  { id: "it", name: "Italy", src: it },
-  { id: "es", name: "Spain", src: es },
-  { id: "pt", name: "Portugal", src: pt },
-  { id: "se", name: "Sweden", src: se },
-  { id: "no", name: "Norway", src: no },
-  { id: "fi", name: "Finland", src: fi },
-  { id: "gr", name: "Greece", src: gr },
-  { id: "ch", name: "Switzerland", src: ch },
-  { id: "ua", name: "Ukraine", src: ua },
-  { id: "tr", name: "Türkiye", src: tr },
-  { id: "za", name: "South Africa", src: za },
-  { id: "ke", name: "Kenya", src: ke },
-  { id: "ng", name: "Nigeria", src: ng },
-  { id: "gh", name: "Ghana", src: gh },
-  { id: "ma", name: "Morocco", src: ma },
-  { id: "eg", name: "Egypt", src: eg },
-  { id: "jp", name: "Japan", src: jp },
-  { id: "cn", name: "China", src: cn },
-  { id: "kr", name: "South Korea", src: kr },
-  { id: "in", name: "India", src: india },
-  { id: "np", name: "Nepal", src: np },
-  { id: "au", name: "Australia", src: au },
-  { id: "nz", name: "New Zealand", src: nz },
-  { id: "ph", name: "Philippines", src: ph },
-  { id: "vn", name: "Vietnam", src: vn },
-] as const;
+export const FLAGS: readonly Flag[] = [
+  { id: "ar", name: "Argentina", file: "ar.png" },
+  { id: "au", name: "Australia", file: "au.png" },
+  { id: "at", name: "Austria", file: "at.png" },
+  { id: "be", name: "Belgium", file: "be.png" },
+  { id: "br", name: "Brazil", file: "br.png" },
+  { id: "ca", name: "Canada", file: "ca.png" },
+  { id: "cl", name: "Chile", file: "cl.png" },
+  { id: "cn", name: "China", file: "cn.png" },
+  { id: "co", name: "Colombia", file: "co.png" },
+  { id: "hr", name: "Croatia", file: "hr.png" },
+  { id: "cz", name: "Czechia", file: "cz.png" },
+  { id: "dk", name: "Denmark", file: "dk.png" },
+  { id: "ec", name: "Ecuador", file: "ec.png" },
+  { id: "eg", name: "Egypt", file: "eg.png" },
+  { id: "gb-eng", name: "England", file: "gb-eng.png" },
+  { id: "fi", name: "Finland", file: "fi.png" },
+  { id: "fr", name: "France", file: "fr.png" },
+  { id: "de", name: "Germany", file: "de.png" },
+  { id: "gh", name: "Ghana", file: "gh.png" },
+  { id: "gr", name: "Greece", file: "gr.png" },
+  { id: "hu", name: "Hungary", file: "hu.png" },
+  { id: "is", name: "Iceland", file: "is.png" },
+  { id: "in", name: "India", file: "in.png" },
+  { id: "id", name: "Indonesia", file: "id.png" },
+  { id: "ir", name: "Iran", file: "ir.png" },
+  { id: "ie", name: "Ireland", file: "ie.png" },
+  { id: "il", name: "Israel", file: "il.png" },
+  { id: "it", name: "Italy", file: "it.png" },
+  { id: "jp", name: "Japan", file: "jp.png" },
+  { id: "ke", name: "Kenya", file: "ke.png" },
+  { id: "kr", name: "South Korea", file: "kr.png" },
+  { id: "mx", name: "Mexico", file: "mx.png" },
+  { id: "ma", name: "Morocco", file: "ma.png" },
+  { id: "nl", name: "Netherlands", file: "nl.png" },
+  { id: "nz", name: "New Zealand", file: "nz.png" },
+  { id: "ng", name: "Nigeria", file: "ng.png" },
+  { id: "no", name: "Norway", file: "no.png" },
+  { id: "pa", name: "Panama", file: "pa.png" },
+  { id: "py", name: "Paraguay", file: "py.png" },
+  { id: "pe", name: "Peru", file: "pe.png" },
+  { id: "ph", name: "Philippines", file: "ph.png" },
+  { id: "pl", name: "Poland", file: "pl.png" },
+  { id: "pt", name: "Portugal", file: "pt.png" },
+  { id: "qa", name: "Qatar", file: "qa.png" },
+  { id: "ro", name: "Romania", file: "ro.png" },
+  { id: "ru", name: "Russia", file: "ru.png" },
+  { id: "sa", name: "Saudi Arabia", file: "sa.png" },
+  { id: "gb-sct", name: "Scotland", file: "gb-sct.png" },
+  { id: "sn", name: "Senegal", file: "sn.png" },
+  { id: "rs", name: "Serbia", file: "rs.png" },
+  { id: "za", name: "South Africa", file: "za.png" },
+  { id: "es", name: "Spain", file: "es.png" },
+  { id: "se", name: "Sweden", file: "se.png" },
+  { id: "ch", name: "Switzerland", file: "ch.png" },
+  { id: "th", name: "Thailand", file: "th.png" },
+  { id: "tn", name: "Tunisia", file: "tn.png" },
+  { id: "tr", name: "Turkey", file: "tr.png" },
+  { id: "ua", name: "Ukraine", file: "ua.png" },
+  { id: "ae", name: "UAE", file: "ae.png" },
+  { id: "us", name: "USA", file: "us.png" },
+  { id: "uy", name: "Uruguay", file: "uy.png" },
+  { id: "ve", name: "Venezuela", file: "ve.png" },
+  { id: "gb-wls", name: "Wales", file: "gb-wls.png" },
+  { id: "cm", name: "Cameroon", file: "cm.png" },
+  { id: "cr", name: "Costa Rica", file: "cr.png" },
+  { id: "ci", name: "Ivory Coast", file: "ci.png" },
+  { id: "jm", name: "Jamaica", file: "jm.png" },
+  { id: "tz", name: "Tanzania", file: "tz.png" },
+  { id: "dz", name: "Algeria", file: "dz.png" },
+  { id: "bo", name: "Bolivia", file: "bo.png" },
+  { id: "cu", name: "Cuba", file: "cu.png" },
+  { id: "vn", name: "Vietnam", file: "vn.png" },
+  { id: "my", name: "Malaysia", file: "my.png" },
+  { id: "sg", name: "Singapore", file: "sg.png" },
+  { id: "pk", name: "Pakistan", file: "pk.png" },
+  { id: "bd", name: "Bangladesh", file: "bd.png" },
+  { id: "et", name: "Ethiopia", file: "et.png" },
+  { id: "ht", name: "Haiti", file: "ht.png" },
+  { id: "sv", name: "El Salvador", file: "sv.png" },
+  { id: "hn", name: "Honduras", file: "hn.png" },
+];
 
+export const PAIR_COUNT = 18;
+export const PAIR_FACES = FLAGS.map((flag) => flag.id);

@@ -38,7 +38,28 @@ export type Mood =
   | "win"
   | "sad";
 
-export type RunnerMode = "run" | "fallen" | "getup" | "finished";
+export type RunnerMode = "run" | "fallen" | "getup" | "finished" | "ride";
+
+/** Something has hold of a runner (or they're underground): the world moves them, not physics. */
+export interface Ride {
+  kind: "eagle" | "ufo" | "balloon" | "hole";
+  t: number;
+  dur: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  /** Balloon drift in px per frame. */
+  drift: number;
+}
+
+/** Short-lived scenery for effects: holes in the track, a cannon, a puff of smoke. */
+export interface Prop {
+  kind: "hole" | "cannon" | "poof";
+  lane: number;
+  x: number;
+  life: number;
+  max: number;
+}
 
 export interface Runner extends Placeable {
   spec: RacerSpec;
@@ -70,12 +91,22 @@ export interface Runner extends Placeable {
   finishTime: number;
   falls: number;
   stuckT: number;
+  stuckX: number;
   /** Seconds a flattened racer can't be hit by a boulder again. */
   immuneT: number;
   /** Counts down after a hard landing; drives the squash in the drawing. */
   landT: number;
   hopT: number;
   wasGrounded: boolean;
+  ride: Ride | null;
+  /** Seconds left squashed flat under an anvil. */
+  flatT: number;
+  pieT: number;
+  danceT: number;
+  jetT: number;
+  /** Size multiplier (MEGA / tiny) and how long it lasts. */
+  scale: number;
+  scaleT: number;
   mood: Mood;
   decisions: Map<number, number>;
 }
@@ -124,11 +155,38 @@ export interface DerbyEvent {
   callout?: string;
   shake?: number;
   sound: "hit" | "tick" | "boost" | "miss" | "big" | "none";
+  /** For bad luck: the victim's running position when it struck (0 = leader). */
+  position?: number;
+  /** For bad luck: 0 mild, 1 medium, 2 severe. */
+  severity?: Severity;
 }
 
-const BAD_EVENTS = ["trip", "sneeze", "nap", "wrongway", "distracted", "cramp", "lightning"] as const;
-const GOOD_EVENTS = ["boost", "secondwind"] as const;
-const FIELD_EVENTS = ["boulder", "quake", "gust", "crates"] as const;
+type BadEvent =
+  | "trip" | "sneeze" | "nap" | "wrongway" | "distracted" | "cramp" | "lightning"
+  | "eagle" | "anvil" | "ufo" | "swap" | "balloon" | "hole" | "pie" | "dance" | "shrink";
+export type Severity = 0 | 1 | 2;
+/** Bad luck by how much it hurts: a wave to the crowd, a faceplant, or a lightning strike. */
+const BAD_BY_SEVERITY: readonly (readonly BadEvent[])[] = [
+  ["distracted", "cramp", "pie", "dance", "shrink"],
+  ["trip", "wrongway", "sneeze", "balloon", "hole"],
+  ["nap", "lightning", "eagle", "anvil", "ufo", "swap"],
+];
+
+/**
+ * Odds of [mild, medium, severe] bad luck for a runner in `position` (0 = leader) of a
+ * `field`-runner race. The higher up the order, the likelier it's severe; a leader who's
+ * pulling away (`leadGap` px clear of second) gets a little extra on top.
+ */
+export function severityOdds(position: number, field: number, leadGap = 0): [number, number, number] {
+  const standing = field <= 1 ? 1 : 1 - position / (field - 1);
+  const runaway = position === 0 ? Math.min(0.2, Math.max(0, leadGap) / 1500) : 0;
+  const severe = 0.05 + 0.55 * standing * standing + runaway;
+  const mild = Math.min(1 - severe, 0.1 + 0.5 * (1 - standing));
+  return [mild, Math.max(0, 1 - severe - mild), severe];
+}
+const GOOD_EVENTS = ["boost", "secondwind", "jetpack", "cannon", "mega"] as const;
+const FIELD_EVENTS = ["boulder", "quake", "gust", "crates", "lowgrav", "fish", "reverse", "ice"] as const;
+const GRAVITY = 1.3;
 
 export class DerbyWorld {
   readonly engine: Matter.Engine;
@@ -137,7 +195,12 @@ export class DerbyWorld {
   readonly patches: Patch[] = [];
   readonly hills: Hill[] = [];
   readonly boulders: Boulder[] = [];
+  readonly fish: { body: Matter.Body; lane: number; life: number }[] = [];
+  readonly props: Prop[] = [];
   time = 0;
+  /** Seconds left of low gravity / black ice. */
+  lowGravT = 0;
+  iceT = 0;
   finishedCount = 0;
   gust = 0;
   gustT = 0;
@@ -155,7 +218,7 @@ export class DerbyWorld {
     private readonly rng: Rng,
     private readonly opts: { events?: boolean } = {},
   ) {
-    this.engine = Engine.create({ gravity: { x: 0, y: 1.3, scale: 0.001 }, enableSleeping: true });
+    this.engine = Engine.create({ gravity: { x: 0, y: GRAVITY, scale: 0.001 }, enableSleeping: true });
     const ground = Bodies.rectangle(FINISH_X / 2, 200, FINISH_X + 8000, 400, {
       isStatic: true,
       friction: 0.8,
@@ -238,8 +301,8 @@ export class DerbyWorld {
       for (let s = 0; s < stack; s += 1) {
         const size = this.rng.float(26, 36);
         const body = Bodies.rectangle(x + this.rng.float(-10, 10), -size / 2 - s * size - dropFrom, size, size, {
-          density: 0.0012,
-          friction: 0.7,
+          density: 0.0009,
+          friction: 0.15,
           label: "crate",
           collisionFilter: { category: laneBit(lane), mask: GROUND | laneBit(lane) | BOULDER },
         });
@@ -318,10 +381,18 @@ export class DerbyWorld {
       finishTime: 0,
       falls: 0,
       stuckT: 0,
+      stuckX: 0,
       immuneT: 0,
       landT: 0,
       hopT: 0,
       wasGrounded: true,
+      ride: null,
+      flatT: 0,
+      pieT: 0,
+      danceT: 0,
+      jetT: 0,
+      scale: 1,
+      scaleT: 0,
       mood: "focused",
       decisions: new Map(),
     };
@@ -351,10 +422,19 @@ export class DerbyWorld {
     this.nextEvent -= dt;
     if (this.nextEvent <= 0 && this.opts.events !== false) {
       this.randomEvent();
-      this.nextEvent = this.rng.float(1.0, 2.3);
+      // fewer runners left, fewer events: stragglers shouldn't get all the chaos to themselves
+      const left = Math.max(1, this.runners.filter((r) => !r.finished).length);
+      this.nextEvent = this.rng.float(0.85, 1.9) * Math.sqrt(this.runners.length / left);
     }
     this.gustT = Math.max(0, this.gustT - dt);
     if (this.gustT <= 0) this.gust = 0;
+    this.iceT = Math.max(0, this.iceT - dt);
+    if (this.lowGravT > 0) {
+      this.lowGravT = Math.max(0, this.lowGravT - dt);
+      this.engine.gravity.y = this.lowGravT > 0 ? 0.42 : GRAVITY;
+    }
+    for (const prop of this.props) prop.life -= dt;
+    for (let i = this.props.length - 1; i >= 0; i -= 1) if (this.props[i]!.life <= 0) this.props.splice(i, 1);
 
     for (const r of this.runners) this.control(r, dt);
 
@@ -364,21 +444,37 @@ export class DerbyWorld {
     this.handleHits();
 
     for (const r of this.runners) this.afterStep(r, dt);
+    this.layDownHurdles();
     this.updateBoulders(dt);
+    this.updateFish(dt);
     return [...this.out];
   }
 
   private control(r: Runner, dt: number): void {
     const b = r.body;
     r.modeT += dt;
-    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT", "landT", "hopT"] as const) {
+    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT", "landT", "hopT", "flatT", "pieT", "danceT", "jetT", "scaleT"] as const) {
       r[key] = Math.max(0, r[key] - dt);
     }
-    const mask = GROUND | laneBit(r.lane) | (r.immuneT > 0 ? 0 : BOULDER);
+    if (r.scale !== 1 && r.scaleT <= 0) this.setScale(r, 1, 0);
+    const mask = r.mode === "ride" ? 0 : GROUND | laneBit(r.lane) | (r.immuneT > 0 ? 0 : BOULDER);
     if (b.collisionFilter.mask !== mask) b.collisionFilter.mask = mask;
     if (r.wrongT <= 0 && r.dir === -1) r.dir = 1;
     const ang = wrap(b.angle);
     const vx = b.velocity.x;
+
+    if (r.mode === "ride") {
+      this.steerRide(r, dt);
+      return;
+    }
+
+    if (r.mode === "run" && r.jetT > 0) {
+      const wantY = -this.heightAt(b.position.x) - 150 - r.h / 2;
+      const jetSpeed = (r.stats.topSpeed / 60) * r.spec.pace * 1.9 * r.dir;
+      Body.setVelocity(b, { x: vx + (jetSpeed - vx) * 0.08, y: (wantY - b.position.y) * 0.06 });
+      Body.setAngularVelocity(b, b.angularVelocity * 0.7 - (ang - 0.25 * r.dir) * 0.15);
+      return;
+    }
 
     if (r.mode === "run") {
       r.paceT -= dt;
@@ -391,27 +487,38 @@ export class DerbyWorld {
         this.fall(r, 0, 0, 0, "OOF");
         return;
       }
-      let target = (r.stats.topSpeed / 60) * (0.72 + 0.28 * r.stamina) * r.pace;
+      let target = (r.stats.topSpeed / 60) * r.spec.pace * (0.72 + 0.28 * r.stamina) * r.pace;
       if (r.boostT > 0) target *= 1.7;
       if (r.slowT > 0) target *= 0.5;
       if (r.mudded) target *= 0.42;
+      if (r.scale > 1) target *= 1.3;
+      if (r.scale < 1) target *= 0.75;
       if (r.stopT > 0) target = 0;
       target = target * r.dir + this.gust;
       // hoppers keep driving through their own little hops
       const driving = r.grounded || (r.spec.gait === "hop" && r.hopT > 0.08);
       if (driving) {
-        const k = Math.min(1, r.stats.accel * dt);
+        const k = Math.min(1, r.stats.accel * dt * (this.iceT > 0 ? 0.12 : 1));
         Body.setVelocity(b, { x: vx + (target - vx) * k, y: b.velocity.y });
       }
       const wobble = r.dizzyT > 0 ? Math.sin(this.time * 9 + r.lane) * 0.35 : 0;
       const lean = Math.max(-0.2, Math.min(0.2, target * 0.035)) + wobble;
-      const stiff = (driving ? 0.11 : 0.02) * r.stats.balance;
+      const stiff = (driving ? 0.11 : 0.02) * r.stats.balance * (this.iceT > 0 ? 0.55 : 1);
       Body.setAngularVelocity(b, b.angularVelocity * 0.82 - (ang - lean) * stiff);
-      const pushing = Math.abs(target) > 1.5 && r.grounded && Math.abs(b.velocity.x) < 1.2;
-      r.stuckT = pushing ? r.stuckT + dt : 0;
-      if (r.stuckT > 0.7) {
+      // Every second, check they actually got somewhere; if not, big leap over whatever's in the way.
+      if (Math.abs(target) > 1.5 && r.stopT <= 0 && r.wrongT <= 0 && this.iceT <= 0) {
+        r.stuckT += dt;
+        if (r.stuckT >= 0.9) {
+          if ((b.position.x - r.stuckX) * r.dir < 25) {
+            Body.setVelocity(b, { x: b.velocity.x + r.dir * 2, y: -9.5 });
+            this.emit({ kind: "unstick", lane: r.lane, sound: "none" });
+          }
+          r.stuckT = 0;
+          r.stuckX = b.position.x;
+        }
+      } else {
         r.stuckT = 0;
-        Body.setVelocity(b, { x: b.velocity.x + r.dir * 1.5, y: -8 });
+        r.stuckX = b.position.x;
       }
       this.maybeJump(r);
       if (r.spec.gait === "hop" && r.grounded && r.hopT <= 0 && r.stopT <= 0 && Math.abs(target) > 1) {
@@ -429,7 +536,7 @@ export class DerbyWorld {
 
     if (r.mode === "getup") {
       const t = Math.min(1, r.modeT / GETUP_S);
-      const standY = -this.heightAt(b.position.x) - r.h / 2 - 1;
+      const standY = -this.heightAt(b.position.x) - (r.h * r.scale) / 2 - 1;
       Body.setAngle(b, ang * (1 - t) * 0.85);
       Body.setAngularVelocity(b, 0);
       Body.setPosition(b, { x: b.position.x, y: b.position.y + (standY - b.position.y) * Math.min(1, t * 1.5) });
@@ -529,6 +636,8 @@ export class DerbyWorld {
           else this.emit({ kind: "clip", lane: r.lane, sound: "tick" });
         } else if (other.label === "crate" && speed > 2.5 && this.rng.next() < 0.35) {
           this.fall(r, 0, -2, 0.25 * r.dir, "OOF");
+        } else if (other.label === "fish" && this.rng.next() < 0.3) {
+          this.fall(r, 0, -2, 0.3 * r.dir, "SLAP");
         }
       }
     }
@@ -544,13 +653,14 @@ export class DerbyWorld {
     if (r.mode === "fallen" && r.grounded) r.stride += dt * 60 * 3;
 
     const surface = -this.heightAt(b.position.x);
-    if (b.position.y > surface + 30) {
+    if (r.mode !== "ride" && b.position.y > surface + 30) {
       Body.setPosition(b, { x: b.position.x, y: surface - r.h / 2 - 2 });
       Body.setVelocity(b, { x: b.velocity.x, y: 0 });
     }
 
     r.mudded = false;
-    const feetDown = b.bounds.max.y > surface - 10;
+    // generous so hoppers bouncing along still land in the mud and on the bananas
+    const feetDown = b.bounds.max.y > surface - 24;
     for (const p of this.patches) {
       if (p.lane !== r.lane || p.used) continue;
       if (Math.abs(b.position.x - p.x) > p.w / 2 + r.w / 2 - 8) continue;
@@ -581,6 +691,9 @@ export class DerbyWorld {
 
   private moodOf(r: Runner): Mood {
     if (r.finished && r.mode === "finished") return r.place === 1 ? "win" : r.place <= 3 ? "happy" : "sad";
+    if (r.ride) return r.ride.kind === "balloon" ? "happy" : r.ride.kind === "hole" ? "confused" : "panic";
+    if (r.jetT > 0 || r.danceT > 0) return "happy";
+    if (r.pieT > 0 && r.mode === "run") return "angry";
     if (r.mode === "fallen") {
       if (r.sleeping) return "sleep";
       if (r.modeT < 0.7) return "panic";
@@ -600,6 +713,9 @@ export class DerbyWorld {
   private setMode(r: Runner, mode: RunnerMode): void {
     r.mode = mode;
     r.modeT = 0;
+    // restart the stuck check from wherever they are now
+    r.stuckT = 0;
+    r.stuckX = r.body.position.x;
   }
 
   private fall(r: Runner, kickX: number, kickY: number, spin: number, pop: string): void {
@@ -622,29 +738,109 @@ export class DerbyWorld {
   // ---------------------------------------------------------------- random events
 
   private randomEvent(): void {
-    const running = this.order().filter((r) => !r.finished);
+    const order = this.order();
+    const running = order.filter((r) => !r.finished);
     if (running.length === 0) return;
     const roll = this.rng.next();
-    if (roll < 0.16) {
+    if (roll < 0.2) {
       const kinds = this.time < 8 ? FIELD_EVENTS.filter((k) => k !== "boulder") : FIELD_EVENTS;
       this.fieldEvent(this.rng.pick(kinds), running);
       return;
     }
     const good = roll > 0.8;
     // Bad luck finds the leaders, good luck finds the stragglers: upsets are the point.
-    const weights = running.map((_, i) => {
-      const fromFront = i / Math.max(1, running.length - 1);
+    // Positions count finished runners too, so a lone straggler is still last, not "leading".
+    const weights = running.map((r) => {
+      const fromFront = order.indexOf(r) / Math.max(1, order.length - 1);
       return good ? 0.6 + fromFront * 2.4 : 3 - fromFront * 2.2;
     });
     const target = weightedPick(this.rng, running, weights);
     if (target.mode !== "run") return;
-    if (good) this.goodEvent(this.rng.pick(GOOD_EVENTS), target, running);
-    else this.badEvent(this.rng.pick(BAD_EVENTS), target);
+    if (good) {
+      this.goodEvent(this.rng.pick(GOOD_EVENTS), target, running);
+      return;
+    }
+    const position = order.indexOf(target);
+    const leadGap = position === 0 && running.length > 1 ? running[0]!.x - running[1]!.x : 0;
+    const odds = severityOdds(position, order.length, leadGap);
+    const severity = weightedPick(this.rng, [0, 1, 2] as const, odds);
+    const before = this.out.length;
+    this.badEvent(this.rng.pick(BAD_BY_SEVERITY[severity]!), target);
+    for (const event of this.out.slice(before)) {
+      event.position = position;
+      event.severity = severity;
+    }
   }
 
-  private badEvent(kind: (typeof BAD_EVENTS)[number], r: Runner): void {
+  private badEvent(kind: BadEvent, r: Runner): void {
     const b = r.body;
+    const order = this.order();
+    const runningX = order.filter((o) => !o.finished).map((o) => o.x);
+    const tailX = Math.min(...runningX);
     switch (kind) {
+      case "eagle": {
+        const back = this.rng.float(300, 560);
+        this.startRide(r, "eagle", 2.4, Math.max(40, r.x - back * r.dir));
+        this.emit({ kind, lane: r.lane, pop: "PUT ME DOWN", callout: "EAGLE!", sound: "big", shake: 0.2 });
+        return;
+      }
+      case "ufo": {
+        const to = this.rng.float(Math.max(40, tailX - 150), Math.max(60, r.x - 250));
+        this.startRide(r, "ufo", 3, to);
+        this.emit({ kind, lane: r.lane, pop: "NOOOO", callout: "ABDUCTED!", sound: "big" });
+        return;
+      }
+      case "balloon":
+        this.startRide(r, "balloon", this.rng.float(2.6, 3.4), r.x, this.rng.float(-1.3, 1.6));
+        this.emit({ kind, lane: r.lane, pop: "WHEEE", sound: "boost" });
+        return;
+      case "hole":
+        this.startRide(r, "hole", 1.5, r.x + this.rng.float(-380, 260));
+        this.emit({ kind, lane: r.lane, pop: "WHERE'D I GO", sound: "miss" });
+        return;
+      case "anvil":
+        this.fall(r, -b.velocity.x, 3, 0, "CLONK");
+        Body.setAngle(b, 0);
+        Body.setAngularVelocity(b, 0);
+        r.flatT = 2.4;
+        r.dizzyT = 3;
+        r.getUpAt = 2.4;
+        this.emit({ kind, lane: r.lane, callout: "ANVIL!", sound: "big", shake: 0.6 });
+        return;
+      case "swap": {
+        const behind = order.filter((o) => !o.finished && o.mode === "run" && o !== r && o.x < r.x - 150);
+        if (behind.length === 0) {
+          this.fall(r, b.velocity.x * 0.3, -3, 0.34 * r.dir, "WHOA");
+          return;
+        }
+        const other = behind[behind.length - 1 - this.rng.int(0, Math.min(1, behind.length - 1))]!;
+        const [ax, bx] = [r.x, other.x];
+        for (const [who, from, to] of [[r, ax, bx], [other, bx, ax]] as const) {
+          Body.setPosition(who.body, { x: to, y: -this.heightAt(to) - (who.h * who.scale) / 2 - 2 });
+          who.x = to;
+          who.stuckX = to;
+          who.dizzyT = 1.6;
+          this.props.push({ kind: "poof", lane: who.lane, x: from, life: 0.6, max: 0.6 });
+          this.props.push({ kind: "poof", lane: who.lane, x: to, life: 0.6, max: 0.6 });
+        }
+        this.emit({ kind, lane: r.lane, pop: "HUH?", callout: `SWAP! #${r.lane + 1} ⇄ #${other.lane + 1}`, sound: "big", shake: 0.3 });
+        this.emit({ kind: "swapped", lane: other.lane, pop: "YOINK", sound: "none" });
+        return;
+      }
+      case "pie":
+        r.stopT = 1.4;
+        r.pieT = 2.8;
+        this.emit({ kind, lane: r.lane, pop: "PIE'D", sound: "miss" });
+        return;
+      case "dance":
+        r.stopT = 2;
+        r.danceT = 2;
+        this.emit({ kind, lane: r.lane, pop: this.rng.pick(["DANCE BREAK", "THIS IS MY SONG", "*grooves*"]), sound: "tick" });
+        return;
+      case "shrink":
+        this.setScale(r, 0.6, 4.5);
+        this.emit({ kind, lane: r.lane, pop: "tiny", sound: "miss" });
+        return;
       case "trip":
         this.fall(r, b.velocity.x * 0.3, -3, 0.34 * r.dir, "WHOA");
         return;
@@ -677,6 +873,23 @@ export class DerbyWorld {
   }
 
   private goodEvent(kind: (typeof GOOD_EVENTS)[number], r: Runner, running: Runner[]): void {
+    if (kind === "jetpack") {
+      r.jetT = this.rng.float(2.2, 3);
+      this.emit({ kind, lane: r.lane, pop: "JETPACK", sound: "boost" });
+      return;
+    }
+    if (kind === "cannon") {
+      this.props.push({ kind: "cannon", lane: r.lane, x: r.x - 30 * r.dir, life: 1.4, max: 1.4 });
+      Body.setVelocity(r.body, { x: 11 * r.dir, y: -12 });
+      r.springT = 1.6;
+      this.emit({ kind, lane: r.lane, pop: "KABOOM", sound: "big", shake: 0.35 });
+      return;
+    }
+    if (kind === "mega") {
+      this.setScale(r, 1.55, 4);
+      this.emit({ kind, lane: r.lane, pop: "MEGA", sound: "boost", shake: 0.2 });
+      return;
+    }
     if (kind === "secondwind") {
       const last = running[running.length - 1]!;
       if (last.mode !== "run") return;
@@ -731,6 +944,136 @@ export class DerbyWorld {
       case "crates":
         this.crates(leadX + this.rng.float(300, 600), this.rng.int(2, 4), 520);
         this.emit({ kind, lane: null, callout: "INCOMING!", sound: "big" });
+        return;
+      case "lowgrav":
+        this.lowGravT = this.rng.float(5, 7);
+        this.engine.gravity.y = 0.42;
+        this.emit({ kind, lane: null, callout: "LOW GRAVITY!", sound: "big" });
+        return;
+      case "ice":
+        this.iceT = this.rng.float(4, 6);
+        this.emit({ kind, lane: null, callout: "BLACK ICE!", sound: "big" });
+        return;
+      case "reverse":
+        for (const r of running) {
+          if (r.mode !== "run") continue;
+          r.dir = -1;
+          r.wrongT = this.rng.float(1.3, 2.1);
+        }
+        this.emit({ kind, lane: null, callout: "EVERYBODY BACK!", sound: "big" });
+        return;
+      case "fish": {
+        const tailX = running[running.length - 1]!.x;
+        for (let i = 0; i < 16; i += 1) {
+          const lane = this.rng.int(0, 5);
+          const body = Bodies.rectangle(this.rng.float(tailX - 100, leadX + 700), -this.rng.float(450, 1100), 24, 11, {
+            density: 0.0012,
+            restitution: 0.55,
+            friction: 0.3,
+            label: "fish",
+            collisionFilter: { category: laneBit(lane), mask: GROUND | laneBit(lane) },
+          });
+          body.sleepThreshold = Infinity;
+          Body.setAngularVelocity(body, this.rng.float(-0.3, 0.3));
+          Composite.add(this.engine.world, body);
+          this.fish.push({ body, lane, life: this.rng.float(5, 8) });
+        }
+        this.emit({ kind, lane: null, callout: "IT'S RAINING FISH!", sound: "big" });
+      }
+    }
+  }
+
+  private startRide(r: Runner, kind: Ride["kind"], dur: number, x1: number, drift = 0): void {
+    const b = r.body;
+    r.ride = { kind, t: 0, dur, x0: b.position.x, y0: b.position.y, x1: Math.min(FINISH_X - 60, Math.max(20, x1)), drift };
+    this.setMode(r, "ride");
+    Body.setAngle(b, 0);
+    if (kind === "hole") {
+      this.props.push({ kind: "hole", lane: r.lane, x: r.ride.x0, life: dur + 0.6, max: dur + 0.6 });
+      this.props.push({ kind: "hole", lane: r.lane, x: r.ride.x1, life: dur + 0.6, max: dur + 0.6 });
+    }
+  }
+
+  /** Move a runner along whatever has hold of them; let go at the end. */
+  private steerRide(r: Runner, dt: number): void {
+    const ride = r.ride!;
+    const b = r.body;
+    ride.t += dt;
+    const u = Math.min(1, ride.t / ride.dur);
+    const ground = (x: number): number => -this.heightAt(x) - (r.h * r.scale) / 2;
+    const ease = (v: number): number => v * v * (3 - 2 * v);
+    const seg = (a: number, z: number): number => ease(Math.max(0, Math.min(1, (u - a) / (z - a))));
+    let x = ride.x0;
+    let y = ride.y0;
+    switch (ride.kind) {
+      case "eagle":
+        x = ride.x0 + (ride.x1 - ride.x0) * seg(0.2, 0.85);
+        y = ground(x) - 150 * seg(0, 0.2) + Math.sin(ride.t * 9) * 6;
+        break;
+      case "ufo":
+        x = ride.x0 + (ride.x1 - ride.x0) * seg(0.3, 0.75);
+        y = ground(x) - 185 * seg(0, 0.3);
+        break;
+      case "balloon":
+        x = b.position.x + ride.drift * (u > 0.25 ? 1 : 0);
+        y = ground(x) - 170 * seg(0, 0.3) + Math.sin(ride.t * 3) * 8;
+        break;
+      case "hole": {
+        x = ride.x0 + (ride.x1 - ride.x0) * seg(0.25, 0.75);
+        const down = u < 0.25 ? seg(0, 0.25) : u > 0.75 ? 1 - seg(0.75, 1) : 1;
+        y = ground(x) + (r.h * r.scale + 10) * down;
+      }
+    }
+    x = Math.min(FINISH_X - 40, Math.max(20, x));
+    Body.setPosition(b, { x, y });
+    Body.setVelocity(b, { x: 0, y: 0 });
+    Body.setAngle(b, ride.kind === "eagle" || ride.kind === "ufo" ? Math.sin(ride.t * 5) * 0.25 : 0);
+    Body.setAngularVelocity(b, 0);
+    if (u < 1) return;
+    r.ride = null;
+    b.collisionFilter.mask = GROUND | laneBit(r.lane) | BOULDER;
+    this.setMode(r, "run");
+    if (ride.kind === "hole") {
+      Body.setVelocity(b, { x: 2 * r.dir, y: -8 });
+      this.emit({ kind: "popout", lane: r.lane, pop: "TA-DA", sound: "tick" });
+    } else {
+      this.fall(r, 0, 0, this.rng.float(-0.2, 0.2), ride.kind === "balloon" ? "POP" : "AAAA");
+    }
+  }
+
+  /** Grow or shrink a runner, lifting them so they don't sink into the track. */
+  private setScale(r: Runner, scale: number, dur: number): void {
+    const b = r.body;
+    const k = scale / r.scale;
+    if (k !== 1) {
+      Body.scale(b, k, k);
+      Body.setPosition(b, { x: b.position.x, y: b.position.y - ((scale - r.scale) * r.h) / 2 - 2 });
+    }
+    r.scale = scale;
+    r.scaleT = dur;
+  }
+
+  private updateFish(dt: number): void {
+    for (let i = this.fish.length - 1; i >= 0; i -= 1) {
+      const f = this.fish[i]!;
+      f.life -= dt;
+      // once a fish has landed it's scenery: only falling fish can bonk anyone
+      if (f.body.position.y > -this.heightAt(f.body.position.x) - 16 && f.body.collisionFilter.mask !== GROUND) f.body.collisionFilter.mask = GROUND;
+      if (f.life <= 0) {
+        Composite.remove(this.engine.world, f.body);
+        this.fish.splice(i, 1);
+      }
+    }
+  }
+
+  /**
+   * A knocked-over hurdle just lies in the lane as scenery. Left solid, runners would
+   * shove it along the ground, and bigger bodies lost far more time to that than small ones.
+   */
+  private layDownHurdles(): void {
+    for (const item of this.items) {
+      if (item.kind !== "hurdle" || item.body.collisionFilter.mask === GROUND) continue;
+      if (Math.abs(wrap(item.body.angle)) > 0.9) item.body.collisionFilter.mask = GROUND;
     }
   }
 
@@ -750,6 +1093,22 @@ export class DerbyWorld {
 
   private emit(event: DerbyEvent): void {
     this.out.push(event);
+  }
+
+  /** Every event the race can throw, by name. */
+  static readonly EVENTS: readonly string[] = [...BAD_BY_SEVERITY.flat(), ...GOOD_EVENTS, ...FIELD_EVENTS];
+
+  /** Fire a named event at a lane (or the whole field) right now. For tests and tinkering. */
+  fire(kind: string, lane = 0): DerbyEvent[] {
+    const before = this.out.length;
+    const order = this.order();
+    const running = order.filter((r) => !r.finished);
+    const target = this.runners.find((r) => r.lane === lane);
+    if (!target || running.length === 0) return [];
+    if ((GOOD_EVENTS as readonly string[]).includes(kind)) this.goodEvent(kind as (typeof GOOD_EVENTS)[number], target, running);
+    else if ((FIELD_EVENTS as readonly string[]).includes(kind)) this.fieldEvent(kind as (typeof FIELD_EVENTS)[number], running);
+    else if (BAD_BY_SEVERITY.flat().includes(kind as BadEvent)) this.badEvent(kind as BadEvent, target);
+    return this.out.splice(before);
   }
 
   /** Over once every racer with money on it has crossed, everyone has, or time is up. */

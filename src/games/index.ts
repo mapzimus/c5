@@ -1,6 +1,6 @@
 import { GameRegistry } from "../core/registry";
 import type { GameDefinition } from "../core/types";
-import { pairs, flagPairs } from "./pairs";
+import { pairs } from "./pairs";
 import { castleSiege } from "./castle-siege/castle-siege";
 import { parrotFlip } from "./imported/parrot-flip/parrot-flip";
 import { luckyDrop } from "./imported/lucky-drop/lucky-drop";
@@ -11,7 +11,7 @@ import { bugWars } from "./imported/bug-wars/bug-wars";
 import knockabout from "./imported/knockabout/index";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, flagPairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, knockabout];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, knockabout];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();

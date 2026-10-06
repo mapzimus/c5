@@ -6,7 +6,7 @@ import { World, type WorldEvents } from "./world";
 import { KnockaboutInput } from "./input";
 import { KnockaboutAudio } from "./audio";
 import { createObjective, type Objective } from "./objectives";
-import { createDraft, startDraft, applyPerk, drawDraftUI, applyLaunchPerks, type DraftState } from "./perks";
+import { createDraft, startDraft, applyPerk, drawDraftUI, applyLaunchPerks, applyPerksToDiscs, type DraftState } from "./perks";
 import { botChooseShot, type BotDifficulty } from "./bot";
 import { ARENA_KINDS } from "./arena";
 import type { Disc, GamePhase, MatchPlayer } from "./types";
@@ -120,6 +120,9 @@ export class KnockaboutGame implements GameInstance {
     this.world.buildArena(kind, 1.1, 0.75);
     this.objective.onRoundStart(this.world, this.players);
     this.world.spawnDiscs(this.players, 2);
+    for (const p of this.players) {
+      applyPerksToDiscs(this.world.aliveDiscs(), p);
+    }
     this.turn = 0;
     this.currentPlayer = 0;
     this.readyCount = 0;
@@ -138,7 +141,7 @@ export class KnockaboutGame implements GameInstance {
     for (const d of discs) {
       if (d.grab != null) continue;
       const dist = Math.hypot(d.x - wx, d.y - wy);
-      if (dist < d.r * 3 && dist < bd) {
+      if (dist < d.r * 4 && dist < bd) {
         bd = dist;
         best = d;
       }
@@ -308,7 +311,8 @@ export class KnockaboutGame implements GameInstance {
     for (const d of this.world.aliveDiscs()) {
       if (d.aim) {
         const p = this.players[d.owner]!;
-        applyLaunchPerks(d, p);
+        const mods = applyLaunchPerks(d, p);
+        d.aim.power *= mods.speedMul;
         this.world.launchDisc(d);
       }
     }
@@ -339,11 +343,12 @@ export class KnockaboutGame implements GameInstance {
 
   private findLoser(): number | null {
     let minWins = Infinity;
-    let loser = -1;
     for (const p of this.players) {
-      if (p.wins < minWins) { minWins = p.wins; loser = p.id; }
+      if (p.wins < minWins) minWins = p.wins;
     }
-    return loser >= 0 ? loser : null;
+    const tied = this.players.filter((p) => p.wins === minWins);
+    if (tied.length === 0) return null;
+    return tied[this.round % tied.length]!.id;
   }
 
   private handleDraftInput(): void {

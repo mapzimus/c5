@@ -58,6 +58,22 @@ export class Sfx {
     this.tone(140, 0.16, "sawtooth", 0.07);
   }
 
+  whoosh(): void {
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const amp = ctx.createGain();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(160, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(740, ctx.currentTime + 0.16);
+    amp.gain.setValueAtTime(0.045, ctx.currentTime);
+    amp.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.2);
+    osc.connect(amp);
+    amp.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.22);
+  }
+
   miss(): void {
     this.tone(180, 0.1, "square", 0.04);
   }
@@ -70,5 +86,9 @@ export class Sfx {
 
   tick(): void {
     this.tone(320, 0.04, "square", 0.03);
+  }
+
+  select(): void {
+    this.tone(520, 0.06, "triangle", 0.05);
   }
 }

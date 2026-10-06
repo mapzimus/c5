@@ -39,7 +39,7 @@ export const bootyHaul: GameDefinition = {
     "Build a streak for multiplied points. Moves recharge every six seconds. Raid busy waters on the flashing beat for a burst of bonus gold. " +
     "Watch for gold rush events on busy lanes. Scroll to zoom. 75 seconds.",
   durationMs: GAME_DURATION_S * 1000,
-  controls: "Click anywhere on the globe · Scroll to zoom · Two reparks · 1–9 keys for landmarks",
+  controls: "Click anywhere on the globe · Scroll to zoom · Space / RAID button · Moves recharge · 1–9 keys for landmarks",
   create: (ctx) => new ParkYourPirateGame(ctx),
 };
 
@@ -91,7 +91,11 @@ class ParkYourPirateGame implements GameInstance {
   private goldRush: GoldRush | null = null;
   private goldRushSpawnCooldown = 0;
   private convoyTimer = 0;
+  private activeHumanIdx = 0;
   private readonly wheelHandler: (e: WheelEvent) => void;
+  private readonly touchStartHandler: (e: TouchEvent) => void;
+  private readonly touchMoveHandler: (e: TouchEvent) => void;
+  private pinchDist = 0;
 
   constructor(private readonly ctx: GameContext) {
     this.lanes = buildLanes();
@@ -111,6 +115,28 @@ class ParkYourPirateGame implements GameInstance {
       this.globeRadius = Math.max(GLOBE_R_MIN, Math.min(GLOBE_R_MAX, this.globeRadius + delta));
     };
     ctx.canvas.addEventListener("wheel", this.wheelHandler, { passive: false });
+
+    // Pinch-to-zoom for touch
+    this.touchStartHandler = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
+        const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
+        this.pinchDist = Math.hypot(dx, dy);
+      }
+    };
+    this.touchMoveHandler = (e: TouchEvent) => {
+      if (e.touches.length === 2 && this.pinchDist > 0) {
+        e.preventDefault();
+        const dx = e.touches[0]!.clientX - e.touches[1]!.clientX;
+        const dy = e.touches[0]!.clientY - e.touches[1]!.clientY;
+        const dist = Math.hypot(dx, dy);
+        const delta = (dist - this.pinchDist) * 0.8;
+        this.globeRadius = Math.max(GLOBE_R_MIN, Math.min(GLOBE_R_MAX, this.globeRadius + delta));
+        this.pinchDist = dist;
+      }
+    };
+    ctx.canvas.addEventListener("touchstart", this.touchStartHandler, { passive: true });
+    ctx.canvas.addEventListener("touchmove", this.touchMoveHandler, { passive: false });
 
     for (let i = 0; i < 120; i++) {
       this.stars.push({
@@ -263,7 +289,12 @@ class ParkYourPirateGame implements GameInstance {
 
     const humans = this.ctx.players.filter((p) => p.kind === "human");
     if (humans.length === 0) return;
-    const human = humans[0]!;
+
+    if (humans.length > 1 && input.justPressed("Tab")) {
+      this.activeHumanIdx = (this.activeHumanIdx + 1) % humans.length;
+    }
+    if (this.activeHumanIdx >= humans.length) this.activeHumanIdx = 0;
+    const human = humans[this.activeHumanIdx]!;
 
     for (let i = 0; i < DOORS.length && i < 9; i++) {
       if (input.justPressed(`Digit${i + 1}` as `Digit${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`)) {
@@ -272,7 +303,7 @@ class ParkYourPirateGame implements GameInstance {
       }
     }
 
-    if (input.justPressed("Space") || (click && click.x >= 850 && click.x <= 1230 && click.y >= 390 && click.y <= 458)) {
+    if (input.justPressed("Space") || (click && click.x >= 850 && click.x <= 1230 && click.y >= 370 && click.y <= 480)) {
       this.raid(human.id);
       return;
     }
@@ -329,7 +360,9 @@ class ParkYourPirateGame implements GameInstance {
     for (const p of this.ctx.players) {
       if (p.kind !== "bot") continue;
       const state = this.playerStates.get(p.id)!;
-      if (state.parked && this.elapsed % 4 < 1) this.raid(p.id);
+      const beatPhase = this.elapsed % 4;
+      const hitWindow = beatPhase < 1.4 && this.ctx.rng.next() < 0.35;
+      if (state.parked && hitWindow) this.raid(p.id);
       if (!state.parked && this.elapsed > 0.8 + this.ctx.rng.next() * 1.5) {
         const takenSpots = [...this.playerStates.values()]
           .filter((s) => s.parked)
@@ -514,7 +547,7 @@ class ParkYourPirateGame implements GameInstance {
       if (dp.z < 0.1) continue;
       const hovered = this.hoveredDoor === door;
       const pulse = 1 + Math.sin(this.elapsed * 3.5) * 0.2;
-      const r = (hovered ? 7 : 4) * pulse;
+      const r = (hovered ? 10 : 6) * pulse;
 
       g.beginPath();
       g.arc(dp.x, dp.y, r + 3, 0, Math.PI * 2);
@@ -526,7 +559,7 @@ class ParkYourPirateGame implements GameInstance {
       g.fillStyle = hovered ? "#fcd34d" : "rgba(252,211,77,0.5)";
       g.fill();
 
-      g.font = "600 10px Outfit, sans-serif";
+      g.font = "600 13px Outfit, sans-serif";
       g.textAlign = "center";
       g.textBaseline = "bottom";
       g.fillStyle = hovered ? "#fef3c7" : "rgba(252,211,77,0.6)";
@@ -708,14 +741,16 @@ class ParkYourPirateGame implements GameInstance {
       lx += g.measureText(label).width + 22;
     }
 
-    const human = this.ctx.players.find((p) => p.kind === "human");
+    const humans = this.ctx.players.filter((p) => p.kind === "human");
+    const humanIdx = Math.min(this.activeHumanIdx, humans.length - 1);
+    const human = humans[humanIdx];
     if (human) {
       const hState = this.playerStates.get(human.id)!;
       if (!hState.parked) {
         const promptY = Math.min(GLOBE_CY + this.globeRadius + 16, GAME_HEIGHT - 50);
         g.fillStyle = "rgba(3,8,16,0.6)";
         g.beginPath();
-        g.roundRect(GLOBE_CX - 170, promptY, 340, 40, 8);
+        g.roundRect(GLOBE_CX - 200, promptY, 400, 40, 8);
         g.fill();
         g.font = "600 14px Outfit, sans-serif";
         g.textAlign = "center";
@@ -728,6 +763,30 @@ class ParkYourPirateGame implements GameInstance {
         g.fillStyle = "rgba(148,163,184,0.5)";
         g.fillText(`${hState.reparks} moves ready • next in ${Math.ceil(6 - hState.moveCharge)}s`, GLOBE_CX, GAME_HEIGHT - 8);
       }
+      if (humans.length > 1) {
+        g.font = "600 12px Outfit, sans-serif";
+        g.textAlign = "left";
+        g.fillStyle = human.color;
+        g.fillText(`Playing as: ${human.name}  ·  Tab to switch`, 14, GAME_HEIGHT - 36);
+      }
+    }
+
+    if (human) {
+      const state = this.playerStates.get(human.id)!;
+      const perfect = this.elapsed % 4 < 1;
+      const ready = state.parked && state.raidCooldown === 0;
+      g.fillStyle = ready ? (perfect ? "#fbbf24" : "#164e63") : "#182334";
+      g.beginPath();
+      g.roundRect(850, 370, 380, 110, 14);
+      g.fill();
+      g.fillStyle = ready && perfect ? "#030810" : "#F4F7FB";
+      g.textAlign = "center";
+      g.font = "700 30px Bebas Neue, Impact, sans-serif";
+      g.fillText(state.raidCooldown > 0 ? `RELOADING ${state.raidCooldown.toFixed(1)}s` : perfect ? "RAID NOW! DOUBLE GOLD" : "RAID • SPACE / TAP", 1040, 414);
+      g.font = "400 14px Outfit, sans-serif";
+      g.fillText("Chase traffic • build x4 • raid on the gold flash", 1040, 446);
+      g.fillStyle = "#fbbf24";
+      g.fillRect(850, 484, 380 * ((this.elapsed % 4) / 4), 4);
     }
 
     if (human) {
@@ -797,5 +856,7 @@ class ParkYourPirateGame implements GameInstance {
 
   destroy(): void {
     this.ctx.canvas.removeEventListener("wheel", this.wheelHandler);
+    this.ctx.canvas.removeEventListener("touchstart", this.touchStartHandler);
+    this.ctx.canvas.removeEventListener("touchmove", this.touchMoveHandler);
   }
 }
