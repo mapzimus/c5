@@ -21,7 +21,7 @@ export class Session {
   standings: SessionStanding[];
   lastResults: RankedResult[] = [];
   gamesPlayed = 0;
-  /** Who chooses the next minigame. Null before the first game. */
+  /** Who chooses the next game. Null before the first game. */
   pickerId: string | null = null;
 
   constructor(players: Player[]) {

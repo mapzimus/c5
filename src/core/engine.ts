@@ -1,4 +1,4 @@
-import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "./types";
+import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance } from "./types";
 import type { InputManager } from "./input";
 import type { Sfx } from "./audio";
 import type { Player } from "./types";
@@ -12,8 +12,8 @@ export class Engine {
   phase: EnginePhase = "countdown";
   remaining = 0;
   elapsed = 0;
-  private instance: MinigameInstance | null = null;
-  private definition: MinigameDefinition | null = null;
+  private instance: GameInstance | null = null;
+  private definition: GameDefinition | null = null;
   private raf = 0;
   private last = 0;
   private countdown = 3;
@@ -48,7 +48,7 @@ export class Engine {
   };
 
   start(
-    definition: MinigameDefinition,
+    definition: GameDefinition,
     players: Player[],
     onDone: (scores: { playerId: string; score: number }[]) => void,
   ): void {
@@ -59,7 +59,7 @@ export class Engine {
     this.countdown = 3;
     this.elapsed = 0;
     this.remaining = definition.durationMs / 1000;
-    const context: MinigameContext = {
+    const context: GameContext = {
       canvas: this.canvas,
       width: GAME_WIDTH,
       height: GAME_HEIGHT,

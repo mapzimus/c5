@@ -1,0 +1,6 @@
+{
+  "appId": "com.categoryfive.games",
+  "appName": "C5 Games",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}

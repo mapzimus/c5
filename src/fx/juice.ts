@@ -1,9 +1,9 @@
 /**
- * Shared "juice" for minigames: screen shake, particle bursts, hit-stop and
+ * Shared "juice" for games: screen shake, particle bursts, hit-stop and
  * per-game personal bests. Everything here is DOM-free except bests (localStorage,
  * wrapped so it never throws).
  *
- * Typical use inside a MinigameInstance:
+ * Typical use inside a GameInstance:
  *   update(dt) { dt = this.juice.update(dt); ...step the game with dt... }
  *   render(g)  { this.juice.begin(g); ...draw world...; this.juice.end(g); ...draw HUD... }
  */

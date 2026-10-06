@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { MinigameRegistry } from "./registry";
-import type { MinigameDefinition } from "./types";
+import { GameRegistry } from "./registry";
+import type { GameDefinition } from "./types";
 
-const stub: MinigameDefinition = {
+const stub: GameDefinition = {
   id: "stub",
   name: "Stub",
   tagline: "test",
@@ -14,22 +14,22 @@ const stub: MinigameDefinition = {
   },
 };
 
-describe("MinigameRegistry", () => {
+describe("GameRegistry", () => {
   it("registers and lists games", () => {
-    const registry = new MinigameRegistry();
+    const registry = new GameRegistry();
     registry.register(stub);
     expect(registry.ids()).toEqual(["stub"]);
     expect(registry.get("stub").name).toBe("Stub");
   });
 
   it("rejects duplicate ids", () => {
-    const registry = new MinigameRegistry();
+    const registry = new GameRegistry();
     registry.register(stub);
     expect(() => registry.register(stub)).toThrow(/already registered/);
   });
 
   it("throws on unknown ids", () => {
-    const registry = new MinigameRegistry();
-    expect(() => registry.get("nope")).toThrow(/Unknown minigame/);
+    const registry = new GameRegistry();
+    expect(() => registry.get("nope")).toThrow(/Unknown game/);
   });
 });

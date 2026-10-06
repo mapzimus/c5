@@ -16,7 +16,7 @@ export interface RankedResult {
   won: boolean;
 }
 
-export interface MinigameContext {
+export interface GameContext {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
@@ -26,7 +26,7 @@ export interface MinigameContext {
   sfx: import("./audio").Sfx;
 }
 
-export interface MinigameInstance {
+export interface GameInstance {
   update(dt: number): void;
   render(ctx: CanvasRenderingContext2D): void;
   isFinished(): boolean;
@@ -34,14 +34,14 @@ export interface MinigameInstance {
   destroy(): void;
 }
 
-export interface MinigameDefinition {
+export interface GameDefinition {
   id: string;
   name: string;
   tagline: string;
   description: string;
   durationMs: number;
   controls: string;
-  create(ctx: MinigameContext): MinigameInstance;
+  create(ctx: GameContext): GameInstance;
 }
 
 export interface SessionStanding {
