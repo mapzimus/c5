@@ -17,6 +17,7 @@ export class World {
   discs: Disc[] = [];
   arena!: Arena;
   powerups: PowerUp[] = [];
+  stepCount = 0;
   private nextId = 1;
 
   constructor(
@@ -122,6 +123,7 @@ export class World {
   }
 
   step(h: number): void {
+    this.stepCount++;
     const a = this.arena;
     if (!a) return;
     const T = TUNING;
@@ -286,6 +288,7 @@ export class World {
       killer: d.inst != null && d.inst !== d.owner ? d.inst : null,
       selfKill: d.inst === d.owner,
       lastAlive,
+      step: this.stepCount,
     });
   }
 

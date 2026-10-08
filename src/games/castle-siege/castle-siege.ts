@@ -1,7 +1,7 @@
 import type Matter from "matter-js";
 import { fillArena } from "../../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
-import type { GameContext, GameDefinition, GameInstance, Player } from "../../core/types";
+import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
 import { ModePicker } from "../mode-picker";
 import {
   AMMO_LABELS,
@@ -1460,6 +1460,19 @@ export class CastleSiege implements GameInstance {
       const t = teamOf(index);
       return { playerId: player.id, score: this.wins[t] * 100 + this.teams[t].smashed };
     });
+  }
+
+  getStats(): GameStat[] {
+    const stats: GameStat[] = [];
+    for (let i = 0; i < this.ctx.players.length; i++) {
+      const t = teamOf(i);
+      const id = this.ctx.players[i]!.id;
+      const s = this.teams[t];
+      stats.push({ playerId: id, label: "Smashed", value: String(s.smashed) });
+      if (s.bestCombo > 0) stats.push({ playerId: id, label: "Best shot", value: `${s.bestCombo} blocks` });
+      stats.push({ playerId: id, label: "Shots", value: String(this.shots[t]) });
+    }
+    return stats;
   }
 
   destroy(): void {

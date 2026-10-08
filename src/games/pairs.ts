@@ -1,7 +1,7 @@
 import { fillArena } from "../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../fx/juice";
 import { PLAYER_BINDS } from "../core/input";
-import { type GameContext, GameDefinition, GameInstance } from "../core/types";
+import { type GameContext, GameDefinition, GameInstance, type GameStat } from "../core/types";
 import { FLAGS, PAIR_COUNT } from "./flags";
 import { hitCard, layoutPairBoard, midpoint, PAIR_COLS, PAIR_ROWS, type BoardLayout } from "./pairs-layout";
 import {
@@ -65,6 +65,8 @@ class PairsGame implements GameInstance {
   private beatBest = false;
   private readonly startBest: number;
   private time = 0;
+  private readonly matches: number[];
+  private readonly bestStreak: number[];
   private readonly floaters: Floater[] = [];
   private turn = 0;
   private streak = 0;
@@ -89,6 +91,8 @@ class PairsGame implements GameInstance {
     this.goldenFace = this.ctx.rng.pick(faces) ?? faces[0] ?? "";
     this.juice = new Juice();
     this.scores = this.ctx.players.map(() => 0);
+    this.matches = this.ctx.players.map(() => 0);
+    this.bestStreak = this.ctx.players.map(() => 0);
     this.visuals = this.cards.map(() => ({
       flipT: 0,
       from: "up",
@@ -255,6 +259,8 @@ class PairsGame implements GameInstance {
       const golden = a.face === this.goldenFace;
       const points = scoreMatch(this.streak, remainingPairs(this.cards), golden);
       this.scores[this.turn] = (this.scores[this.turn] ?? 0) + points;
+      this.matches[this.turn] = (this.matches[this.turn] ?? 0) + 1;
+      if (this.streak > (this.bestStreak[this.turn] ?? 0)) this.bestStreak[this.turn] = this.streak;
       this.burst(aIndex, bIndex, points, a.face, golden);
       if (this.streak >= 2) this.ctx.sfx.streak(this.streak);
       else this.ctx.sfx.collect();
@@ -647,6 +653,17 @@ class PairsGame implements GameInstance {
       playerId: player.id,
       score: this.scores[index] ?? 0,
     }));
+  }
+
+  getStats(): GameStat[] {
+    const stats: GameStat[] = [];
+    for (let i = 0; i < this.ctx.players.length; i++) {
+      const id = this.ctx.players[i]!.id;
+      stats.push({ playerId: id, label: "Matches", value: String(this.matches[i] ?? 0) });
+      const streak = this.bestStreak[i] ?? 0;
+      if (streak >= 2) stats.push({ playerId: id, label: "Best streak", value: String(streak) });
+    }
+    return stats;
   }
 
   destroy(): void {}

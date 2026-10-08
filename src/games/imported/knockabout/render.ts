@@ -3,6 +3,7 @@ import { TUNING } from "./types";
 import { GAME_WIDTH, GAME_HEIGHT } from "../../../core/types";
 import { sdf, sdfSolids } from "./arena";
 import type { World } from "./world";
+import { applyLaunchPerks, getPlayerPerks } from "./perks";
 
 const TAU = Math.PI * 2;
 const CX = GAME_WIDTH / 2;
@@ -167,6 +168,28 @@ function drawDiscBody(g: CanvasRenderingContext2D, x: number, y: number, r: numb
     g.stroke();
   }
 
+  // perk indicators
+  if (d.perks.length > 0) {
+    const perkColors: Record<string, string> = {
+      "heavy-hitter": "#ffcc00",
+      "featherweight": "#66ccff",
+      "iron-wall": "#aabbcc",
+      "rubber-bumper": "#ff9933",
+      "shield-bash": "#3399ff",
+      "ghost-step": "#cc66ff",
+    };
+    for (let pi = 0; pi < d.perks.length; pi++) {
+      const pc = perkColors[d.perks[pi]!] ?? "#888";
+      const angle = -Math.PI / 2 + (pi / Math.max(1, d.perks.length)) * TAU;
+      const arcLen = TAU / Math.max(3, d.perks.length + 1);
+      g.beginPath();
+      g.arc(x, y, r + 6, angle, angle + arcLen);
+      g.strokeStyle = pc;
+      g.lineWidth = 3;
+      g.stroke();
+    }
+  }
+
   // googly eyes
   const ex = Math.cos(d.look) * r * 0.3;
   const ey = Math.sin(d.look) * r * 0.3;
@@ -186,14 +209,15 @@ function drawDiscBody(g: CanvasRenderingContext2D, x: number, y: number, r: numb
   }
 }
 
-export function drawAim(g: CanvasRenderingContext2D, d: Disc, arena: Arena, world: World, color: string, hidden: boolean): void {
+export function drawAim(g: CanvasRenderingContext2D, d: Disc, arena: Arena, world: World, color: string, hidden: boolean, player?: MatchPlayer): void {
   if (!d.aim || d.dead || d.falling) return;
   if (hidden) return;
 
   const s = worldScale(arena);
   const { sx, sy } = worldToScreen(arena, d.x, d.y);
   const pw = d.aim.power;
-  const speed = TUNING.maxLaunchSpeed * pw * (d.turbo ? TUNING.turboMul : 1);
+  const perkSpeedMul = player ? applyLaunchPerks(d, player).speedMul : 1;
+  const speed = TUNING.maxLaunchSpeed * pw * perkSpeedMul * (d.turbo ? TUNING.turboMul : 1);
   const stopDist = world.stopDistance(speed);
 
   const ex = sx + d.aim.dx * stopDist * s;
@@ -298,6 +322,14 @@ export function drawHUD(
     g.fillStyle = "#F4F7FB";
     g.font = "600 14px Outfit, sans-serif";
     g.fillText(`W: ${p.wins}  KO: ${p.kos}`, px, py + 18);
+
+    if (p.perks.length > 0) {
+      const perks = getPlayerPerks(p);
+      const perkStr = perks.map((pk) => pk.icon).join(" ");
+      g.fillStyle = "#94a3b8";
+      g.font = "600 11px monospace";
+      g.fillText(perkStr, px, py + 33);
+    }
 
     if (i === currentPlayer && (phase === "plan" || phase === "aim")) {
       g.strokeStyle = p.color;

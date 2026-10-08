@@ -1,4 +1,4 @@
-import type { GameContext, GameDefinition, GameInstance } from "../../../core/types";
+import type { GameContext, GameDefinition, GameInstance, GameStat } from "../../../core/types";
 import { GAME_WIDTH, GAME_HEIGHT, PLAYER_COLORS } from "../../../core/types";
 import { Juice, Callouts } from "../../../fx/juice";
 import { ModePicker, type GameMode } from "../../mode-picker";
@@ -6,7 +6,7 @@ import { World, type WorldEvents } from "./world";
 import { KnockaboutInput } from "./input";
 import { KnockaboutAudio } from "./audio";
 import { createObjective, type Objective } from "./objectives";
-import { createDraft, startDraft, applyPerk, drawDraftUI, applyLaunchPerks, applyPerksToDiscs, type DraftState } from "./perks";
+import { createDraft, startDraft, applyPerk, drawDraftUI, applyLaunchPerks, applyPerksToDiscs, firePerkHooks, type DraftState } from "./perks";
 import { botChooseShot, type BotDifficulty } from "./bot";
 import { ARENA_KINDS } from "./arena";
 import type { Disc, GamePhase, MatchPlayer } from "./types";
@@ -86,6 +86,7 @@ export class KnockaboutGame implements GameInstance {
         this.audio.onHit(e);
         if (e.strength > 1.0) this.juice.shake(Math.min(1, e.strength * 0.3));
         if (e.strength > 2.0) this.juice.hitStop(0.04);
+        firePerkHooks("onHit", e, this.players);
       },
       onFall: (e) => {
         this.audio.onFall(e);
@@ -94,6 +95,7 @@ export class KnockaboutGame implements GameInstance {
         if (e.killer != null && e.killer !== e.disc.owner) {
           this.callouts.show("KO!", this.players[e.killer]!.color, { life: 1.5 });
         }
+        firePerkHooks("onFall", e, this.players);
       },
       onBumperHit: () => { this.audio.onBumperHit(); },
       onWallHit: () => {},
@@ -269,6 +271,12 @@ export class KnockaboutGame implements GameInstance {
     this.readyCount = 0;
     this.hurryTimer = 8;
 
+    for (const p of this.players) {
+      for (const d of this.world.aliveDiscs(p.id)) {
+        firePerkHooks("onTurnStart", d, p);
+      }
+    }
+
     if (this.ctx.rng.next() < TUNING.powerupChance && this.world.powerups.filter((p) => !p.gone).length < TUNING.maxPowerups) {
       this.world.spawnPowerup();
     }
@@ -313,6 +321,7 @@ export class KnockaboutGame implements GameInstance {
         const p = this.players[d.owner]!;
         const mods = applyLaunchPerks(d, p);
         d.aim.power *= mods.speedMul;
+        d.mass *= mods.massMul;
         this.world.launchDisc(d);
       }
     }
@@ -324,6 +333,8 @@ export class KnockaboutGame implements GameInstance {
     if (winner != null) {
       this.players[winner]!.wins++;
       this.callouts.show(`${this.players[winner]!.name} WINS!`, this.players[winner]!.color, { life: 2 });
+    } else {
+      this.callouts.show("DRAW!", "#94a3b8", { life: 2 });
     }
     this.audio.onRoundEnd();
     this.roundOverTimer = 2.5;
@@ -417,7 +428,7 @@ export class KnockaboutGame implements GameInstance {
     for (const d of this.world.discs) {
       const p = this.players[d.owner]!;
       drawDisc(g, d, this.world.arena, p.color, p.light);
-      drawAim(g, d, this.world.arena, this.world, p.color, hiddenAim && this.players[d.owner]!.kind === "bot");
+      drawAim(g, d, this.world.arena, this.world, p.color, hiddenAim && this.players[d.owner]!.kind === "bot", p);
     }
 
     drawHUD(g, this.players, this.round, this.totalRounds, this.phase, this.turn, this.currentPlayer, this.hurryTimer);
@@ -475,6 +486,18 @@ export class KnockaboutGame implements GameInstance {
       playerId: p.id,
       score: this.players[i]!.wins * 1000 + this.players[i]!.kos * 10,
     }));
+  }
+
+  getStats(): GameStat[] {
+    const stats: GameStat[] = [];
+    for (let i = 0; i < this.ctx.players.length; i++) {
+      const p = this.players[i]!;
+      const id = this.ctx.players[i]!.id;
+      stats.push({ playerId: id, label: "KOs", value: String(p.kos) });
+      if (p.ownGoals > 0) stats.push({ playerId: id, label: "Own goals", value: String(p.ownGoals) });
+      if (p.perks.length > 0) stats.push({ playerId: id, label: "Perks", value: String(p.perks.length) });
+    }
+    return stats;
   }
 
   destroy(): void {

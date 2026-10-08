@@ -144,11 +144,46 @@ export function getPlayerPerks(player: MatchPlayer): Perk[] {
 }
 
 export function applyPerksToDiscs(discs: Disc[], player: MatchPlayer): void {
-  for (const perk of getPlayerPerks(player)) {
-    if (perk.onApply) {
-      for (const d of discs) {
-        if (d.owner === player.id) perk.onApply(d, player);
+  const perks = getPlayerPerks(player);
+  for (const d of discs) {
+    if (d.owner === player.id) {
+      d.perks = [...player.perks];
+      for (const perk of perks) {
+        perk.onApply?.(d, player);
       }
+    }
+  }
+}
+
+export function firePerkHooks(
+  hook: "onHit" | "onFall" | "onTurnStart",
+  event: HitEvent | FallEvent | Disc,
+  playersOrPlayer: MatchPlayer[] | MatchPlayer,
+): void {
+  if (hook === "onHit") {
+    const e = event as HitEvent;
+    const players = playersOrPlayer as MatchPlayer[];
+    for (const d of [e.a, e.b]) {
+      const p = players[d.owner];
+      if (!p) continue;
+      for (const perk of getPlayerPerks(p)) {
+        perk.onHit?.(e, d, p);
+      }
+    }
+  } else if (hook === "onFall") {
+    const e = event as FallEvent;
+    const players = playersOrPlayer as MatchPlayer[];
+    const p = players[e.disc.owner];
+    if (p) {
+      for (const perk of getPlayerPerks(p)) {
+        perk.onFall?.(e, p);
+      }
+    }
+  } else if (hook === "onTurnStart") {
+    const d = event as Disc;
+    const p = playersOrPlayer as MatchPlayer;
+    for (const perk of getPlayerPerks(p)) {
+      perk.onTurnStart?.(d, p);
     }
   }
 }

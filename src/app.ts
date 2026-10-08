@@ -3,7 +3,7 @@ import { Engine } from "./core/engine";
 import { InputManager } from "./core/input";
 import { GameRegistry } from "./core/registry";
 import { Session } from "./core/session";
-import { DEFAULT_NAMES, PLAYER_COLORS, type GameDefinition, type Player } from "./core/types";
+import { DEFAULT_NAMES, PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
 import { Sky } from "./fx/sky";
 import { createRegistry } from "./games";
 import { clear, el } from "./ui/dom";
@@ -226,11 +226,11 @@ export class App {
     }
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
-    this.engine.start(game, this.players, (scores) => this.finishGame(scores));
+    this.engine.start(game, this.players, (scores, stats) => this.finishGame(scores, stats));
     requestAnimationFrame(() => this.engine?.fit());
   }
 
-  private finishGame(scores: { playerId: string; score: number }[]): void {
+  private finishGame(scores: { playerId: string; score: number }[], stats: GameStat[] = []): void {
     const ranked = this.session.applyResults(scores);
     const screen = this.screens.get("results")!;
     clear(screen);
@@ -245,6 +245,11 @@ export class App {
         el("span", { text: `${result.score}` }),
         el("span", { class: "hint", text: result.won ? "+1 pt" : "" }),
       );
+      const playerStats = stats.filter((s) => s.playerId === result.playerId);
+      if (playerStats.length > 0) {
+        const statLine = playerStats.map((s) => `${s.label}: ${s.value}`).join("  ·  ");
+        row.append(el("span", { class: "stat-line", text: statLine }));
+      }
       list.append(row);
     }
     const picker = this.session.picker();

@@ -1,4 +1,4 @@
-import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance } from "./types";
+import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat } from "./types";
 import { drawTimerBar } from "./draw";
 import type { InputManager } from "./input";
 import type { Sfx } from "./audio";
@@ -25,7 +25,7 @@ export class Engine {
   private goTimer = 0;
   private finishDelay = 0;
   private pendingScores: { playerId: string; score: number }[] | null = null;
-  private onDone: ((scores: { playerId: string; score: number }[]) => void) | null = null;
+  private onDone: ((scores: { playerId: string; score: number }[], stats: GameStat[]) => void) | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -64,7 +64,7 @@ export class Engine {
   start(
     definition: GameDefinition,
     players: Player[],
-    onDone: (scores: { playerId: string; score: number }[]) => void,
+    onDone: (scores: { playerId: string; score: number }[], stats: GameStat[]) => void,
   ): void {
     this.stop();
     this.definition = definition;
@@ -130,8 +130,10 @@ export class Engine {
       this.finishDelay -= dt;
       if (this.finishDelay <= 0) {
         const scores = this.pendingScores;
+        const stats = this.pendingStats;
         this.pendingScores = null;
-        this.onDone?.(scores);
+        this.pendingStats = [];
+        this.onDone?.(scores, stats);
       }
     }
 
@@ -182,10 +184,13 @@ export class Engine {
     }
   }
 
+  private pendingStats: GameStat[] = [];
+
   private finish(): void {
     if (this.phase === "finished") return;
     this.phase = "finished";
     this.pendingScores = this.instance?.getScores() ?? [];
+    this.pendingStats = this.instance?.getStats?.() ?? [];
     this.finishDelay = 1.4;
     this.sfx.win();
   }

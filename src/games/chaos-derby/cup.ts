@@ -1,59 +1,55 @@
 import { drawPlayerOrb } from "../../core/draw";
 import { Callouts, Juice } from "../../fx/juice";
-import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat, type Player } from "../../core/types";
+import {
+  GAME_HEIGHT,
+  GAME_WIDTH,
+  type GameContext,
+  type GameInstance,
+  type GameStat,
+  type Player,
+} from "../../core/types";
 import { drawRacer, labelColor, shade, type RacerLook } from "./draw";
-import { RACER_COUNT, backersOf, draftRacers, placings, scoreBets } from "./rules";
+import {
+  RACER_COUNT,
+  backersOf,
+  draftRacers,
+  placings,
+  rollStats,
+  type RacerEntry,
+} from "./rules";
 import { DerbyWorld, FINISH_X, STEP, type DerbyEvent, type Runner } from "./world";
-import { CupDerby } from "./cup";
-import { ModePicker } from "../mode-picker";
 
-export const chaosDerby: GameDefinition = {
-  id: "chaos-derby",
-  name: "Chaos Derby",
-  tagline: "Bet on a runner. Watch it all go wrong.",
-  description:
-    "Six runners, a long track full of hurdles, crates, bananas and mud, and zero skill. Pick who you think wins, then watch them trip, nap, sneeze, get flattened by boulders and run the wrong way. Whoever backed the best finisher takes the point.",
-  durationMs: 0,
-  controls: "Click a runner or press 1–6 to bet. Then yell at the screen.",
-  create: (ctx) =>
-    new ModePicker(
-      ctx,
-      "CHAOS DERBY",
-      [
-        {
-          title: "SINGLE RACE",
-          line1: "One race, one bet,",
-          line2: "one winner.",
-          color: "#FFB020",
-          create: (c) => new ChaosDerby(c),
-        },
-        {
-          title: "3-RACE CUP",
-          line1: "Three heats, escalating chaos.",
-          line2: "Your pick races them all.",
-          color: "#ef4444",
-          create: (c) => new CupDerby(c),
-        },
-      ],
-      ctx.players.every((p) => p.kind === "bot"),
-    ),
-};
-
+const HEATS = 3;
+const PLACE_PTS = [6, 5, 4, 3, 2, 1];
+const PLACE = ["1ST", "2ND", "3RD", "4TH", "5TH", "6TH"];
 const LANE_DY = 20;
 const GROUND_SY = 585;
 const ZOOM_MIN = 0.85;
 const ZOOM_MAX = 1.45;
 const READY_S = 3;
 const AFTER_WIN_S = 12;
-const RESULTS_S = 5;
-const PLACE = ["1ST", "2ND", "3RD", "4TH", "5TH", "6TH"];
+const STANDINGS_S = 4;
 const ADS = ["BEANS", "NAP CO.", "SOCKS 4 LESS", "BANANA INSURANCE", "DAVE'S CRATES", "HORSE? NO.", "SNACKS", "C5"];
 const CARD_W = 188;
 const CARD_H = 330;
 const CARD_GAP = 14;
 const CARD_Y = 150;
 
-type Phase = "bet" | "ready" | "race" | "done";
+interface HeatCondition {
+  name: string;
+  tagline: string;
+  color: string;
+  obstacleMul: number;
+  eventMul: number;
+}
+
+const CONDITIONS: readonly HeatCondition[] = [
+  { name: "HEAT 1: STANDARD", tagline: "The warm-up", color: "#FFB020", obstacleMul: 1, eventMul: 1 },
+  { name: "HEAT 2: SLIPPERY", tagline: "More bananas, more mud", color: "#60a5fa", obstacleMul: 1.6, eventMul: 1.2 },
+  { name: "HEAT 3: CHAOS", tagline: "Everything at once", color: "#ef4444", obstacleMul: 2, eventMul: 2 },
+];
+
+type Phase = "bet" | "announce" | "ready" | "race" | "standings" | "done";
 
 interface Pop {
   lane: number;
@@ -78,13 +74,17 @@ interface Dust {
 
 const laneDy = (lane: number): number => (lane - 2.5) * LANE_DY;
 
-class ChaosDerby implements GameInstance {
-  private readonly world: DerbyWorld;
+export class CupDerby implements GameInstance {
+  private readonly roster: RacerEntry[];
   private readonly bets = new Map<string, number>();
   private readonly juice = new Juice(() => this.ctx.rng.next());
   private readonly callouts = new Callouts();
   private readonly pops: Pop[] = [];
   private readonly dust: Dust[] = [];
+  private readonly cupPoints = new Map<number, number>(); // lane -> cumulative points
+
+  private world!: DerbyWorld;
+  private heat = 0;
   private phase: Phase = "bet";
   private time = 0;
   private phaseT = 0;
@@ -100,14 +100,41 @@ class ChaosDerby implements GameInstance {
   private readonly crowd: string[] = [];
 
   constructor(private readonly ctx: GameContext) {
-    this.world = new DerbyWorld(draftRacers(ctx.rng), ctx.rng);
+    this.roster = draftRacers(ctx.rng);
+    for (const entry of this.roster) this.cupPoints.set(entry.lane, 0);
     this.botWait = ctx.rng.float(0.7, 1.5);
     const palette = ["#f87171", "#fbbf24", "#60a5fa", "#a78bfa", "#34d399", "#f472b6", "#e2e8f0", "#fb923c", "#94a3b8"];
     for (let i = 0; i < 97; i += 1) this.crowd.push(palette[(i * 7 + (i >> 2)) % palette.length]!);
+    this.startHeat();
+  }
+
+  private startHeat(): void {
+    if (this.heat > 0) this.world?.destroy();
+    const cond = CONDITIONS[this.heat]!;
+    const entries = this.roster.map((e) => ({
+      ...e,
+      stats: rollStats(this.ctx.rng),
+    }));
+    this.world = new DerbyWorld(entries, this.ctx.rng, {
+      obstacleMul: cond.obstacleMul,
+      eventMul: cond.eventMul,
+    });
+    this.camX = 260;
+    this.zoom = ZOOM_MAX;
+    this.leaderLane = -1;
+    this.lastLeadCall = -10;
+    this.winnerAt = -1;
+    this.acc = 0;
+    this.pops.length = 0;
+    this.dust.length = 0;
   }
 
   private get bettor(): Player | undefined {
     return this.ctx.players.find((p) => !this.bets.has(p.id));
+  }
+
+  private condition(): HeatCondition {
+    return CONDITIONS[this.heat]!;
   }
 
   // ------------------------------------------------------------------ update
@@ -123,24 +150,39 @@ class ChaosDerby implements GameInstance {
       case "bet":
         this.updateBets(realDt);
         break;
+      case "announce":
+        if (this.phaseT >= 2.5) {
+          this.setPhase("ready");
+        }
+        break;
       case "ready":
         this.updateReady();
         break;
       case "race":
         this.updateRace(dt);
         break;
+      case "standings": {
+        const click = this.ctx.input.consumeClick();
+        const skip = this.phaseT > 1.2 && (click || this.ctx.input.justPressed("Space") || this.ctx.input.justPressed("Enter"));
+        if (skip || this.phaseT >= STANDINGS_S) {
+          if (this.heat < HEATS - 1) {
+            this.heat += 1;
+            this.startHeat();
+            this.setPhase("announce");
+          } else {
+            this.setPhase("done");
+          }
+        }
+        break;
+      }
       case "done": {
         const click = this.ctx.input.consumeClick();
         const skip = this.phaseT > 1.2 && (click || this.ctx.input.justPressed("Space") || this.ctx.input.justPressed("Enter"));
-        if (skip || this.phaseT >= RESULTS_S) this.finished = true;
-        this.acc += dt;
-        while (this.acc >= STEP) {
-          this.world.step();
-          this.acc -= STEP;
-        }
+        if (skip || this.phaseT >= 5) this.finished = true;
+        break;
       }
     }
-    if (this.phase === "race" || this.phase === "done") this.updateCamera(realDt);
+    if (this.phase === "race" || this.phase === "standings") this.updateCamera(realDt);
   }
 
   private setPhase(phase: Phase): void {
@@ -151,7 +193,7 @@ class ChaosDerby implements GameInstance {
   private updateBets(dt: number): void {
     const player = this.bettor;
     if (!player) {
-      this.setPhase("ready");
+      this.setPhase("announce");
       return;
     }
     if (player.kind === "bot") {
@@ -224,8 +266,18 @@ class ChaosDerby implements GameInstance {
 
     const cutoff = this.winnerAt >= 0 && this.world.time - this.winnerAt > AFTER_WIN_S;
     if (this.world.over([...this.bets.values()]) || cutoff) {
-      this.setPhase("done");
+      this.recordHeatResults();
       this.ctx.sfx.win();
+      this.setPhase("standings");
+    }
+  }
+
+  private recordHeatResults(): void {
+    const order = placings(this.world.runners);
+    for (let i = 0; i < order.length; i += 1) {
+      const r = order[i]!;
+      const pts = r.finished ? (PLACE_PTS[i] ?? 1) : 0;
+      this.cupPoints.set(r.lane, (this.cupPoints.get(r.lane) ?? 0) + pts);
     }
   }
 
@@ -233,21 +285,11 @@ class ChaosDerby implements GameInstance {
     const r = event.lane === null ? undefined : this.world.runners.find((x) => x.lane === event.lane);
     const sfx = this.ctx.sfx;
     switch (event.sound) {
-      case "hit":
-        sfx.hit();
-        break;
-      case "tick":
-        sfx.tick();
-        break;
-      case "boost":
-        sfx.streak(2);
-        break;
-      case "miss":
-        sfx.miss();
-        break;
-      case "big":
-        sfx.hit();
-        sfx.streak(3);
+      case "hit": sfx.hit(); break;
+      case "tick": sfx.tick(); break;
+      case "boost": sfx.streak(2); break;
+      case "miss": sfx.miss(); break;
+      case "big": sfx.hit(); sfx.streak(3);
     }
     if (event.shake) this.juice.shake(event.shake);
     if (event.callout) this.callouts.show(event.callout, "#FFB020", { life: 1.5, size: 64, y: 0.3 });
@@ -272,9 +314,7 @@ class ChaosDerby implements GameInstance {
       this.juice.shake(0.4);
       this.juice.slowMo(0.9, 0.3);
       this.juice.burst(GAME_WIDTH / 2, 120, [r.spec.color, "#F4F7FB", "#FFB020", "#3EE0FF"], { count: 90, speed: 520, gravity: 420, life: 1.6, size: 6 });
-      const names = backersOf(r.lane, this.bets).map((id) => this.ctx.players.find((p) => p.id === id)?.name ?? "?");
-      this.callouts.show(`${r.spec.name.toUpperCase()} WINS!`, labelColor(r.spec.color), { life: 2.6, size: 88, y: 0.28 });
-      this.callouts.show(names.length ? `${names.join(" & ")} called it` : "Nobody backed that", "#F4F7FB", { life: 2.6, size: 36, y: 0.39 });
+      this.callouts.show(`${r.spec.name.toUpperCase()} WINS HEAT ${this.heat + 1}!`, labelColor(r.spec.color), { life: 2.6, size: 72, y: 0.28 });
     } else if (r.place === 2 && r.finishTime - this.winnerAt < 0.3) {
       this.callouts.show("PHOTO FINISH!", "#3EE0FF", { life: 1.6, size: 48, y: 0.48 });
     }
@@ -316,7 +356,6 @@ class ChaosDerby implements GameInstance {
     }
   }
 
-  /** Frame the leader and every runner with money on it; anyone else can fall off-screen. */
   private updateCamera(dt: number): void {
     const racers = this.world.runners;
     const lead = Math.max(...racers.map((r) => r.x));
@@ -345,25 +384,194 @@ class ChaosDerby implements GameInstance {
 
   render(g: CanvasRenderingContext2D): void {
     this.juice.begin(g);
-    this.drawStadium(g);
-    if (this.world.lowGravT > 0) this.drawLowGravity(g);
-    this.drawTrack(g);
-    if (this.world.iceT > 0) this.drawIce(g);
-    for (let lane = 0; lane < RACER_COUNT; lane += 1) {
-      this.drawLane(g, lane);
-      if (lane === 2) this.drawBoulders(g);
-    }
-    this.drawPops(g);
-    this.juice.end(g);
-
-    if (this.phase === "bet") this.drawBetting(g);
-    else {
+    if (this.phase === "bet") {
+      this.drawBetting(g);
+    } else if (this.phase === "announce") {
+      this.drawAnnounce(g);
+    } else {
+      this.drawStadium(g);
+      if (this.world.lowGravT > 0) this.drawLowGravity(g);
+      this.drawTrack(g);
+      if (this.world.iceT > 0) this.drawIce(g);
+      for (let lane = 0; lane < RACER_COUNT; lane += 1) {
+        this.drawLane(g, lane);
+        if (lane === 2) this.drawBoulders(g);
+      }
+      this.drawPops(g);
       this.drawHud(g);
       this.drawOffscreen(g);
+      this.drawCupBadge(g);
     }
-    if (this.phase === "done") this.drawResults(g);
+    this.juice.end(g);
+
+    if (this.phase === "standings") this.drawStandings(g);
+    if (this.phase === "done") this.drawFinalResults(g);
     this.callouts.draw(g, GAME_WIDTH, GAME_HEIGHT);
   }
+
+  private drawCupBadge(g: CanvasRenderingContext2D): void {
+    const cond = this.condition();
+    g.fillStyle = "rgba(7,11,20,0.7)";
+    g.beginPath();
+    g.roundRect(GAME_WIDTH - 220, 70, 200, 32, 16);
+    g.fill();
+    g.fillStyle = cond.color;
+    g.font = "700 18px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(`HEAT ${this.heat + 1} / ${HEATS}`, GAME_WIDTH - 120, 86);
+  }
+
+  private drawAnnounce(g: CanvasRenderingContext2D): void {
+    g.fillStyle = "#0a1224";
+    g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    const cond = this.condition();
+    const t = Math.min(1, this.phaseT / 0.5);
+    const fade = Math.min(1, (2.5 - this.phaseT) / 0.4);
+    g.globalAlpha = Math.min(t, fade);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = cond.color;
+    g.font = "700 88px Bebas Neue, Impact, sans-serif";
+    g.fillText(cond.name, GAME_WIDTH / 2, GAME_HEIGHT * 0.38);
+    g.fillStyle = "#94a3b8";
+    g.font = "600 28px Outfit, sans-serif";
+    g.fillText(cond.tagline, GAME_WIDTH / 2, GAME_HEIGHT * 0.52);
+    // show cup standings so far
+    if (this.heat > 0) {
+      const sorted = this.cupStandings();
+      g.font = "600 18px Outfit, sans-serif";
+      let y = GAME_HEIGHT * 0.64;
+      for (const { entry, pts } of sorted.slice(0, 6)) {
+        g.fillStyle = entry.spec.color;
+        g.fillText(`#${entry.lane + 1} ${entry.spec.name}`, GAME_WIDTH / 2 - 50, y);
+        g.fillStyle = "#F4F7FB";
+        g.textAlign = "right";
+        g.fillText(`${pts} pts`, GAME_WIDTH / 2 + 140, y);
+        g.textAlign = "center";
+        y += 28;
+      }
+    }
+    g.globalAlpha = 1;
+  }
+
+  private drawStandings(g: CanvasRenderingContext2D): void {
+    if (this.phaseT < 0.6) return;
+    const sorted = this.cupStandings();
+    const heatOrder = placings(this.world.runners);
+    const w = 620;
+    const h = 100 + sorted.length * 42;
+    const x = (GAME_WIDTH - w) / 2;
+    const y = GAME_HEIGHT * 0.55 - h / 2;
+    g.fillStyle = "rgba(7,11,20,0.92)";
+    g.strokeStyle = this.condition().color;
+    g.lineWidth = 3;
+    g.beginPath();
+    g.roundRect(x, y, w, h, 18);
+    g.fill();
+    g.stroke();
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = this.condition().color;
+    g.font = "700 36px Bebas Neue, Impact, sans-serif";
+    const title = this.heat < HEATS - 1 ? `HEAT ${this.heat + 1} COMPLETE` : "CUP STANDINGS";
+    g.fillText(title, GAME_WIDTH / 2, y + 38);
+    sorted.forEach(({ entry, pts }, i) => {
+      const ry = y + 80 + i * 42;
+      // heat finish position
+      const heatPos = heatOrder.findIndex((r) => r.lane === entry.lane);
+      const heatPts = entry.lane !== undefined && heatOrder[heatPos]?.finished ? (PLACE_PTS[heatPos] ?? 0) : 0;
+      g.fillStyle = entry.spec.color;
+      g.beginPath();
+      g.arc(x + 40, ry, 14, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = labelColor(entry.spec.color) === entry.spec.color ? "#0b1020" : "#f8fafc";
+      g.font = "700 16px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "center";
+      g.fillText(String(entry.lane + 1), x + 40, ry + 1);
+      g.textAlign = "left";
+      g.fillStyle = "#F4F7FB";
+      g.font = "600 22px Outfit, sans-serif";
+      g.fillText(entry.spec.name, x + 66, ry);
+      // heat result
+      g.fillStyle = "#64748b";
+      g.font = "600 16px Outfit, sans-serif";
+      g.fillText(heatPts > 0 ? `+${heatPts}` : "DNF", x + w - 130, ry);
+      // total
+      g.fillStyle = i === 0 ? "#FFB020" : "#F4F7FB";
+      g.font = "700 24px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "right";
+      g.fillText(`${pts} PTS`, x + w - 30, ry);
+      // player bet marker
+      const backers = backersOf(entry.lane, this.bets);
+      let ox = x + w - 180 - (backers.length - 1) * 10;
+      for (const id of backers) {
+        const player = this.ctx.players.find((p) => p.id === id);
+        if (!player) continue;
+        drawPlayerOrb(g, ox, ry, 8, player);
+        ox += 20;
+      }
+    });
+    g.textAlign = "center";
+    g.fillStyle = "#475569";
+    g.font = "600 13px Outfit, sans-serif";
+    const hint = this.heat < HEATS - 1 ? "click to continue to next heat" : "click to continue";
+    g.fillText(hint, GAME_WIDTH / 2, y + h - 14);
+  }
+
+  private drawFinalResults(g: CanvasRenderingContext2D): void {
+    if (this.phaseT < 0.4) return;
+    const sorted = this.cupStandings();
+    const bestPts = sorted[0]?.pts ?? 0;
+    const rows = this.ctx.players.map((p) => {
+      const lane = this.bets.get(p.id);
+      const entry = lane !== undefined ? this.roster.find((e) => e.lane === lane) : undefined;
+      const pts = lane !== undefined ? (this.cupPoints.get(lane) ?? 0) : 0;
+      const rank = sorted.findIndex((s) => s.entry.lane === lane);
+      return { p, entry, pts, rank, win: pts === bestPts };
+    });
+    const w = 560;
+    const h = 100 + rows.length * 42;
+    const x = (GAME_WIDTH - w) / 2;
+    const y = GAME_HEIGHT * 0.55 - h / 2;
+    g.fillStyle = "rgba(7,11,20,0.92)";
+    g.strokeStyle = "#FFB020";
+    g.lineWidth = 3;
+    g.beginPath();
+    g.roundRect(x, y, w, h, 18);
+    g.fill();
+    g.stroke();
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = "#FFB020";
+    g.font = "700 44px Bebas Neue, Impact, sans-serif";
+    g.fillText("CUP RESULTS", GAME_WIDTH / 2, y + 40);
+    rows.forEach((row, i) => {
+      const ry = y + 84 + i * 42;
+      drawPlayerOrb(g, x + 40, ry, 13, row.p);
+      g.textAlign = "left";
+      g.fillStyle = row.win ? "#FFB020" : "#F4F7FB";
+      g.font = "600 20px Outfit, sans-serif";
+      const label = row.entry ? `${row.p.name} → #${row.entry.lane + 1} ${row.entry.spec.name} · ${row.pts} pts` : `${row.p.name} → no bet`;
+      g.fillText(label, x + 66, ry);
+      g.textAlign = "right";
+      g.fillStyle = "#FFB020";
+      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      g.fillText(row.win ? "WIN" : "", x + w - 30, ry);
+    });
+    g.textAlign = "center";
+    g.fillStyle = "#475569";
+    g.font = "600 13px Outfit, sans-serif";
+    g.fillText("click to continue", GAME_WIDTH / 2, y + h - 14);
+  }
+
+  private cupStandings(): { entry: RacerEntry; pts: number }[] {
+    return [...this.roster]
+      .map((entry) => ({ entry, pts: this.cupPoints.get(entry.lane) ?? 0 }))
+      .sort((a, b) => b.pts - a.pts);
+  }
+
+  // ---- drawing helpers (mirrored from single-race ChaosDerby) ----
 
   private drawStadium(g: CanvasRenderingContext2D): void {
     const sky = g.createLinearGradient(0, 0, 0, GROUND_SY);
@@ -372,8 +580,6 @@ class ChaosDerby implements GameInstance {
     sky.addColorStop(1, "#27406b");
     g.fillStyle = sky;
     g.fillRect(-40, -40, GAME_WIDTH + 80, GAME_HEIGHT + 80);
-
-    // floodlights
     const lightPar = 0.15;
     for (let i = -1; i < 4; i += 1) {
       const base = Math.floor((this.camX * lightPar) / 520) + i;
@@ -388,8 +594,6 @@ class ChaosDerby implements GameInstance {
       g.fillStyle = glow;
       g.fillRect(x - 110, -44, 220, 220);
     }
-
-    // stands and crowd
     const trackTop = this.sy(0, 0) - 18 * this.zoom;
     const standTop = trackTop - 170;
     g.fillStyle = "#101b33";
@@ -409,8 +613,6 @@ class ChaosDerby implements GameInstance {
         g.fill();
       }
     }
-
-    // ad boards on the barrier (move with the track)
     const boardH = 22 * this.zoom + 8;
     const boardY = trackTop - boardH;
     const boardW = 300;
@@ -455,7 +657,6 @@ class ChaosDerby implements GameInstance {
       g.lineTo(GAME_WIDTH + 40, y);
       g.stroke();
     }
-    // start and finish
     g.fillStyle = "rgba(255,255,255,0.8)";
     g.fillRect(this.sx(0) - 2, top, 4, bottom - top);
     const fx = this.sx(FINISH_X);
@@ -466,7 +667,6 @@ class ChaosDerby implements GameInstance {
         g.fillRect(fx + c * sq - sq, y, sq, Math.min(sq, bottom - y));
       }
     }
-    // finish gantry
     const postTop = top - 190 * this.zoom;
     g.fillStyle = "#e2e8f0";
     g.fillRect(fx - 3, postTop, 6, top - postTop);
@@ -509,6 +709,104 @@ class ChaosDerby implements GameInstance {
       g.lineTo(x + 40, y - 6);
       g.stroke();
     }
+  }
+
+  private visible(x: number, pad = 120): boolean {
+    const s = this.sx(x);
+    return s > -pad && s < GAME_WIDTH + pad;
+  }
+
+  private drawLane(g: CanvasRenderingContext2D, lane: number): void {
+    const z = this.zoom;
+    for (const hill of this.world.hills) {
+      if (!this.visible(hill.x0, 800) && !this.visible(hill.x1, 800)) continue;
+      g.beginPath();
+      hill.body.vertices.forEach((v, i) => {
+        const x = this.sx(v.x);
+        const y = this.sy(Math.min(v.y, 0), lane);
+        if (i === 0) g.moveTo(x, y);
+        else g.lineTo(x, y);
+      });
+      g.closePath();
+      g.fillStyle = lane % 2 === 0 ? "#a84a35" : "#b9533c";
+      g.fill();
+      g.strokeStyle = "rgba(255,255,255,0.35)";
+      g.lineWidth = 1.5;
+      g.stroke();
+    }
+    for (const p of this.world.patches) {
+      if (p.lane !== lane || !this.visible(p.x)) continue;
+      const x = this.sx(p.x);
+      const y = this.sy(-this.world.heightAt(p.x), lane);
+      if (p.kind === "mud") {
+        g.fillStyle = "#5b4023";
+        g.beginPath();
+        g.ellipse(x, y + 2 * z, (p.w / 2) * z, 3.5 * z, 0, 0, Math.PI * 2);
+        g.fill();
+      } else if (p.kind === "banana" && !p.used) {
+        g.strokeStyle = "#facc15";
+        g.lineWidth = 5 * z;
+        g.lineCap = "round";
+        g.beginPath();
+        g.arc(x, y - 10 * z, 9 * z, Math.PI * 0.15, Math.PI * 0.85);
+        g.stroke();
+        g.strokeStyle = "#713f12";
+        g.lineWidth = 2 * z;
+        g.beginPath();
+        g.moveTo(x + 7 * z, y - 5 * z);
+        g.lineTo(x + 10 * z, y - 8 * z);
+        g.stroke();
+      } else if (p.kind === "spring") {
+        g.strokeStyle = "#cbd5e1";
+        g.lineWidth = 2.5 * z;
+        g.beginPath();
+        for (let i = 0; i <= 6; i += 1) g.lineTo(x + (i % 2 ? 10 : -10) * z, y - i * 2.4 * z);
+        g.stroke();
+        g.fillStyle = "#ef4444";
+        g.fillRect(x - 18 * z, y - 18 * z, 36 * z, 5 * z);
+      }
+    }
+    for (const item of this.world.items) {
+      if (item.lane !== lane || !this.visible(item.body.position.x)) continue;
+      const b = item.body;
+      g.save();
+      g.translate(this.sx(b.position.x), this.sy(b.position.y, lane));
+      g.scale(z, z);
+      g.rotate(b.angle);
+      if (item.kind === "hurdle") {
+        for (let i = 0; i < 4; i += 1) {
+          g.fillStyle = i % 2 ? "#ef4444" : "#f8fafc";
+          g.fillRect(-item.w / 2, -item.h / 2 + (i * item.h) / 4, item.w, item.h / 4);
+        }
+        g.fillStyle = "#f8fafc";
+        g.fillRect(-11, -item.h / 2 - 3, 22, 5);
+        g.fillStyle = "#1e293b";
+        g.fillRect(-9, item.h / 2 - 3, 18, 3);
+      } else {
+        g.fillStyle = "#a16207";
+        g.fillRect(-item.w / 2, -item.h / 2, item.w, item.h);
+        g.strokeStyle = "#713f12";
+        g.lineWidth = 2.5;
+        g.strokeRect(-item.w / 2 + 1.5, -item.h / 2 + 1.5, item.w - 3, item.h - 3);
+        g.beginPath();
+        g.moveTo(-item.w / 2 + 3, -item.h / 2 + 3);
+        g.lineTo(item.w / 2 - 3, item.h / 2 - 3);
+        g.stroke();
+      }
+      g.restore();
+    }
+    for (const d of this.dust) {
+      if (d.lane !== lane) continue;
+      g.globalAlpha = Math.max(0, d.life / d.max) * 0.8;
+      g.fillStyle = d.color;
+      g.beginPath();
+      g.arc(this.sx(d.x), this.sy(d.y, lane), d.size * z, 0, Math.PI * 2);
+      g.fill();
+    }
+    g.globalAlpha = 1;
+    this.drawProps(g, lane);
+    const r = this.world.runners.find((x) => x.lane === lane);
+    if (r) this.drawRunner(g, r);
   }
 
   private drawProps(g: CanvasRenderingContext2D, lane: number): void {
@@ -581,112 +879,6 @@ class ChaosDerby implements GameInstance {
     }
   }
 
-  private visible(x: number, pad = 120): boolean {
-    const s = this.sx(x);
-    return s > -pad && s < GAME_WIDTH + pad;
-  }
-
-  private drawLane(g: CanvasRenderingContext2D, lane: number): void {
-    const z = this.zoom;
-    for (const hill of this.world.hills) {
-      if (!this.visible(hill.x0, 800) && !this.visible(hill.x1, 800)) continue;
-      g.beginPath();
-      hill.body.vertices.forEach((v, i) => {
-        const x = this.sx(v.x);
-        const y = this.sy(Math.min(v.y, 0), lane);
-        if (i === 0) g.moveTo(x, y);
-        else g.lineTo(x, y);
-      });
-      g.closePath();
-      g.fillStyle = lane % 2 === 0 ? "#a84a35" : "#b9533c";
-      g.fill();
-      g.strokeStyle = "rgba(255,255,255,0.35)";
-      g.lineWidth = 1.5;
-      g.stroke();
-    }
-
-    for (const p of this.world.patches) {
-      if (p.lane !== lane || !this.visible(p.x)) continue;
-      const x = this.sx(p.x);
-      const y = this.sy(-this.world.heightAt(p.x), lane);
-      if (p.kind === "mud") {
-        g.fillStyle = "#5b4023";
-        g.beginPath();
-        g.ellipse(x, y + 2 * z, (p.w / 2) * z, 3.5 * z, 0, 0, Math.PI * 2);
-        g.fill();
-        g.fillStyle = "rgba(255,255,255,0.12)";
-        g.beginPath();
-        g.ellipse(x - p.w * 0.15 * z, y - 1, p.w * 0.12 * z, 2 * z, 0, 0, Math.PI * 2);
-        g.fill();
-      } else if (p.kind === "banana" && !p.used) {
-        g.strokeStyle = "#facc15";
-        g.lineWidth = 5 * z;
-        g.lineCap = "round";
-        g.beginPath();
-        g.arc(x, y - 10 * z, 9 * z, Math.PI * 0.15, Math.PI * 0.85);
-        g.stroke();
-        g.strokeStyle = "#713f12";
-        g.lineWidth = 2 * z;
-        g.beginPath();
-        g.moveTo(x + 7 * z, y - 5 * z);
-        g.lineTo(x + 10 * z, y - 8 * z);
-        g.stroke();
-      } else if (p.kind === "spring") {
-        g.strokeStyle = "#cbd5e1";
-        g.lineWidth = 2.5 * z;
-        g.beginPath();
-        for (let i = 0; i <= 6; i += 1) g.lineTo(x + (i % 2 ? 10 : -10) * z, y - i * 2.4 * z);
-        g.stroke();
-        g.fillStyle = "#ef4444";
-        g.fillRect(x - 18 * z, y - 18 * z, 36 * z, 5 * z);
-      }
-    }
-
-    for (const item of this.world.items) {
-      if (item.lane !== lane || !this.visible(item.body.position.x)) continue;
-      const b = item.body;
-      g.save();
-      g.translate(this.sx(b.position.x), this.sy(b.position.y, lane));
-      g.scale(z, z);
-      g.rotate(b.angle);
-      if (item.kind === "hurdle") {
-        for (let i = 0; i < 4; i += 1) {
-          g.fillStyle = i % 2 ? "#ef4444" : "#f8fafc";
-          g.fillRect(-item.w / 2, -item.h / 2 + (i * item.h) / 4, item.w, item.h / 4);
-        }
-        g.fillStyle = "#f8fafc";
-        g.fillRect(-11, -item.h / 2 - 3, 22, 5);
-        g.fillStyle = "#1e293b";
-        g.fillRect(-9, item.h / 2 - 3, 18, 3);
-      } else {
-        g.fillStyle = "#a16207";
-        g.fillRect(-item.w / 2, -item.h / 2, item.w, item.h);
-        g.strokeStyle = "#713f12";
-        g.lineWidth = 2.5;
-        g.strokeRect(-item.w / 2 + 1.5, -item.h / 2 + 1.5, item.w - 3, item.h - 3);
-        g.beginPath();
-        g.moveTo(-item.w / 2 + 3, -item.h / 2 + 3);
-        g.lineTo(item.w / 2 - 3, item.h / 2 - 3);
-        g.stroke();
-      }
-      g.restore();
-    }
-
-    for (const d of this.dust) {
-      if (d.lane !== lane) continue;
-      g.globalAlpha = Math.max(0, d.life / d.max) * 0.8;
-      g.fillStyle = d.color;
-      g.beginPath();
-      g.arc(this.sx(d.x), this.sy(d.y, lane), d.size * z, 0, Math.PI * 2);
-      g.fill();
-    }
-    g.globalAlpha = 1;
-
-    this.drawProps(g, lane);
-    const r = this.world.runners.find((x) => x.lane === lane);
-    if (r) this.drawRunner(g, r);
-  }
-
   private drawBoulders(g: CanvasRenderingContext2D): void {
     for (const boulder of this.world.boulders) {
       const b = boulder.body;
@@ -725,47 +917,26 @@ class ChaosDerby implements GameInstance {
       legs = kind === "balloon" ? "air" : kind === "hole" ? "idle" : "flail";
       arms = kind === "balloon" || kind === "hole" ? "up" : "flail";
     } else if (r.jetT > 0 && r.mode === "run") {
-      legs = "air";
-      arms = "up";
+      legs = "air"; arms = "up";
     } else if (r.danceT > 0 && r.mode === "run") {
-      legs = "run";
-      arms = "up";
-      stride = this.time * 260;
+      legs = "run"; arms = "up"; stride = this.time * 260;
     } else if (r.mode === "fallen") {
       const flail = !r.sleeping && r.modeT < 0.9;
-      legs = flail ? "flail" : "limp";
-      arms = flail ? "flail" : "limp";
+      legs = flail ? "flail" : "limp"; arms = flail ? "flail" : "limp";
     } else if (r.mode === "getup") {
-      legs = "idle";
-      arms = "limp";
+      legs = "idle"; arms = "limp";
     } else if (!r.grounded) {
-      legs = "air";
-      arms = r.mood === "panic" ? "flail" : "up";
+      legs = "air"; arms = r.mood === "panic" ? "flail" : "up";
     } else if (r.stopT > 0) {
-      legs = "idle";
-      arms = "wave";
+      legs = "idle"; arms = "wave";
     } else if (r.mode === "finished" && Math.abs(b.velocity.x) < 0.4) {
-      legs = "idle";
-      arms = r.place === 1 ? "up" : "limp";
+      legs = "idle"; arms = r.place === 1 ? "up" : "limp";
     }
     if (r.mood === "win") arms = "up";
     return {
-      spec: r.spec,
-      w: r.w,
-      h: r.h,
-      lane: r.lane,
-      mood: r.mood,
-      dir: r.dir,
-      stride,
-      legs,
-      arms,
-      time: this.time,
-      boost: r.boostT > 0,
-      charred: r.charT > 0,
-      vy: b.velocity.y,
-      squash: r.landT / 0.22,
-      pie: r.pieT > 0,
-      jet: r.jetT > 0 && r.mode === "run",
+      spec: r.spec, w: r.w, h: r.h, lane: r.lane, mood: r.mood, dir: r.dir, stride, legs, arms,
+      time: this.time, boost: r.boostT > 0, charred: r.charT > 0, vy: b.velocity.y, squash: r.landT / 0.22,
+      pie: r.pieT > 0, jet: r.jetT > 0 && r.mode === "run",
     };
   }
 
@@ -783,13 +954,11 @@ class ChaosDerby implements GameInstance {
       g.ellipse(this.sx(b.position.x), groundY, (r.w * r.scale * 0.6 + 6) * z * Math.max(0.4, 1 - lift / 300), 4 * z, 0, 0, Math.PI * 2);
       g.fill();
     }
-
     const x = this.sx(b.position.x);
     const y = this.sy(b.position.y, r.lane);
     const h = r.h * r.scale;
     if (ride?.kind === "ufo") this.drawUfo(g, x, y, h, true);
     if (ride?.kind === "balloon") this.drawBalloons(g, x, y, h, r.lane);
-
     g.save();
     if (ride?.kind === "hole") {
       g.beginPath();
@@ -807,7 +976,6 @@ class ChaosDerby implements GameInstance {
     }
     drawRacer(g, this.lookOf(r));
     g.restore();
-
     if (ride?.kind === "hole" && b.position.y > ground - (r.h * r.scale) / 4) {
       g.fillStyle = "#7c5a34";
       g.beginPath();
@@ -817,7 +985,6 @@ class ChaosDerby implements GameInstance {
     if (ride?.kind === "eagle") this.drawEagle(g, x, y - (h / 2 + 16) * z);
     if (ride?.kind === "ufo") this.drawUfo(g, x, y, h, false);
     if (r.flatT > 0) this.drawAnvil(g, x, groundY - r.h * 0.3 * z, 2.4 - r.flatT);
-
     const headY = y - (h / 2 + 14) * z;
     if (r.mood === "sleep") {
       g.fillStyle = "#e2e8f0";
@@ -860,10 +1027,8 @@ class ChaosDerby implements GameInstance {
     g.strokeStyle = "#f59e0b";
     g.lineWidth = 3;
     g.beginPath();
-    g.moveTo(-6, 6);
-    g.lineTo(-8, 18);
-    g.moveTo(6, 6);
-    g.lineTo(8, 18);
+    g.moveTo(-6, 6); g.lineTo(-8, 18);
+    g.moveTo(6, 6); g.lineTo(8, 18);
     g.stroke();
     g.fillStyle = "#6b3f1d";
     for (const side of [-1, 1]) {
@@ -882,9 +1047,7 @@ class ChaosDerby implements GameInstance {
     g.fill();
     g.fillStyle = "#f59e0b";
     g.beginPath();
-    g.moveTo(21, -14);
-    g.lineTo(31, -9);
-    g.lineTo(21, -7);
+    g.moveTo(21, -14); g.lineTo(31, -9); g.lineTo(21, -7);
     g.fill();
     g.fillStyle = "#0b0f19";
     g.beginPath();
@@ -893,7 +1056,6 @@ class ChaosDerby implements GameInstance {
     g.restore();
   }
 
-  /** Saucer above the runner; the beam goes behind them, the saucer in front. */
   private drawUfo(g: CanvasRenderingContext2D, x: number, y: number, h: number, beam: boolean): void {
     const z = this.zoom;
     const sy = y - (h / 2 + 62) * z + Math.sin(this.time * 3) * 4;
@@ -903,10 +1065,8 @@ class ChaosDerby implements GameInstance {
       grad.addColorStop(1, "rgba(190,242,100,0.05)");
       g.fillStyle = grad;
       g.beginPath();
-      g.moveTo(x - 18 * z, sy);
-      g.lineTo(x + 18 * z, sy);
-      g.lineTo(x + 46 * z, y + (h / 2) * z);
-      g.lineTo(x - 46 * z, y + (h / 2) * z);
+      g.moveTo(x - 18 * z, sy); g.lineTo(x + 18 * z, sy);
+      g.lineTo(x + 46 * z, y + (h / 2) * z); g.lineTo(x - 46 * z, y + (h / 2) * z);
       g.closePath();
       g.fill();
       return;
@@ -945,8 +1105,7 @@ class ChaosDerby implements GameInstance {
       g.strokeStyle = "rgba(226,232,240,0.8)";
       g.lineWidth = 1;
       g.beginPath();
-      g.moveTo(x, handY);
-      g.lineTo(bx, by + 14 * z);
+      g.moveTo(x, handY); g.lineTo(bx, by + 14 * z);
       g.stroke();
       g.fillStyle = c;
       g.beginPath();
@@ -967,15 +1126,10 @@ class ChaosDerby implements GameInstance {
     g.scale(z, z);
     g.fillStyle = "#374151";
     g.beginPath();
-    g.moveTo(-26, -24);
-    g.lineTo(30, -24);
-    g.quadraticCurveTo(30, -14, 14, -12);
-    g.lineTo(10, -4);
-    g.lineTo(18, 0);
-    g.lineTo(-16, 0);
-    g.lineTo(-8, -4);
-    g.lineTo(-12, -12);
-    g.quadraticCurveTo(-34, -14, -26, -24);
+    g.moveTo(-26, -24); g.lineTo(30, -24);
+    g.quadraticCurveTo(30, -14, 14, -12); g.lineTo(10, -4);
+    g.lineTo(18, 0); g.lineTo(-16, 0); g.lineTo(-8, -4);
+    g.lineTo(-12, -12); g.quadraticCurveTo(-34, -14, -26, -24);
     g.fill();
     g.fillStyle = "rgba(255,255,255,0.25)";
     g.fillRect(-20, -22, 40, 3);
@@ -1016,8 +1170,7 @@ class ChaosDerby implements GameInstance {
     g.strokeStyle = "rgba(244,247,251,0.35)";
     g.lineWidth = 3;
     g.beginPath();
-    g.moveTo(x0, y);
-    g.lineTo(x1, y);
+    g.moveTo(x0, y); g.lineTo(x1, y);
     g.stroke();
     for (let i = 0; i < 3; i += 1) {
       g.fillStyle = i % 2 ? "#111827" : "#f8fafc";
@@ -1049,7 +1202,6 @@ class ChaosDerby implements GameInstance {
   }
 
   private drawOffscreen(g: CanvasRenderingContext2D): void {
-    // stack the markers so runners left behind together don't pile up on one spot
     const behind = this.world.runners
       .filter((r) => this.sx(r.body.position.x) <= -10)
       .map((r) => ({ r, y: this.sy(r.body.position.y, r.lane) }))
@@ -1081,13 +1233,16 @@ class ChaosDerby implements GameInstance {
     const player = this.bettor;
     g.textAlign = "center";
     g.textBaseline = "alphabetic";
-    g.fillStyle = "#F4F7FB";
+    g.fillStyle = "#FFB020";
     g.font = "700 64px Bebas Neue, Impact, sans-serif";
-    g.fillText("PLACE YOUR BETS", GAME_WIDTH / 2, 78);
+    g.fillText("3-RACE CUP", GAME_WIDTH / 2, 60);
+    g.fillStyle = "#F4F7FB";
+    g.font = "700 38px Bebas Neue, Impact, sans-serif";
+    g.fillText("PLACE YOUR BETS", GAME_WIDTH / 2, 100);
     if (player) {
       g.fillStyle = player.color;
-      g.font = "600 24px Outfit, sans-serif";
-      g.fillText(player.kind === "bot" ? `${player.name} is squinting at the runners…` : `${player.name}, who's winning this?`, GAME_WIDTH / 2, 116);
+      g.font = "600 22px Outfit, sans-serif";
+      g.fillText(player.kind === "bot" ? `${player.name} is sizing them up…` : `${player.name}, back one runner for the whole cup`, GAME_WIDTH / 2, 132);
     }
     const hover = this.ctx.input.hover;
     const hoverLane = hover && player?.kind === "human" ? cardAt(hover.x, hover.y) : null;
@@ -1109,7 +1264,6 @@ class ChaosDerby implements GameInstance {
       g.fillStyle = "#94a3b8";
       g.font = "600 14px Outfit, sans-serif";
       g.fillText(r.odds, x + CARD_W - 14, CARD_Y + 28);
-
       g.save();
       g.beginPath();
       g.roundRect(x, CARD_Y, CARD_W, CARD_H, 18);
@@ -1136,7 +1290,6 @@ class ChaosDerby implements GameInstance {
       look.mood = hot ? "happy" : (["focused", "smug", "tired", "focused", "confused", "happy"] as const)[(r.lane + r.spec.id.length) % 6]!;
       drawRacer(g, look);
       g.restore();
-
       g.textAlign = "center";
       g.fillStyle = labelColor(r.spec.color);
       g.font = "700 34px Bebas Neue, Impact, sans-serif";
@@ -1152,90 +1305,42 @@ class ChaosDerby implements GameInstance {
     g.fillStyle = "#64748b";
     g.font = "600 15px Outfit, sans-serif";
     g.textAlign = "center";
-    g.fillText("Click a runner or press 1–6 · the odds are made up · nobody knows anything", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
+    g.fillText("Click a runner or press 1–6 · your pick races all 3 heats", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
   }
 
-  private drawResults(g: CanvasRenderingContext2D): void {
-    if (this.phaseT < 0.6) return;
-    const order = placings(this.world.runners);
-    const scores = scoreBets(order, this.bets);
-    const rows = this.ctx.players.map((p) => {
-      const lane = this.bets.get(p.id);
-      const runner = lane === undefined ? null : this.world.runners.find((r) => r.lane === lane)!;
-      return { p, runner, place: runner ? order.indexOf(runner) : -1, score: scores.get(p.id) ?? 0 };
-    });
-    const w = 560;
-    const h = 96 + rows.length * 38;
-    const x = (GAME_WIDTH - w) / 2;
-    const y = GAME_HEIGHT * 0.62 - h / 2;
-    g.fillStyle = "rgba(7,11,20,0.9)";
-    g.strokeStyle = "rgba(244,247,251,0.25)";
-    g.lineWidth = 2;
-    g.beginPath();
-    g.roundRect(x, y, w, h, 18);
-    g.fill();
-    g.stroke();
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    g.fillStyle = "#94a3b8";
-    g.font = "600 16px Outfit, sans-serif";
-    g.fillText("Where the money went", GAME_WIDTH / 2, y + 30);
-    const best = Math.max(...rows.map((r) => r.score));
-    rows.forEach((row, i) => {
-      const ry = y + 72 + i * 38;
-      drawPlayerOrb(g, x + 40, ry, 13, row.p);
-      g.textAlign = "left";
-      g.fillStyle = row.score === best ? "#FFB020" : "#F4F7FB";
-      g.font = "600 20px Outfit, sans-serif";
-      const label = row.runner ? `#${row.runner.lane + 1} ${row.runner.spec.name} · ${row.runner.finished ? PLACE[row.place] : "still out there"}` : "no bet";
-      g.fillText(`${row.p.name} → ${label}`, x + 66, ry);
-      g.textAlign = "right";
-      g.fillText(row.score === best ? "WIN" : "", x + w - 30, ry);
-    });
-    g.textAlign = "center";
-    g.fillStyle = "#475569";
-    g.font = "600 13px Outfit, sans-serif";
-    g.fillText("click to continue", GAME_WIDTH / 2, y + h - 16);
-  }
+  // ------------------------------------------------------------------ GameInstance
 
   isFinished(): boolean {
     return this.finished;
   }
 
   getScores(): { playerId: string; score: number }[] {
-    const scores = scoreBets(placings(this.world.runners), this.bets);
-    return this.ctx.players.map((p) => ({ playerId: p.id, score: scores.get(p.id) ?? 0 }));
+    // The player whose backed runner has the most cup points wins
+    const bestPts = Math.max(...[...this.cupPoints.values()]);
+    return this.ctx.players.map((p) => {
+      const lane = this.bets.get(p.id);
+      if (lane === undefined) return { playerId: p.id, score: 0 };
+      const pts = this.cupPoints.get(lane) ?? 0;
+      return { playerId: p.id, score: pts === bestPts ? 1 : 0 };
+    });
   }
 
   getStats(): GameStat[] {
     const stats: GameStat[] = [];
-    const order = placings(this.world.runners);
     for (const p of this.ctx.players) {
       const lane = this.bets.get(p.id);
       if (lane === undefined) continue;
-      const runner = this.world.runners.find((r) => r.lane === lane);
-      if (!runner) continue;
-      const place = order.indexOf(runner) + 1;
-      stats.push({ playerId: p.id, label: "Backed", value: `#${lane + 1} ${runner.spec.name}` });
-      stats.push({ playerId: p.id, label: "Finish", value: runner.finished ? PLACE[place - 1]! : "DNF" });
-    }
-    const top2 = order.filter((r) => r.finished).slice(0, 2);
-    if (top2.length === 2) {
-      const margin = Math.abs(top2[0]!.finishTime - top2[1]!.finishTime);
-      if (margin < 0.5) {
-        for (const p of this.ctx.players) {
-          const lane = this.bets.get(p.id);
-          if (lane === top2[0]!.lane || lane === top2[1]!.lane) {
-            stats.push({ playerId: p.id, label: "Photo finish", value: `${margin.toFixed(2)}s gap` });
-          }
-        }
-      }
+      const entry = this.roster.find((e) => e.lane === lane);
+      if (!entry) continue;
+      const pts = this.cupPoints.get(lane) ?? 0;
+      stats.push({ playerId: p.id, label: "Backed", value: `#${lane + 1} ${entry.spec.name}` });
+      stats.push({ playerId: p.id, label: "Cup pts", value: String(pts) });
     }
     return stats;
   }
 
   destroy(): void {
-    this.world.destroy();
+    this.world?.destroy();
   }
 }
 

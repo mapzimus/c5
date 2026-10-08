@@ -1,4 +1,4 @@
-import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameInstance } from "../core/types";
+import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameInstance, type GameStat } from "../core/types";
 
 export interface GameMode {
   title: string;
@@ -106,6 +106,10 @@ export class ModePicker implements GameInstance {
 
   getScores(): { playerId: string; score: number }[] {
     return this.inner?.getScores() ?? this.ctx.players.map((p) => ({ playerId: p.id, score: 0 }));
+  }
+
+  getStats(): GameStat[] {
+    return this.inner?.getStats?.() ?? [];
   }
 
   destroy(): void {

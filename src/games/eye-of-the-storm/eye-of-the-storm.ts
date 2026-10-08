@@ -1,6 +1,6 @@
 import { fillArena } from "../../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
-import type { GameContext, GameDefinition, GameInstance, Player } from "../../core/types";
+import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
 import { PUCK_RADIUS, isResting, stepWorld, type Puck, type World } from "./physics";
 import {
   CELL_EVERY_S,
@@ -27,7 +27,7 @@ export const eyeOfTheStorm: GameDefinition = {
   name: "Bullseye",
   tagline: "Everyone fires at once. Land in the centre.",
   description:
-    "Three volleys of six pucks. Each volley banks your points and resets the field. Slingshot from your corner into the bullseye. Centre 10, middle 5, outer 2. The vortex bends shots and flips direction, pegs move every game, and anyone can knock you out. Shoot through a bonus cell for an extra puck. Built for a big multi-touch screen: all players shoot at the same time.",
+    "Three evolving volleys: Calm, Gale, then Tempest. Each volley banks your points and resets the field with stronger winds and more pegs. Slingshot from your corner into the bullseye. Centre 10, middle 5, outer 2. The vortex bends shots and flips direction, and anyone can knock you out. In the Tempest, a golden target drifts across the board worth 20 points. Built for a big multi-touch screen: all players shoot at the same time.",
   durationMs: 90_000,
   controls: "Drag back from your corner pad, release to fire",
   create: (ctx) => new EyeOfTheStorm(ctx),
@@ -43,9 +43,35 @@ interface Seat {
   aim: Point | null;
 }
 
-const SWIRL_FLIP_MIN = 4;
-const SWIRL_FLIP_MAX = 8;
 const SETTLE_GRACE_S = 0.8;
+
+interface VolleyCondition {
+  name: string;
+  tagline: string;
+  color: string;
+  swirlMul: number;
+  pegCount: number;
+  cellInterval: readonly [number, number];
+  swirlFlipRange: readonly [number, number];
+  goldenTarget: boolean;
+}
+
+const VOLLEY_CONDITIONS: readonly VolleyCondition[] = [
+  { name: "CALM", tagline: "Light breeze", color: "#60a5fa", swirlMul: 0.5, pegCount: 6, cellInterval: CELL_EVERY_S, swirlFlipRange: [5, 10], goldenTarget: false },
+  { name: "GALE", tagline: "Strong winds", color: "#FFB020", swirlMul: 1.5, pegCount: 12, cellInterval: [3, 6], swirlFlipRange: [3, 6], goldenTarget: false },
+  { name: "TEMPEST", tagline: "All hell breaks loose", color: "#ef4444", swirlMul: 1.8, pegCount: 15, cellInterval: [2, 4], swirlFlipRange: [1.5, 3.5], goldenTarget: true },
+];
+
+interface GoldenTarget {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
+
+const GOLDEN_RADIUS = 36;
+const GOLDEN_POINTS = 20;
+const GOLDEN_SPEED = 40;
 
 class EyeOfTheStorm implements GameInstance {
   private readonly world: World;
@@ -71,8 +97,15 @@ class EyeOfTheStorm implements GameInstance {
   private readonly lastHit = new Map<number, { owner: string; at: number }>();
   private readonly lastPoints = new Map<number, number>();
   private readonly bullseyes = new Set<number>();
-  private readonly best = loadBest("eye-of-the-storm");
+  private readonly best = loadBest("eye-of-the-storm", "3v");
   private newBestShown = false;
+  private readonly koCount = new Map<string, number>();
+  private readonly bullseyeCount = new Map<string, number>();
+  private readonly bonusPucks = new Map<string, number>();
+  private golden: GoldenTarget | null = null;
+  private readonly goldenScored = new Set<number>();
+  private readonly goldenPoints = new Map<string, number>();
+  private readonly goldenHitCount = new Map<string, number>();
 
   constructor(private readonly ctx: GameContext) {
     const { width, height, rng } = ctx;
@@ -86,16 +119,17 @@ class EyeOfTheStorm implements GameInstance {
       botWait: rng.float(1, 2.5),
       aim: null,
     }));
+    const vc = VOLLEY_CONDITIONS[0]!;
     this.world = {
       width,
       height,
       pucks: [],
-      pegs: scatterPegs(rng, width, height, pads),
-      swirl: { ...this.center, radius: 300, spin: rng.sign() * rng.float(1.2, 2) },
+      pegs: scatterPegs(rng, width, height, pads, vc.pegCount),
+      swirl: { ...this.center, radius: 300, spin: rng.sign() * rng.float(1.2, 2) * vc.swirlMul },
     };
-    this.swirlTimer = rng.float(SWIRL_FLIP_MIN, SWIRL_FLIP_MAX);
+    this.swirlTimer = rng.float(vc.swirlFlipRange[0], vc.swirlFlipRange[1]);
     this.juice = new Juice(() => rng.next());
-    this.cellTimer = rng.float(CELL_EVERY_S[0], CELL_EVERY_S[1]);
+    this.cellTimer = rng.float(vc.cellInterval[0], vc.cellInterval[1]);
 
     const canvas = ctx.canvas;
     canvas.style.touchAction = "none";
@@ -103,6 +137,7 @@ class EyeOfTheStorm implements GameInstance {
     canvas.addEventListener("pointermove", this.onMove);
     canvas.addEventListener("pointerup", this.onUp);
     canvas.addEventListener("pointercancel", this.onCancel);
+    this.callouts.show("VOLLEY 1: CALM", vc.color);
   }
 
   update(realDt: number): void {
@@ -113,6 +148,7 @@ class EyeOfTheStorm implements GameInstance {
       this.intermission -= realDt;
       if (this.intermission <= 0) {
         this.volley++;
+        const vc = VOLLEY_CONDITIONS[this.volley - 1]!;
         this.volleyTime = 0;
         this.world.pucks.length = 0;
         this.lastHit.clear();
@@ -120,8 +156,27 @@ class EyeOfTheStorm implements GameInstance {
         this.bullseyes.clear();
         this.cell = null;
         this.settled = 0;
+        this.goldenScored.clear();
+        this.goldenPoints.clear();
+        const pads = padPositions(this.ctx.width, this.ctx.height);
+        this.world.pegs = scatterPegs(this.ctx.rng, this.ctx.width, this.ctx.height, pads, vc.pegCount);
+        this.world.swirl.spin = this.ctx.rng.sign() * this.ctx.rng.float(1.2, 2) * vc.swirlMul;
+        this.swirlTimer = this.ctx.rng.float(vc.swirlFlipRange[0], vc.swirlFlipRange[1]);
+        this.cellTimer = this.ctx.rng.float(vc.cellInterval[0], vc.cellInterval[1]);
+        if (vc.goldenTarget) {
+          const angle = this.ctx.rng.float(0, Math.PI * 2);
+          this.golden = {
+            x: this.center.x + this.ctx.rng.float(-100, 100),
+            y: this.center.y + this.ctx.rng.float(-80, 80),
+            vx: Math.cos(angle) * GOLDEN_SPEED,
+            vy: Math.sin(angle) * GOLDEN_SPEED,
+          };
+        } else {
+          this.golden = null;
+        }
         for (const seat of this.seats) { seat.left = PUCKS_EACH; seat.reload = 0; seat.aim = null; }
-        this.callouts.show(this.volley === 3 ? "FINAL VOLLEY!" : "VOLLEY 2!", "#FFB020");
+        const label = this.volley === 3 ? `FINAL VOLLEY: ${vc.name}` : `VOLLEY ${this.volley}: ${vc.name}`;
+        this.callouts.show(label, vc.color, { size: 48 });
       }
       return;
     }
@@ -132,8 +187,9 @@ class EyeOfTheStorm implements GameInstance {
     this.swirlTimer -= dt;
     if (this.swirlTimer <= 0) {
       const { rng } = this.ctx;
-      this.world.swirl.spin = -Math.sign(this.world.swirl.spin) * rng.float(1.2, 2.2);
-      this.swirlTimer = rng.float(SWIRL_FLIP_MIN, SWIRL_FLIP_MAX);
+      const vc = VOLLEY_CONDITIONS[this.volley - 1]!;
+      this.world.swirl.spin = -Math.sign(this.world.swirl.spin) * rng.float(1.2, 2.2) * vc.swirlMul;
+      this.swirlTimer = rng.float(vc.swirlFlipRange[0], vc.swirlFlipRange[1]);
       this.flash = 0.5;
       this.ctx.sfx.countdown();
     }
@@ -167,12 +223,28 @@ class EyeOfTheStorm implements GameInstance {
     }
     this.updateMoments();
     this.updateCell(dt);
+    this.updateGolden(dt);
 
     this.scores = scoreBoard(
       this.world.pucks,
       this.seats.map((s) => s.player.id),
       this.center,
     );
+    if (this.golden) {
+      for (const puck of this.world.pucks) {
+        if (isResting(puck) && !this.goldenScored.has(puck.id) &&
+            Math.hypot(puck.x - this.golden.x, puck.y - this.golden.y) < GOLDEN_RADIUS + puck.r) {
+          this.goldenScored.add(puck.id);
+          this.goldenPoints.set(puck.owner, (this.goldenPoints.get(puck.owner) ?? 0) + GOLDEN_POINTS);
+          this.goldenHitCount.set(puck.owner, (this.goldenHitCount.get(puck.owner) ?? 0) + 1);
+          this.callouts.show(`GOLDEN! +${GOLDEN_POINTS}`, "#FFD700", { size: 56 });
+          this.juice.burst(this.golden.x, this.golden.y, ["#FFD700", "#FFA500", this.colorOf(puck.owner)], { count: 40, speed: 400, gravity: 0 });
+          this.juice.shake(0.3);
+          this.ctx.sfx.collect();
+        }
+      }
+    }
+    for (const [id, pts] of this.goldenPoints) this.scores.set(id, (this.scores.get(id) ?? 0) + pts);
     for (const seat of this.seats) this.scores.set(seat.player.id, (this.scores.get(seat.player.id) ?? 0) + (this.bank.get(seat.player.id) ?? 0));
     const humanTop = Math.max(0, ...this.seats.filter((s) => s.player.kind === "human").map((s) => this.scores.get(s.player.id) ?? 0));
     if (!this.newBestShown && this.best > 0 && humanTop > this.best) {
@@ -200,8 +272,24 @@ class EyeOfTheStorm implements GameInstance {
 
   getScores(): { playerId: string; score: number }[] {
     const humanTop = Math.max(0, ...this.seats.filter((s) => s.player.kind === "human").map((s) => this.scores.get(s.player.id) ?? 0));
-    saveBest("eye-of-the-storm", humanTop);
+    saveBest("eye-of-the-storm", humanTop, "3v");
     return this.seats.map((s) => ({ playerId: s.player.id, score: this.scores.get(s.player.id) ?? 0 }));
+  }
+
+  getStats(): GameStat[] {
+    const stats: GameStat[] = [];
+    for (const s of this.seats) {
+      const id = s.player.id;
+      const kos = this.koCount.get(id) ?? 0;
+      const bulls = this.bullseyeCount.get(id) ?? 0;
+      const bonus = this.bonusPucks.get(id) ?? 0;
+      if (bulls > 0) stats.push({ playerId: id, label: "Bullseyes", value: String(bulls) });
+      if (kos > 0) stats.push({ playerId: id, label: "Knockouts", value: String(kos) });
+      if (bonus > 0) stats.push({ playerId: id, label: "Bonus pucks", value: String(bonus) });
+      const gold = this.goldenHitCount.get(id) ?? 0;
+      if (gold > 0) stats.push({ playerId: id, label: "Golden hits", value: String(gold) });
+    }
+    return stats;
   }
 
   destroy(): void {
@@ -229,6 +317,7 @@ class EyeOfTheStorm implements GameInstance {
       const hit = this.lastHit.get(puck.id);
       if (points < before && hit && this.time - hit.at < 1.5) {
         this.lastHit.delete(puck.id);
+        this.koCount.set(hit.owner, (this.koCount.get(hit.owner) ?? 0) + 1);
         this.callouts.show(`KNOCKOUT! ${this.nameOf(hit.owner)}`, this.colorOf(hit.owner));
         this.juice.shake(0.35);
         this.juice.burst(puck.x, puck.y, this.colorOf(hit.owner), { count: 30, speed: 380, gravity: 0 });
@@ -237,6 +326,7 @@ class EyeOfTheStorm implements GameInstance {
       if (points === RINGS[0].points && isResting(puck)) {
         if (!this.bullseyes.has(puck.id)) {
           this.bullseyes.add(puck.id);
+          this.bullseyeCount.set(puck.owner, (this.bullseyeCount.get(puck.owner) ?? 0) + 1);
           this.callouts.show("BULLSEYE", this.colorOf(puck.owner), { size: 72 });
           this.juice.burst(puck.x, puck.y, [this.colorOf(puck.owner), "#FFB020", "#ffffff"], { count: 40, speed: 420, gravity: 0 });
           this.juice.shake(0.25);
@@ -256,6 +346,7 @@ class EyeOfTheStorm implements GameInstance {
       if (puck) {
         const seat = this.seats.find((s) => s.player.id === puck.owner);
         if (seat) seat.left += 1;
+        this.bonusPucks.set(puck.owner, (this.bonusPucks.get(puck.owner) ?? 0) + 1);
         this.callouts.show(`+1 PUCK ${this.nameOf(puck.owner)}`, this.colorOf(puck.owner), { y: 0.68, size: 48 });
         this.juice.burst(this.cell.x, this.cell.y, ["#9ad9ff", "#ffffff", this.colorOf(puck.owner)], { count: 36, speed: 360, gravity: 0 });
         this.ctx.sfx.streak(3);
@@ -271,8 +362,21 @@ class EyeOfTheStorm implements GameInstance {
     if (this.cellTimer <= 0) {
       const { rng, width, height } = this.ctx;
       this.cell = placeCell(rng, width, height, this.seats.map((s) => s.pad), this.world.pegs);
-      this.cellTimer = rng.float(CELL_EVERY_S[0], CELL_EVERY_S[1]);
+      const vc = VOLLEY_CONDITIONS[this.volley - 1]!;
+      this.cellTimer = rng.float(vc.cellInterval[0], vc.cellInterval[1]);
     }
+  }
+
+  private updateGolden(dt: number): void {
+    if (!this.golden) return;
+    this.golden.x += this.golden.vx * dt;
+    this.golden.y += this.golden.vy * dt;
+    const mx = GOLDEN_RADIUS + 80;
+    const my = GOLDEN_RADIUS + 60;
+    if (this.golden.x < mx) { this.golden.x = mx; this.golden.vx = Math.abs(this.golden.vx); }
+    if (this.golden.x > this.ctx.width - mx) { this.golden.x = this.ctx.width - mx; this.golden.vx = -Math.abs(this.golden.vx); }
+    if (this.golden.y < my) { this.golden.y = my; this.golden.vy = Math.abs(this.golden.vy); }
+    if (this.golden.y > this.ctx.height - my) { this.golden.y = this.ctx.height - my; this.golden.vy = -Math.abs(this.golden.vy); }
   }
 
   private fire(seat: Seat, release: Point): void {
@@ -360,6 +464,7 @@ class EyeOfTheStorm implements GameInstance {
       g.stroke();
     }
     if (this.cell) this.drawCell(g, this.cell);
+    if (this.golden) this.drawGolden(g);
     for (const seat of this.seats) this.drawPad(g, seat);
     for (const puck of this.world.pucks) this.drawPuck(g, puck);
     for (const seat of this.seats) if (seat.aim) this.drawAim(g, seat);
@@ -371,10 +476,11 @@ class EyeOfTheStorm implements GameInstance {
       g.textBaseline = "top";
       g.fillText(`BEST ${this.best}`, width / 2, 10);
     }
+    const vc = VOLLEY_CONDITIONS[this.volley - 1]!;
     g.fillStyle = "#F4F7FB";
     g.font = "600 18px Outfit, sans-serif";
     g.textAlign = "center";
-    g.fillText(`VOLLEY ${this.volley}/3 • ${Math.ceil(Math.max(0, 24 - this.volleyTime))}s • POINTS BANK BETWEEN VOLLEYS`, width / 2, height - 18);
+    g.fillText(`VOLLEY ${this.volley}/3: ${vc.name} • ${Math.ceil(Math.max(0, 24 - this.volleyTime))}s`, width / 2, height - 18);
     this.callouts.draw(g, width, height);
   }
 
@@ -398,6 +504,34 @@ class EyeOfTheStorm implements GameInstance {
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText("+1", cell.x, cell.y + 1);
+    g.restore();
+  }
+
+  private drawGolden(g: CanvasRenderingContext2D): void {
+    const t = this.golden!;
+    const pulse = 1 + Math.sin(this.time * 5) * 0.08;
+    const r = GOLDEN_RADIUS * pulse;
+    g.save();
+    g.shadowColor = "#FFD700";
+    g.shadowBlur = 28;
+    g.beginPath();
+    g.arc(t.x, t.y, r, 0, Math.PI * 2);
+    g.fillStyle = "rgba(255,215,0,0.12)";
+    g.fill();
+    g.strokeStyle = "#FFD700";
+    g.lineWidth = 4;
+    g.stroke();
+    g.beginPath();
+    g.arc(t.x, t.y, r * 0.6, 0, Math.PI * 2);
+    g.strokeStyle = "rgba(255,215,0,0.5)";
+    g.lineWidth = 2;
+    g.stroke();
+    g.shadowBlur = 0;
+    g.fillStyle = "#FFD700";
+    g.font = "700 20px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(`+${GOLDEN_POINTS}`, t.x, t.y + 1);
     g.restore();
   }
 

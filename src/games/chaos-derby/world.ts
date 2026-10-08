@@ -216,7 +216,7 @@ export class DerbyWorld {
   constructor(
     entries: readonly RacerEntry[],
     private readonly rng: Rng,
-    private readonly opts: { events?: boolean } = {},
+    private readonly opts: { events?: boolean; obstacleMul?: number; eventMul?: number } = {},
   ) {
     this.engine = Engine.create({ gravity: { x: 0, y: GRAVITY, scale: 0.001 }, enableSleeping: true });
     const ground = Bodies.rectangle(FINISH_X / 2, 200, FINISH_X + 8000, 400, {
@@ -256,6 +256,7 @@ export class DerbyWorld {
       x += width + rng.float(1100, 2200);
     }
 
+    const om = this.opts.obstacleMul ?? 1;
     x = 520;
     while (x < FINISH_X - 260) {
       if (this.hills.some((h) => x > h.x0 - 90 && x < h.x1 + 90)) {
@@ -265,10 +266,10 @@ export class DerbyWorld {
       const roll = rng.float(0, 100);
       if (roll < 36) this.hurdleRow(x);
       else if (roll < 50) this.crates(x, rng.int(1, 3));
-      else if (roll < 68) this.scatter("banana", x, rng.int(1, 3), 18);
+      else if (roll < 68) this.scatter("banana", x, rng.int(1, Math.ceil(3 * om)), 18);
       else if (roll < 77) this.scatter("spring", x, rng.int(1, 2), 44);
-      else this.mud(x, rng.float(140, 260));
-      x += rng.float(240, 520);
+      else this.mud(x, rng.float(140, 260) * om);
+      x += rng.float(240, 520) / om;
     }
   }
 
@@ -424,7 +425,7 @@ export class DerbyWorld {
       this.randomEvent();
       // fewer runners left, fewer events: stragglers shouldn't get all the chaos to themselves
       const left = Math.max(1, this.runners.filter((r) => !r.finished).length);
-      this.nextEvent = this.rng.float(0.85, 1.9) * Math.sqrt(this.runners.length / left);
+      this.nextEvent = this.rng.float(0.85, 1.9) * Math.sqrt(this.runners.length / left) / (this.opts.eventMul ?? 1);
     }
     this.gustT = Math.max(0, this.gustT - dt);
     if (this.gustT <= 0) this.gust = 0;

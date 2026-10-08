@@ -28,11 +28,18 @@ export interface GameContext {
   minTap: number;
 }
 
+export interface GameStat {
+  playerId: string;
+  label: string;
+  value: string;
+}
+
 export interface GameInstance {
   update(dt: number): void;
   render(ctx: CanvasRenderingContext2D): void;
   isFinished(): boolean;
   getScores(): { playerId: string; score: number }[];
+  getStats?(): GameStat[];
   destroy(): void;
 }
 

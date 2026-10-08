@@ -1,6 +1,6 @@
 import { fillArena } from "../../../core/draw";
 import { Callouts, Juice } from "../../../fx/juice";
-import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance } from "../../../core/types";
+import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat } from "../../../core/types";
 import {
   MAX_BUGS,
   MAX_ROUNDS,
@@ -21,6 +21,8 @@ import {
   targetsFrom,
   tilesOwned,
 } from "./rules";
+
+const PASS_BTN = { x: GAME_WIDTH / 2, y: GAME_HEIGHT - 36, hw: 110, hh: 30 };
 
 const HEX_R = 44;
 const HEX_W = HEX_R * Math.sqrt(3);
@@ -69,11 +71,15 @@ class BugWarsGame implements GameInstance {
   private botDelay = 0;
   private botAttacksLeft = 0;
   private hexCenters: { x: number; y: number }[] = [];
+  private readonly attacks: number[];
+  private readonly captures: number[];
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice();
     this.board = generateBoard(ctx.rng, ctx.players.length);
     this.stash = ctx.players.map(() => 0);
+    this.attacks = ctx.players.map(() => 0);
+    this.captures = ctx.players.map(() => 0);
     this.computeHexLayout();
     this.callouts.show("BUG WARS", "#B8FF3D", { size: 72, life: 1.4 });
     ctx.sfx.countdown();
@@ -158,9 +164,7 @@ class BugWarsGame implements GameInstance {
     const click = this.ctx.input.consumeClick();
     if (!click) return;
 
-    const bx = GAME_WIDTH / 2;
-    const by = GAME_HEIGHT - 36;
-    if (click.x >= bx - 110 && click.x <= bx + 110 && click.y >= by - 30 && click.y <= by + 30) {
+    if (click.x >= PASS_BTN.x - PASS_BTN.hw && click.x <= PASS_BTN.x + PASS_BTN.hw && click.y >= PASS_BTN.y - PASS_BTN.hh && click.y <= PASS_BTN.y + PASS_BTN.hh) {
       this.advanceTurn();
       return;
     }
@@ -246,6 +250,8 @@ class BugWarsGame implements GameInstance {
     if (!this.diceAnim) return;
     const battle = this.diceAnim.battle;
     applyBattle(this.board, battle);
+    this.attacks[battle.attacker] = (this.attacks[battle.attacker] ?? 0) + 1;
+    if (battle.captured) this.captures[battle.attacker] = (this.captures[battle.attacker] ?? 0) + 1;
 
     const center = this.hexCenters[battle.to]!;
     if (battle.captured) {
@@ -603,13 +609,11 @@ class BugWarsGame implements GameInstance {
   }
 
   private drawPassHint(g: CanvasRenderingContext2D): void {
-    const bx = GAME_WIDTH / 2;
-    const by = GAME_HEIGHT - 36;
     const hover = this.ctx.input.hover;
-    const hovered = hover && hover.x >= bx - 110 && hover.x <= bx + 110 && hover.y >= by - 30 && hover.y <= by + 30;
+    const hovered = hover && hover.x >= PASS_BTN.x - PASS_BTN.hw && hover.x <= PASS_BTN.x + PASS_BTN.hw && hover.y >= PASS_BTN.y - PASS_BTN.hh && hover.y <= PASS_BTN.y + PASS_BTN.hh;
 
     g.beginPath();
-    roundRect(g, bx - 110, by - 30, 220, 60, 12);
+    roundRect(g, PASS_BTN.x - PASS_BTN.hw, PASS_BTN.y - PASS_BTN.hh, PASS_BTN.hw * 2, PASS_BTN.hh * 2, 12);
     g.fillStyle = hovered ? "rgba(100,116,139,0.35)" : "rgba(100,116,139,0.15)";
     g.fill();
     g.strokeStyle = "#64748b";
@@ -620,7 +624,7 @@ class BugWarsGame implements GameInstance {
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = hovered ? "#e2e8f0" : "#94a3b8";
-    g.fillText("END TURN · Space", bx, by);
+    g.fillText("END TURN · Space", PASS_BTN.x, PASS_BTN.y);
   }
 
   private drawFloaters(g: CanvasRenderingContext2D): void {
@@ -645,6 +649,18 @@ class BugWarsGame implements GameInstance {
       playerId: player.id,
       score: tilesOwned(this.board, i),
     }));
+  }
+
+  getStats(): GameStat[] {
+    const stats: GameStat[] = [];
+    for (let i = 0; i < this.ctx.players.length; i++) {
+      const id = this.ctx.players[i]!.id;
+      const atk = this.attacks[i] ?? 0;
+      const cap = this.captures[i] ?? 0;
+      if (atk > 0) stats.push({ playerId: id, label: "Attacks", value: String(atk) });
+      if (cap > 0) stats.push({ playerId: id, label: "Captured", value: String(cap) });
+    }
+    return stats;
   }
 
   destroy(): void {}

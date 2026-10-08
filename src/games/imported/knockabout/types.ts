@@ -141,6 +141,7 @@ export interface FallEvent {
   killer: number | null;
   selfKill: boolean;
   lastAlive: boolean;
+  step: number;
 }
 
 export const TUNING = {

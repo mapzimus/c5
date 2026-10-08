@@ -20,7 +20,7 @@ export class Showdown implements Objective {
   readonly name = "SHOWDOWN";
   readonly description = "Last disc standing wins. The arena crumbles each turn.";
   private eliminated: number[] = [];
-  private finishOrder: number[] = [];
+  private finishOrder: { player: number; step: number }[] = [];
 
   onRoundStart(_world: World, _players: MatchPlayer[]): void {
     this.eliminated = [];
@@ -36,7 +36,7 @@ export class Showdown implements Objective {
   onFall(event: FallEvent, players: MatchPlayer[]): void {
     if (event.lastAlive && !this.eliminated.includes(event.disc.owner)) {
       this.eliminated.push(event.disc.owner);
-      this.finishOrder.push(event.disc.owner);
+      this.finishOrder.push({ player: event.disc.owner, step: event.step });
     }
     if (event.killer != null && event.killer !== event.disc.owner) {
       players[event.killer]!.kos++;
@@ -53,24 +53,36 @@ export class Showdown implements Objective {
 
   roundScores(players: MatchPlayer[]): number[] {
     const n = players.length;
-    const scores = new Array<number>(n).fill(0);
-    for (let i = 0; i < this.finishOrder.length; i++) {
-      scores[this.finishOrder[i]!] = i + 1;
+    const scores = new Array<number>(n).fill(n);
+    const eliminated = this.finishOrder.map((f) => f.player);
+
+    let rank = 1;
+    let i = 0;
+    while (i < this.finishOrder.length) {
+      const step = this.finishOrder[i]!.step;
+      let j = i;
+      while (j < this.finishOrder.length && this.finishOrder[j]!.step === step) j++;
+      for (let k = i; k < j; k++) {
+        scores[this.finishOrder[k]!.player] = rank;
+      }
+      rank = j + 1;
+      i = j;
     }
-    for (let i = 0; i < n; i++) {
-      if (!this.finishOrder.includes(i)) scores[i] = n;
+
+    for (let p = 0; p < n; p++) {
+      if (!eliminated.includes(p)) scores[p] = n;
     }
     return scores;
   }
 
   roundWinner(players: MatchPlayer[]): number | null {
     const scores = this.roundScores(players);
-    let best = -1;
     let bestScore = -1;
-    for (let i = 0; i < scores.length; i++) {
-      if (scores[i]! > bestScore) { bestScore = scores[i]!; best = i; }
+    for (const s of scores) {
+      if (s > bestScore) bestScore = s;
     }
-    return best >= 0 ? best : null;
+    const winners = scores.reduce<number[]>((acc, s, idx) => { if (s === bestScore) acc.push(idx); return acc; }, []);
+    return winners.length === 1 ? winners[0]! : null;
   }
 
   shouldShrink(turn: number): boolean {
