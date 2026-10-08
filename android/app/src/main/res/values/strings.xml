@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">C5 Games</string>
+    <string name="title_activity_main">C5 Games</string>
+    <string name="package_name">com.categoryfive.games</string>
+    <string name="custom_url_scheme">com.categoryfive.games</string>
+</resources>

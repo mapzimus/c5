@@ -1,4 +1,4 @@
-import { GAME_HEIGHT, GAME_WIDTH, type MinigameContext, type MinigameDefinition, type MinigameInstance } from "./types";
+import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat } from "./types";
 import { drawTimerBar } from "./draw";
 import type { InputManager } from "./input";
 import type { Sfx } from "./audio";
@@ -14,9 +14,9 @@ export class Engine {
   phase: EnginePhase = "countdown";
   remaining = 0;
   elapsed = 0;
-  private instance: MinigameInstance | null = null;
-  private definition: MinigameDefinition | null = null;
-  private context: MinigameContext | null = null;
+  private instance: GameInstance | null = null;
+  private definition: GameDefinition | null = null;
+  private context: GameContext | null = null;
   private fill = false;
   private logical = { width: GAME_WIDTH, height: GAME_HEIGHT };
   private raf = 0;
@@ -25,7 +25,7 @@ export class Engine {
   private goTimer = 0;
   private finishDelay = 0;
   private pendingScores: { playerId: string; score: number }[] | null = null;
-  private onDone: ((scores: { playerId: string; score: number }[]) => void) | null = null;
+  private onDone: ((scores: { playerId: string; score: number }[], stats: GameStat[]) => void) | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -62,9 +62,9 @@ export class Engine {
   };
 
   start(
-    definition: MinigameDefinition,
+    definition: GameDefinition,
     players: Player[],
-    onDone: (scores: { playerId: string; score: number }[]) => void,
+    onDone: (scores: { playerId: string; score: number }[], stats: GameStat[]) => void,
   ): void {
     this.stop();
     this.definition = definition;
@@ -75,7 +75,7 @@ export class Engine {
     this.remaining = definition.durationMs / 1000;
     this.fill = !!definition.fillsScreen;
     this.fit();
-    const context: MinigameContext = {
+    const context: GameContext = {
       canvas: this.canvas,
       width: this.logical.width,
       height: this.logical.height,
@@ -130,8 +130,10 @@ export class Engine {
       this.finishDelay -= dt;
       if (this.finishDelay <= 0) {
         const scores = this.pendingScores;
+        const stats = this.pendingStats;
         this.pendingScores = null;
-        this.onDone?.(scores);
+        this.pendingStats = [];
+        this.onDone?.(scores, stats);
       }
     }
 
@@ -182,10 +184,13 @@ export class Engine {
     }
   }
 
+  private pendingStats: GameStat[] = [];
+
   private finish(): void {
     if (this.phase === "finished") return;
     this.phase = "finished";
     this.pendingScores = this.instance?.getScores() ?? [];
+    this.pendingStats = this.instance?.getStats?.() ?? [];
     this.finishDelay = 1.4;
     this.sfx.win();
   }

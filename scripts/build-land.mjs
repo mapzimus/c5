@@ -16,7 +16,7 @@ const MIN_POINTS = 5;
 const MIN_SPAN_DEG = 1.6;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const out = join(here, "..", "src", "minigames", "imported", "park-your-pirate", "land.ts");
+const out = join(here, "..", "src", "games", "imported", "park-your-pirate", "land.ts");
 
 const source = process.argv[2];
 const json = source ? JSON.parse(readFileSync(source, "utf8")) : await (await fetch(URL)).json();

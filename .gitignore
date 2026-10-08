@@ -6,3 +6,5 @@ coverage
 .vite
 __pycache__
 *.pyc
+.android-tools/
+artifacts/

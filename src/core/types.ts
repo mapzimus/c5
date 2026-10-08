@@ -16,7 +16,7 @@ export interface RankedResult {
   won: boolean;
 }
 
-export interface MinigameContext {
+export interface GameContext {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
@@ -28,15 +28,22 @@ export interface MinigameContext {
   minTap: number;
 }
 
-export interface MinigameInstance {
+export interface GameStat {
+  playerId: string;
+  label: string;
+  value: string;
+}
+
+export interface GameInstance {
   update(dt: number): void;
   render(ctx: CanvasRenderingContext2D): void;
   isFinished(): boolean;
   getScores(): { playerId: string; score: number }[];
+  getStats?(): GameStat[];
   destroy(): void;
 }
 
-export interface MinigameDefinition {
+export interface GameDefinition {
   id: string;
   name: string;
   tagline: string;
@@ -45,7 +52,7 @@ export interface MinigameDefinition {
   controls: string;
   /** Match the phone viewport instead of letterboxing a 16:9 board. */
   fillsScreen?: boolean;
-  create(ctx: MinigameContext): MinigameInstance;
+  create(ctx: GameContext): GameInstance;
 }
 
 export interface SessionStanding {

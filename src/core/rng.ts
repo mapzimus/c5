@@ -1,4 +1,4 @@
-/** Deterministic mulberry32 RNG so minigames can replay a seed later. */
+/** Deterministic mulberry32 RNG so games can replay a seed later. */
 export class Rng {
   private state: number;
 

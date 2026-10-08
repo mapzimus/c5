@@ -1,24 +1,24 @@
 import { Sfx } from "./core/audio";
 import { Engine } from "./core/engine";
 import { InputManager } from "./core/input";
-import { MinigameRegistry } from "./core/registry";
+import { GameRegistry } from "./core/registry";
 import { Session } from "./core/session";
-import { DEFAULT_NAMES, PLAYER_COLORS, type MinigameDefinition, type Player } from "./core/types";
+import { DEFAULT_NAMES, PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
 import { Sky } from "./fx/sky";
-import { createRegistry } from "./minigames";
+import { createRegistry } from "./games";
 import { clear, el } from "./ui/dom";
 
 type ScreenName = "menu" | "play" | "results";
 
 export class App {
   private readonly root: HTMLElement;
-  private readonly registry: MinigameRegistry;
+  private readonly registry: GameRegistry;
   private readonly input = new InputManager();
   private readonly sfx = new Sfx();
   private readonly screens = new Map<ScreenName, HTMLElement>();
   private session: Session;
   private players: Player[];
-  private selected: MinigameDefinition | null = null;
+  private selected: GameDefinition | null = null;
   private engine: Engine | null = null;
   private sky: Sky | null = null;
 
@@ -67,7 +67,7 @@ export class App {
     clear(screen);
     screen.append(
       el("p", { class: "brand", text: "Category Five" }),
-      el("h1", { class: "display", text: "Minigames" }),
+      el("h1", { class: "display", text: "Games" }),
       el("p", { class: "lede", text: this.pickPrompt() ?? "Pick a game. Win it and you pick the next one." }),
     );
 
@@ -119,7 +119,7 @@ export class App {
         el("div", { class: "card empty-card" },
           el("span", { class: "tag", text: "Soon" }),
           el("h3", { text: "No games yet" }),
-          el("p", { text: "Register a minigame and it will land here." }),
+          el("p", { text: "Register a game and it will land here." }),
         ),
       );
     }
@@ -183,7 +183,7 @@ export class App {
     return row;
   }
 
-  private launch(game: MinigameDefinition): void {
+  private launch(game: GameDefinition): void {
     this.selected = game;
     const screen = this.screens.get("play")!;
     clear(screen);
@@ -203,7 +203,7 @@ export class App {
     this.show("play");
   }
 
-  private startPlay(game: MinigameDefinition): void {
+  private startPlay(game: GameDefinition): void {
     const screen = this.screens.get("play")!;
     clear(screen);
     const bar = el("div", { class: "hud-bar" });
@@ -226,11 +226,11 @@ export class App {
     }
     this.engine?.destroy();
     this.engine = new Engine(canvas, this.input, this.sfx);
-    this.engine.start(game, this.players, (scores) => this.finishGame(scores));
+    this.engine.start(game, this.players, (scores, stats) => this.finishGame(scores, stats));
     requestAnimationFrame(() => this.engine?.fit());
   }
 
-  private finishGame(scores: { playerId: string; score: number }[]): void {
+  private finishGame(scores: { playerId: string; score: number }[], stats: GameStat[] = []): void {
     const ranked = this.session.applyResults(scores);
     const screen = this.screens.get("results")!;
     clear(screen);
@@ -245,6 +245,11 @@ export class App {
         el("span", { text: `${result.score}` }),
         el("span", { class: "hint", text: result.won ? "+1 pt" : "" }),
       );
+      const playerStats = stats.filter((s) => s.playerId === result.playerId);
+      if (playerStats.length > 0) {
+        const statLine = playerStats.map((s) => `${s.label}: ${s.value}`).join("  ·  ");
+        row.append(el("span", { class: "stat-line", text: statLine }));
+      }
       list.append(row);
     }
     const picker = this.session.picker();

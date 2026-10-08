@@ -1,9 +1,9 @@
 /**
- * Shared "juice" for minigames: screen shake, particle bursts, hit-stop and
+ * Shared "juice" for games: screen shake, particle bursts, hit-stop and
  * per-game personal bests. Everything here is DOM-free except bests (localStorage,
  * wrapped so it never throws).
  *
- * Typical use inside a MinigameInstance:
+ * Typical use inside a GameInstance:
  *   update(dt) { dt = this.juice.update(dt); ...step the game with dt... }
  *   render(g)  { this.juice.begin(g); ...draw world...; this.juice.end(g); ...draw HUD... }
  */
@@ -173,19 +173,21 @@ export class Callouts {
 }
 
 /** Per-game personal best, stored in localStorage under `c5-best-<gameId>`. Never throws. */
-export function loadBest(gameId: string): number {
+export function loadBest(gameId: string, version?: string): number {
   try {
-    return Number(localStorage.getItem(`c5-best-${gameId}`)) || 0;
+    const key = version ? `c5-best-${gameId}-${version}` : `c5-best-${gameId}`;
+    return Number(localStorage.getItem(key)) || 0;
   } catch {
     return 0;
   }
 }
 
 /** Save if higher. Returns true when this is a new best. */
-export function saveBest(gameId: string, score: number): boolean {
-  if (score <= loadBest(gameId)) return false;
+export function saveBest(gameId: string, score: number, version?: string): boolean {
+  if (score <= loadBest(gameId, version)) return false;
   try {
-    localStorage.setItem(`c5-best-${gameId}`, String(score));
+    const key = version ? `c5-best-${gameId}-${version}` : `c5-best-${gameId}`;
+    localStorage.setItem(key, String(score));
   } catch {
     /* storage is optional */
   }

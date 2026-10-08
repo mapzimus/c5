@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "public" / "crests"
-TS_OUT = ROOT / "src" / "minigames" / "crests.ts"
+TS_OUT = ROOT / "src" / "games" / "crests.ts"
 GEOJSON = Path("/tmp/clubs.geojson")
 GEOJSON_URL = "https://raw.githubusercontent.com/mapzimus/lab/main/src/lab/world-xi/data/clubs.geojson"
 UA = "C5Pairs/0.2 (https://github.com/mapzimus/c5; personal matching game)"
