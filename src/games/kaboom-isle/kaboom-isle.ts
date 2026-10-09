@@ -1,7 +1,13 @@
 import { PLAYER_BINDS } from "../../core/input";
 import type { GameContext, GameDefinition, GameInstance, GameStat } from "../../core/types";
 import { Callouts, Juice } from "../../fx/juice";
-import { FIGHTER_R, TILE, WEAPONS, World, rollWeapon, type Blast, type Weapon } from "./world";
+import { FIGHTER_R, TILE, WEAPONS, World, rollWeapon, type Blast, type CrateKind, type Weapon } from "./world";
+
+const CRATE_LABEL: Record<CrateKind, { text: string; color: string }> = {
+  medkit: { text: "+35 HP", color: "#B8FF3D" },
+  double: { text: "DOUBLE DAMAGE", color: "#FF3D7A" },
+  shield: { text: "SHIELD", color: "#3EE0FF" },
+};
 
 type Phase = "roulette" | "aim" | "power" | "flight" | "between" | "over";
 
@@ -60,9 +66,10 @@ export class KaboomIsle implements GameInstance {
       next = (next + 1) % n;
       if (this.world.fighters[next]!.alive) break;
     }
-    // Wrapped round to the first seat: a new round.
     this.current = next;
     this.turn++;
+    // A supply crate parachutes in most rounds.
+    if (this.turn % n === 1 && this.world.crates.length < 3 && this.ctx.rng.next() < 0.75) this.world.spawnCrate();
     if (this.turn > SUDDEN_DEATH_ROUNDS * n) {
       if (!this.suddenDeath) this.callouts.show("SUDDEN DEATH", "#FF5A1F", { size: 72 });
       this.suddenDeath = true;
@@ -132,6 +139,20 @@ export class KaboomIsle implements GameInstance {
     const before = this.world.fighters.map((f) => f.alive);
     const blasts = this.world.step(dt, this.turn);
     for (const b of blasts) this.onBlast(b);
+    for (const e of this.world.events.splice(0)) {
+      if (e.type === "crate") {
+        const label = CRATE_LABEL[e.kind];
+        this.floaters.push({ text: label.text, x: e.x, y: e.y - 20, life: 1.6, color: label.color });
+        this.juice.burst(e.x, e.y, [label.color, "#F4F7FB"], { count: 20, speed: 240, size: 5 });
+        this.ctx.sfx.collect();
+      } else if (e.type === "teleport") {
+        this.juice.burst(e.x, e.y, ["#22d3ee", "#F4F7FB"], { count: 24, speed: 260, size: 5, gravity: 0 });
+        this.ctx.sfx.go();
+      } else {
+        const f = this.world.fighters[e.index]!;
+        this.floaters.push({ text: "BLOCKED", x: f.x, y: f.y - 50, life: 1.1, color: "#3EE0FF" });
+      }
+    }
     this.world.fighters.forEach((f, i) => {
       if (before[i] && !f.alive) this.onKo(i);
     });
@@ -263,6 +284,9 @@ export class KaboomIsle implements GameInstance {
     this.juice.begin(g);
     this.drawTerrain(g);
     this.drawLava(g);
+    this.drawGhost(g);
+    this.drawCrates(g);
+    this.drawVortices(g);
     this.drawAim(g);
     for (const f of this.world.fighters) this.drawFighter(g, f.index);
     this.drawShots(g);
@@ -357,7 +381,24 @@ export class KaboomIsle implements GameInstance {
     g.fillStyle = "rgba(7,11,20,0.7)";
     g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, bw, 6);
     g.fillStyle = f.hp > 50 ? "#B8FF3D" : f.hp > 25 ? "#FFB020" : "#FF3D7A";
-    g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * Math.max(0, f.hp)) / 100, 6);
+    g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * Math.min(100, Math.max(0, f.hp))) / 100, 6);
+    if (f.hp > 100) {
+      g.fillStyle = "#3EE0FF";
+      g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * (f.hp - 100)) / 100, 6);
+    }
+    if (f.shield) {
+      g.strokeStyle = "rgba(62,224,255,0.7)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(f.x, f.y, FIGHTER_R + 5, 0, Math.PI * 2);
+      g.stroke();
+    }
+    if (f.doubleDamage) {
+      g.fillStyle = "#FF3D7A";
+      g.font = "700 12px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.fillText("2x", f.x + bw / 2 + 10, f.y - FIGHTER_R - 8);
+    }
     g.font = "600 14px Outfit, sans-serif";
     g.textAlign = "center";
     g.fillStyle = "#F4F7FB";
@@ -371,6 +412,81 @@ export class KaboomIsle implements GameInstance {
       g.lineTo(f.x, f.y - FIGHTER_R - 38 + bob);
       g.closePath();
       g.fill();
+    }
+  }
+
+  private drawGhost(g: CanvasRenderingContext2D): void {
+    if (this.phase !== "aim" && this.phase !== "power") return;
+    const path = this.world.ghosts[this.current];
+    if (!path || path.length < 2) return;
+    g.save();
+    g.setLineDash([6, 8]);
+    g.strokeStyle = "rgba(244,247,251,0.35)";
+    g.lineWidth = 2;
+    g.beginPath();
+    path.forEach((pt, i) => (i === 0 ? g.moveTo(pt.x, pt.y) : g.lineTo(pt.x, pt.y)));
+    g.stroke();
+    const end = path[path.length - 1]!;
+    g.setLineDash([]);
+    g.strokeStyle = "rgba(244,247,251,0.5)";
+    g.beginPath();
+    g.moveTo(end.x - 6, end.y - 6);
+    g.lineTo(end.x + 6, end.y + 6);
+    g.moveTo(end.x + 6, end.y - 6);
+    g.lineTo(end.x - 6, end.y + 6);
+    g.stroke();
+    g.restore();
+  }
+
+  private drawCrates(g: CanvasRenderingContext2D): void {
+    for (const c of this.world.crates) {
+      const label = CRATE_LABEL[c.kind];
+      if (!c.landed) {
+        // Parachute
+        g.strokeStyle = "rgba(244,247,251,0.6)";
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(c.x - 10, c.y - 8);
+        g.lineTo(c.x - 18, c.y - 34);
+        g.moveTo(c.x + 10, c.y - 8);
+        g.lineTo(c.x + 18, c.y - 34);
+        g.stroke();
+        g.fillStyle = "#F4F7FB";
+        g.beginPath();
+        g.arc(c.x, c.y - 34, 20, Math.PI, 0);
+        g.fill();
+      }
+      g.fillStyle = "#8b5a2b";
+      g.fillRect(c.x - 11, c.y - 10, 22, 22);
+      g.strokeStyle = label.color;
+      g.lineWidth = 3;
+      g.strokeRect(c.x - 11, c.y - 10, 22, 22);
+      g.fillStyle = label.color;
+      g.font = "700 14px Outfit, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(c.kind === "medkit" ? "+" : c.kind === "double" ? "2x" : "◆", c.x, c.y + 1);
+      g.textBaseline = "alphabetic";
+    }
+  }
+
+  private drawVortices(g: CanvasRenderingContext2D): void {
+    for (const v of this.world.vortices) {
+      for (let i = 0; i < 4; i++) {
+        const r = ((this.clock * 120 + i * 40) % 160) + 8;
+        g.strokeStyle = `rgba(168,85,247,${0.6 * (1 - r / 170)})`;
+        g.lineWidth = 3;
+        g.beginPath();
+        g.arc(v.x, v.y, 168 - r, 0, Math.PI * 2);
+        g.stroke();
+      }
+      g.fillStyle = "#070b14";
+      g.beginPath();
+      g.arc(v.x, v.y, 14 + Math.sin(this.clock * 20) * 2, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = "#a855f7";
+      g.lineWidth = 2;
+      g.stroke();
     }
   }
 
@@ -417,6 +533,22 @@ export class KaboomIsle implements GameInstance {
       s.trail.forEach((pt, i) => (i === 0 ? g.moveTo(pt.x, pt.y) : g.lineTo(pt.x, pt.y)));
       g.stroke();
       const r = s.mini ? 4 : s.weapon.id === "nuke" ? 10 : 6;
+      if (s.weapon.id === "drill") {
+        const a = Math.atan2(s.vy, s.vx);
+        g.save();
+        g.translate(s.x, s.y);
+        g.rotate(a);
+        g.fillStyle = s.drilling > 0 ? "#FFB020" : "#94a3b8";
+        g.beginPath();
+        g.moveTo(12, 0);
+        g.lineTo(-8, -6);
+        g.lineTo(-8, 6);
+        g.closePath();
+        g.fill();
+        g.restore();
+        if (s.drilling > 0 && Math.random() < 0.5) this.juice.burst(s.x, s.y, ["#8b5a2b", "#5b3a22"], { count: 2, speed: 160, size: 4 });
+        continue;
+      }
       g.fillStyle = s.weapon.id === "bomb" ? "#1f2937" : s.weapon.color;
       g.beginPath();
       g.arc(s.x, s.y, r, 0, Math.PI * 2);
@@ -532,7 +664,7 @@ export const kaboomIsle: GameDefinition = {
   name: "Kaboom Isle",
   tagline: "Tap-timed artillery. Lucky weapons. Lava below.",
   description:
-    "Blobs on crumbling floating islands over lava. Each turn a slot spins your weapon: bomb, bouncer, cluster, triple shot, boxing glove, the jackpot Mega Nuke, or a useless rubber chicken. Tap to stop the swinging aim needle, tap again to stop the power meter. Wind changes every turn. Blasts carve the ground and fling fighters; 0 HP or a dip in the lava and you're out. After six rounds the lava starts rising. Last blob standing wins.",
+    "Blobs on crumbling floating islands over lava. Each turn a slot spins your weapon: bomb, bouncer, cluster, triple shot, airstrike, drill, black hole, teleporter, boxing glove, the jackpot Mega Nuke, or a useless rubber chicken. Supply crates parachute in: grab one by touching it or blasting it for HP, double damage or a shield. A ghost of your last shot shows while you aim. Tap to stop the swinging aim needle, tap again to stop the power meter. Wind changes every turn. Blasts carve the ground and fling fighters; 0 HP or a dip in the lava and you're out. After six rounds the lava starts rising. Last blob standing wins.",
   durationMs: 0,
   controls: "Tap to lock aim · tap again to fire (or any action key)",
   create: (ctx) => new KaboomIsle(ctx),

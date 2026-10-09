@@ -28,4 +28,52 @@ describe("Kaboom Isle world", () => {
     for (let i = 0; i < 2000; i++) seen.add(rollWeapon(rng).id);
     expect(seen.size).toBe(WEAPONS.length);
   });
+
+  it("teleporter moves the shooter to where it lands", () => {
+    const world = new World(1280, 720, new Rng(5), 2);
+    const tp = WEAPONS.find((w) => w.id === "teleport")!;
+    const me = world.fighters[0]!;
+    const startX = me.x;
+    world.fire(0, me.x < 640 ? 0.9 : Math.PI - 0.9, 0.45, tp);
+    for (let i = 0; i < 300 && world.shots.length > 0; i++) world.step(1 / 60, 1);
+    if (me.alive) expect(Math.abs(me.x - startX)).toBeGreaterThan(30);
+    expect(world.events.some((e) => e.type === "teleport") || !me.alive || world.ghosts[0]).toBeTruthy();
+  });
+
+  it("black hole pulls fighters in, then pops", () => {
+    const world = new World(1280, 720, new Rng(9), 2);
+    const f = world.fighters[1]!;
+    world.vortices.push({ x: f.x + 120, y: f.y - 40, life: 1.6, owner: 0, dmgMul: 1 });
+    const x0 = f.x;
+    let popped = false;
+    let maxX = x0;
+    for (let i = 0; i < 120; i++) {
+      popped ||= world.step(1 / 60, 1).length > 0;
+      if (!popped) maxX = Math.max(maxX, f.x);
+    }
+    expect(maxX).toBeGreaterThan(x0 + 20);
+    expect(popped).toBe(true);
+    expect(world.vortices.length).toBe(0);
+  });
+
+  it("crates land and are grabbed by touch; double damage doubles the next shot", () => {
+    const world = new World(1280, 720, new Rng(4), 2);
+    const f = world.fighters[0]!;
+    world.crates.push({ x: f.x, y: f.y - 60, kind: "double", landed: false, dead: false });
+    for (let i = 0; i < 120; i++) world.step(1 / 60, 1);
+    expect(world.crates.length).toBe(0);
+    expect(f.doubleDamage).toBe(true);
+    world.fire(0, Math.PI / 2, 0.3, WEAPONS[0]!);
+    expect(world.shots[0]!.dmgMul).toBe(2);
+    expect(f.doubleDamage).toBe(false);
+  });
+
+  it("shield halves one hit", () => {
+    const world = new World(1280, 720, new Rng(3), 2);
+    const f = world.fighters[1]!;
+    f.shield = true;
+    world.blast(f.x, f.y, 52, 40, 0, WEAPONS[0]!, 0, 1);
+    expect(f.hp).toBe(80);
+    expect(f.shield).toBe(false);
+  });
 });
