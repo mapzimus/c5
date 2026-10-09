@@ -161,8 +161,8 @@ export function isLastStand(board: Board, seat: number): boolean {
   return owned > 0 && owned <= LAST_STAND_TILES;
 }
 
-export function isFinalRound(round: number): boolean {
-  return round === MAX_ROUNDS;
+export function isFinalRound(round: number, lastRound = MAX_ROUNDS): boolean {
+  return round === lastRound;
 }
 
 export interface AttackContext {
@@ -171,6 +171,8 @@ export interface AttackContext {
   /** Pepper dice the attacker is carrying. */
   pepper: number;
   round: number;
+  /** Final round number for this table size (defaults to MAX_ROUNDS). */
+  lastRound?: number;
 }
 
 export interface BonusBreakdown {
@@ -192,7 +194,7 @@ export function attackBonuses(board: Board, from: number, to: number, context: A
     out.attackDice += context.pepper;
     out.labels.push(`+${context.pepper} HOT PEPPER`);
   }
-  if (isFinalRound(context.round)) {
+  if (isFinalRound(context.round, context.lastRound)) {
     out.attackDice += 1;
     out.labels.push("+1 FRENZY");
   }
@@ -394,7 +396,7 @@ export function personaOptions(board: Board, seat: number, playerCount: number, 
     noise: persona.noise,
     bonusDice: (to) => {
       const target = board.tiles[to]!;
-      let dice = context.pepper + (isFinalRound(context.round) ? 1 : 0);
+      let dice = context.pepper + (isFinalRound(context.round, context.lastRound) ? 1 : 0);
       if (target.owner === context.grudge) dice += 1;
       if (isLastStand(board, target.owner)) dice -= 1;
       return dice;

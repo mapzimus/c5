@@ -15,6 +15,11 @@ export const START_BUGS_PER_TILE = 3;
 /** Reinforcements that don't fit on the board wait in the nest, up to this many. */
 export const STASH_MAX = 12;
 export const MAX_ROUNDS = 8;
+
+/** Rounds per game: big tables get fewer so a 4-seat game stays a few minutes, not six. */
+export function maxRounds(playerCount: number): number {
+  return playerCount >= 4 ? 6 : playerCount === 3 ? 7 : MAX_ROUNDS;
+}
 export const NO_OWNER = -1;
 
 export type Species = "ants" | "bees" | "beetles" | "spiders";
@@ -399,7 +404,7 @@ export function botPickAttack(board: Board, seat: number, rng: Rng, options: Bot
 /** Game over when one seat holds the whole garden or the round cap has passed. */
 export function gameOver(board: Board, playerCount: number, round: number): "conquered" | "rounds" | null {
   if (aliveSeats(board, playerCount).length <= 1) return "conquered";
-  if (round > MAX_ROUNDS) return "rounds";
+  if (round > maxRounds(playerCount)) return "rounds";
   return null;
 }
 

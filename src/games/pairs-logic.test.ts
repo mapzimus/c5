@@ -78,6 +78,11 @@ describe("combo scoring", () => {
     expect(pointsForMatch(3, 8)).toBe(3);
   });
 
+  it("caps combo points so one streak can't decide the game", () => {
+    expect(pointsForMatch(7, 4)).toBe(3);
+    expect(pointsForMatch(7, 0)).toBe(3 + CLOSER_BONUS);
+  });
+
   it("adds a closer bonus on the last pair", () => {
     expect(pointsForMatch(1, 0)).toBe(1 + CLOSER_BONUS);
     expect(pointsForMatch(3, 0)).toBe(3 + CLOSER_BONUS);
@@ -174,13 +179,14 @@ describe("fever and golden scoring", () => {
   it("multiplies combo points by fever", () => {
     expect(scoreMatch(1, 10, false)).toBe(1);
     expect(scoreMatch(3, 8, false)).toBe(3 * 2);
-    expect(scoreMatch(5, 6, false)).toBe(5 * 3);
+    expect(scoreMatch(5, 6, false)).toBe(3 * 3);
+    expect(scoreMatch(9, 2, false)).toBe(3 * 3);
     expect(scoreMatch(3, 0, false)).toBe((3 + CLOSER_BONUS) * 2);
   });
 
   it("doubles the golden pair on top of fever", () => {
     expect(scoreMatch(1, 10, true)).toBe(GOLDEN_FACTOR);
-    expect(scoreMatch(5, 6, true)).toBe(5 * 3 * GOLDEN_FACTOR);
+    expect(scoreMatch(5, 6, true)).toBe(3 * 3 * GOLDEN_FACTOR);
   });
 
   it("finds the best human score", () => {

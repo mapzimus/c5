@@ -171,7 +171,7 @@ class ParkYourPirateGame implements GameInstance {
   private readonly playerStates: Map<string, PlayerState> = new Map();
   private readonly brains: Map<string, BotBrain> = new Map();
   private readonly juice: Juice;
-  private readonly callouts: Callouts;
+  private readonly callouts: CalloutLanes;
   private popups: ScorePopup[] = [];
   private readonly stars: Star[] = [];
   private camLat = 20;
@@ -209,7 +209,7 @@ class ParkYourPirateGame implements GameInstance {
     this.lanes = buildLanes();
     this.ships = spawnFleet(ctx.rng, this.lanes, FLEET_SIZE);
     this.juice = new Juice(() => ctx.rng.next());
-    this.callouts = new Callouts();
+    this.callouts = new CalloutLanes(GAME_HEIGHT);
 
     for (let i = 0; i < 3; i++) {
       this.ships.push(...spawnConvoyPack(ctx.rng, this.lanes));
@@ -467,8 +467,11 @@ class ParkYourPirateGame implements GameInstance {
     if (this.event?.kind === "cursed-gold") {
       this.callouts.show(`${name} BEATS THE CURSE +${points}`, "#C084FC", { size: 40, life: 0.9 });
       this.addLog(bark(this.ctx.rng, "curseWin", name), "#C084FC");
-    } else {
+    } else if (player?.kind === "human" || points >= 1000) {
       this.callouts.show(`${perfect ? "PERFECT RAID" : "RAID"} +${points}`, color, { size: 44, life: 0.8 });
+    } else if (p.z > 0) {
+      // Routine bot raids pop at their ship instead of shouting over the whole table.
+      this.popups.push({ x: p.x, y: p.y - 40, text: `${perfect ? "PERFECT " : ""}RAID +${points}`, color, life: 1, size: 20 });
     }
     if (perfect && this.ctx.rng.next() < 0.35) this.say(playerId, "raid");
   }
@@ -904,7 +907,8 @@ class ParkYourPirateGame implements GameInstance {
     this.drawOverlay(g);
     this.drawHUD(g);
     this.drawPopups(g);
-    this.callouts.draw(g, GAME_WIDTH, GAME_HEIGHT);
+    // Centre banners over the globe, not the whole canvas, so they stay clear of the sidebar.
+    this.callouts.draw(g, GLOBE_CX * 2, GAME_HEIGHT);
   }
 
   private drawBackground(g: CanvasRenderingContext2D): void {
@@ -1002,31 +1006,32 @@ class ParkYourPirateGame implements GameInstance {
       }
       if (visCount === 0) continue;
 
+      // Walk the ring from a visible vertex. Where it dips behind the globe, follow the
+      // horizon (the limb circle) instead of cutting a straight chord across the map.
+      const n = pts.length;
+      const first = pts.findIndex((p) => p.z >= 0);
+      const limb = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number => {
+        const t = a.z === b.z ? 0 : a.z / (a.z - b.z);
+        return Math.atan2(a.y + (b.y - a.y) * t - globe.cy, a.x + (b.x - a.x) * t - globe.cx);
+      };
       g.beginPath();
-      let started = false;
-      for (let i = 0; i < pts.length; i++) {
-        const curr = pts[i]!;
-        const prev = pts[(i + pts.length - 1) % pts.length]!;
+      g.moveTo(pts[first]!.x, pts[first]!.y);
+      let exitAngle: number | null = null;
+      for (let k = 1; k <= n; k++) {
+        const prev = pts[(first + k - 1) % n]!;
+        const curr = pts[(first + k) % n]!;
         if (curr.z >= 0) {
-          if (!started || prev.z < 0) {
-            if (prev.z < 0 && curr.z >= 0) {
-              // Interpolate from behind-globe to visible at the z=0 horizon
-              const dz = curr.z - prev.z;
-              const t = dz > 0 ? -prev.z / dz : 0;
-              g.moveTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
-              g.lineTo(curr.x, curr.y);
-            } else {
-              g.moveTo(curr.x, curr.y);
-            }
-            started = true;
-          } else {
-            g.lineTo(curr.x, curr.y);
+          if (exitAngle !== null) {
+            const enter = limb(prev, curr);
+            let sweep = enter - exitAngle;
+            while (sweep > Math.PI) sweep -= Math.PI * 2;
+            while (sweep < -Math.PI) sweep += Math.PI * 2;
+            g.arc(globe.cx, globe.cy, globe.radius, exitAngle, exitAngle + sweep, sweep < 0);
+            exitAngle = null;
           }
-        } else if (started && prev.z >= 0) {
-          // Interpolate from visible to behind-globe at the z=0 horizon
-          const dz = prev.z - curr.z;
-          const t = dz > 0 ? prev.z / dz : 0;
-          g.lineTo(prev.x + (curr.x - prev.x) * t, prev.y + (curr.y - prev.y) * t);
+          g.lineTo(curr.x, curr.y);
+        } else if (exitAngle === null) {
+          exitAngle = limb(prev, curr);
         }
       }
       g.closePath();
@@ -1707,5 +1712,41 @@ class ParkYourPirateGame implements GameInstance {
     this.ctx.canvas.removeEventListener("wheel", this.wheelHandler);
     this.ctx.canvas.removeEventListener("touchstart", this.touchStartHandler);
     this.ctx.canvas.removeEventListener("touchmove", this.touchMoveHandler);
+  }
+}
+
+/**
+ * Callouts that dodge each other: when a new banner would land on top of one still on
+ * screen (e.g. LAST CALL vs a raid score), it slides into the next free lane instead.
+ */
+class CalloutLanes {
+  private readonly inner = new Callouts();
+  private live: { text: string; y: number; size: number; life: number }[] = [];
+
+  constructor(private readonly height: number) {}
+
+  show(text: string, color = "#F4F7FB", options: { life?: number; y?: number; size?: number } = {}): void {
+    const life = options.life ?? 1.2;
+    const size = options.size ?? 64;
+    let y = options.y ?? 0.32;
+    const gap = (other: { size: number }): number => ((size + other.size) / 2) * 0.95 / this.height;
+    for (let tries = 0; tries < 6; tries++) {
+      const hit = this.live.find((item) => Math.abs(item.y - y) < gap(item));
+      if (!hit) break;
+      const down = hit.y + gap(hit);
+      y = down < 0.9 ? down : hit.y - gap(hit);
+    }
+    this.live.push({ text, y, size, life });
+    this.inner.show(text, color, { life, size, y });
+  }
+
+  update(dt: number): void {
+    for (const item of this.live) item.life -= dt;
+    this.live = this.live.filter((item) => item.life > 0.15);
+    this.inner.update(dt);
+  }
+
+  draw(g: CanvasRenderingContext2D, width: number, height: number): void {
+    this.inner.draw(g, width, height);
   }
 }

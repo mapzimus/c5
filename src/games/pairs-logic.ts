@@ -59,8 +59,12 @@ export const BOT_MEMORY_LIMIT = 8;
 export const CLOSER_BONUS = 2;
 
 /** Consecutive matches in one turn are worth 1, then 2, then 3… Last pair adds a closer bonus. */
+/** Combo points stop growing here; fever multipliers carry the hype from then on. */
+export const COMBO_CAP = 3;
+
 export function pointsForMatch(streak: number, remainingPairsAfter: number): number {
-  const combo = Math.max(1, streak);
+  // Capped so one hot streak (combo x fever x frenzy) can't run away with the whole game.
+  const combo = Math.min(COMBO_CAP, Math.max(1, streak));
   return combo + (remainingPairsAfter === 0 ? CLOSER_BONUS : 0);
 }
 
@@ -402,9 +406,9 @@ export const BOT_PERSONAS: readonly BotPersona[] = [
   {
     id: "shark",
     label: "SHARK",
-    memory: 12,
+    memory: 10,
     think: 0.32,
-    yolo: 0,
+    yolo: 0.06,
     match: ["Smells like points.", "Too easy.", "Chomp.", "I never forget a flag."],
     miss: ["...that was a test.", "Calculated. Mostly.", "The ocean is vast."],
   },

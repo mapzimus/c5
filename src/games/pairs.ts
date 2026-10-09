@@ -1024,26 +1024,41 @@ class PairsGame implements GameInstance {
     const t = this.quip.life / this.quip.max;
     const last = this.layout.slots[this.layout.slots.length - 1]!;
     const first = this.layout.slots[0]!;
-    const cx = (first.x + last.x + this.layout.cardW) / 2;
-    const cy = Math.min(this.ctx.height - 26, last.y + this.layout.cardH - 6);
-    const size = this.layout.narrow ? 20 : 24;
+    const size = this.layout.narrow ? 22 : 24;
+    const boardBottom = last.y + this.layout.cardH;
+    const below = this.ctx.height - boardBottom;
+    let cx = (first.x + last.x + this.layout.cardW) / 2;
+    let cy = Math.min(this.ctx.height - 26, boardBottom - 6);
+    let maxW = this.ctx.width - 24;
+    if (below >= size * 2 + 16) {
+      // Tall phones: use the empty strip under the board so no card gets covered.
+      cy = boardBottom + Math.min(below / 2, size * 1.5 + 14);
+    } else if (first.x >= 240) {
+      // Wide screens: park the announcer in the left margin beside the board.
+      cx = first.x / 2;
+      cy = (first.y + boardBottom) / 2;
+      maxW = first.x - 32;
+    }
     g.save();
     g.globalAlpha = Math.min(1, t * 4, (1 - t) * 12);
     g.font = `700 ${size}px Outfit, sans-serif`;
     g.textAlign = "center";
     g.textBaseline = "middle";
-    const width = Math.min(this.ctx.width - 24, g.measureText(this.quip.text).width + 36);
+    const lines = wrapLines(g, this.quip.text, maxW - 36);
+    const lineH = size * 1.2;
+    const width = Math.min(maxW, Math.max(...lines.map((line) => g.measureText(line).width)) + 36);
+    const height = size * 0.7 + lineH * lines.length;
     const pop = 1 + Math.max(0, (t - 0.9) * 2.5);
     g.translate(cx, cy);
     g.scale(pop, pop);
-    roundRect(g, -width / 2, -size * 0.95, width, size * 1.9, size * 0.95);
+    roundRect(g, -width / 2, -height / 2, width, height, Math.min(size * 0.95, height / 2));
     g.fillStyle = "rgba(7, 11, 20, 0.88)";
     g.fill();
     g.strokeStyle = this.quip.color;
     g.lineWidth = 2;
     g.stroke();
     g.fillStyle = this.quip.color;
-    g.fillText(this.quip.text, 0, 1, width - 20);
+    lines.forEach((line, i) => g.fillText(line, 0, 1 + (i - (lines.length - 1) / 2) * lineH, width - 20));
     g.restore();
   }
 
@@ -1297,3 +1312,20 @@ export const pairs: GameDefinition = {
   fillsScreen: true,
   create: (ctx) => new PairsGame(ctx),
 };
+
+/** Greedy word wrap for the announcer bubble (at most three lines). */
+function wrapLines(g: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && g.measureText(next).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length > 3 ? [...lines.slice(0, 2), lines.slice(2).join(" ")] : lines;
+}

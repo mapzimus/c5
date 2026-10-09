@@ -3,7 +3,7 @@ import { Callouts, Juice } from "../../../fx/juice";
 import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat } from "../../../core/types";
 import {
   MAX_BUGS,
-  MAX_ROUNDS,
+  maxRounds,
   NO_OWNER,
   type Battle,
   type Board,
@@ -58,12 +58,16 @@ const CHAOS_TOTAL = 2.3;
 const ROLL_ATTACK = 0.55;
 const ROLL_DEFEND = 0.85;
 const ROLL_END = 1.5;
+/** Bot-vs-bot battles play this much faster (a 4-seat game with 3 bots dragged past 6 minutes). */
+const BOT_BATTLE_SPEED = 2;
 
 type Phase = "intro" | "chaos" | "pick" | "target" | "rolling" | "reinforce" | "bot" | "done";
 
 interface DiceAnim {
   battle: Battle;
   timer: number;
+  /** Playback speed: bot-vs-bot fights roll faster so humans aren't kept waiting. */
+  speed: number;
   attackSettled: boolean;
   defendSettled: boolean;
   attackShown: number[];
@@ -134,6 +138,7 @@ class BugWarsGame implements GameInstance {
   private introTimer = 2.2;
   private doneTimer = 0;
   private currentSeat = 0;
+  private readonly lastRound: number;
   private round = 1;
   private selected = -1;
   private cursor = -1;
@@ -157,6 +162,7 @@ class BugWarsGame implements GameInstance {
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice();
     this.n = ctx.players.length;
+    this.lastRound = maxRounds(this.n);
     this.board = generateBoard(ctx.rng, this.n);
     spawnItems(this.board, ctx.rng, 2);
     const zeros = () => ctx.players.map(() => 0);
@@ -399,7 +405,7 @@ class BugWarsGame implements GameInstance {
 
   private launchAttack(from: number, to: number): void {
     const seat = this.currentSeat;
-    const bonus = attackBonuses(this.board, from, to, { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round });
+    const bonus = attackBonuses(this.board, from, to, { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round, lastRound: this.lastRound });
     const target = this.board.tiles[to]!;
     if (this.grudge[seat]! >= 0 && target.owner === this.grudge[seat]) {
       this.grudge[seat] = -1;
@@ -407,9 +413,11 @@ class BugWarsGame implements GameInstance {
     }
     this.pepper[seat] = 0;
     const battle = rollBattle(this.board, from, to, this.ctx.rng, { attackDice: bonus.attackDice, defendDice: bonus.defendDice });
+    const watched = this.isHuman(seat) || (target.owner >= 0 && this.isHuman(target.owner));
     this.diceAnim = {
       battle,
       timer: 0,
+      speed: watched ? 1 : BOT_BATTLE_SPEED,
       attackSettled: false,
       defendSettled: false,
       attackShown: battle.attackRolls.map(() => 1),
@@ -429,7 +437,7 @@ class BugWarsGame implements GameInstance {
   private updateDiceAnim(dt: number): void {
     const anim = this.diceAnim;
     if (!anim) return;
-    anim.timer += dt;
+    anim.timer += dt * anim.speed;
     const rng = this.ctx.rng;
     if (!anim.attackSettled) {
       if (anim.timer < ROLL_ATTACK) for (let i = 0; i < anim.attackShown.length; i++) anim.attackShown[i] = rng.int(1, 6);
@@ -512,7 +520,7 @@ class BugWarsGame implements GameInstance {
       else this.advanceTurn();
     } else {
       this.phase = "bot";
-      this.botDelay = 0.45;
+      this.botDelay = anim.speed > 1 ? 0.3 : 0.45;
     }
   }
 
@@ -622,7 +630,7 @@ class BugWarsGame implements GameInstance {
     }
     if (anim.timer >= CHAOS_TOTAL) {
       this.chaosAnim = null;
-      if (isFinalRound(this.round)) {
+      if (isFinalRound(this.round, this.lastRound)) {
         this.callouts.show("FINAL ROUND!", "#FF3D7A", { size: 80, life: 1.6, y: 0.3 });
         this.callouts.show("FRENZY: +1 attack die for everyone", "#FFD54A", { size: 26, life: 1.8, y: 0.4 });
         this.juice.shake(0.4);
@@ -701,7 +709,7 @@ class BugWarsGame implements GameInstance {
       this.advanceTurn();
       return;
     }
-    const context = { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round };
+    const context = { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round, lastRound: this.lastRound };
     const choice = botPickAttack(this.board, seat, this.ctx.rng, personaOptions(this.board, seat, this.n, persona, context));
     if (!choice) {
       if (this.ctx.rng.next() < 0.3) this.say(this.biggestOwned(seat), "...I'll wait.", this.color(seat));
@@ -767,7 +775,7 @@ class BugWarsGame implements GameInstance {
     this.drawHUD(g);
     this.drawDiceOverlay(g);
     this.drawFloaters(g);
-    if (isFinalRound(this.round) && this.phase !== "done") this.drawFrenzyVignette(g);
+    if (isFinalRound(this.round, this.lastRound) && this.phase !== "done") this.drawFrenzyVignette(g);
     if (this.phase === "done") {
       g.fillStyle = `rgba(7,11,20,${Math.min(0.45, this.doneTimer * 0.3)})`;
       g.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
@@ -799,9 +807,9 @@ class BugWarsGame implements GameInstance {
     g.font = "700 22px Bebas Neue, Impact, sans-serif";
     g.textAlign = "left";
     g.textBaseline = "alphabetic";
-    const final = isFinalRound(this.round);
+    const final = isFinalRound(this.round, this.lastRound);
     g.fillStyle = final ? "#FF3D7A" : "#94a3b8";
-    g.fillText(final ? `FINAL ROUND ${this.round}/${MAX_ROUNDS}` : `BUG WARS · ROUND ${Math.min(this.round, MAX_ROUNDS)}/${MAX_ROUNDS}`, 28, 32);
+    g.fillText(final ? `FINAL ROUND ${this.round}/${this.lastRound}` : `BUG WARS · ROUND ${Math.min(this.round, this.lastRound)}/${this.lastRound}`, 28, 32);
 
     const chipW = 168;
     const chipH = 50;
@@ -946,7 +954,7 @@ class BugWarsGame implements GameInstance {
 
     if (isTarget && this.phase === "target" && this.selected >= 0) {
       const seat = this.currentSeat;
-      const bonus = attackBonuses(this.board, this.selected, id, { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round });
+      const bonus = attackBonuses(this.board, this.selected, id, { grudge: this.grudge[seat]!, pepper: this.pepper[seat]!, round: this.round, lastRound: this.lastRound });
       const chance = winChance(this.board.tiles[this.selected]!.bugs + bonus.attackDice, tile.bugs + bonus.defendDice);
       const pct = Math.round(chance * 100);
       g.font = "700 15px Outfit, sans-serif";
@@ -1048,17 +1056,28 @@ class BugWarsGame implements GameInstance {
   }
 
   private drawBubbles(g: CanvasRenderingContext2D): void {
+    // Neighbouring tiles often bark at once: nudge later bubbles up so none overlap.
+    g.font = "700 15px Outfit, sans-serif";
+    const placed: { x: number; y: number; w: number }[] = [];
     for (const b of this.bubbles) {
       const c = this.hexCenters[b.tile];
       if (!c) continue;
+      const w = g.measureText(b.text).width + 18;
+      let y = c.y - HEX_R - 14;
+      for (let tries = 0; tries < 6; tries++) {
+        const hit = placed.find((p) => Math.abs(p.x - c.x) < (p.w + w) / 2 + 4 && Math.abs(p.y - y) < 30);
+        if (!hit) break;
+        y = hit.y - 32;
+      }
+      placed.push({ x: c.x, y, w });
       const t = 1 - b.life / b.max;
       const pop = t < 0.1 ? 0.5 + t * 5 : 1;
+      const tail = c.y - HEX_R - 14 - y;
       g.save();
       g.globalAlpha = Math.min(1, b.life / 0.3);
-      g.translate(c.x, c.y - HEX_R - 14);
+      g.translate(c.x, y);
       g.scale(pop, pop);
       g.font = "700 15px Outfit, sans-serif";
-      const w = g.measureText(b.text).width + 18;
       roundRect(g, -w / 2, -16, w, 26, 10);
       g.fillStyle = "#F4F7FB";
       g.fill();
@@ -1067,7 +1086,7 @@ class BugWarsGame implements GameInstance {
       g.stroke();
       g.beginPath();
       g.moveTo(-6, 10);
-      g.lineTo(0, 20);
+      g.lineTo(0, 20 + tail);
       g.lineTo(6, 10);
       g.closePath();
       g.fillStyle = "#F4F7FB";
@@ -1184,15 +1203,16 @@ class BugWarsGame implements GameInstance {
     g.lineWidth = 2;
     g.stroke();
 
-    g.font = "700 20px Bebas Neue, Impact, sans-serif";
+    g.font = "700 24px Bebas Neue, Impact, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillStyle = "#F4F7FB";
     g.fillText(`END TURN · ${Math.ceil(this.turnTimer)}s`, PASS_BTN.x, PASS_BTN.y + 1);
 
-    g.font = "500 13px Outfit, sans-serif";
-    g.fillStyle = "#94a3b8";
-    const hint = this.phase === "target" ? "Tap a red tile to attack · tap your tile to cancel" : "Tap your stack (or an enemy) · arrows + Enter · Space ends";
+    // Big enough to read on a phone, where the 1280-wide board is scaled down ~2x.
+    g.font = "600 18px Outfit, sans-serif";
+    g.fillStyle = "#cbd5e1";
+    const hint = this.phase === "target" ? "Tap an enemy with a pulsing red outline · tap your stack to cancel" : "Tap one of your stacks (2+ bugs), then an enemy next to it";
     g.fillText(hint, PASS_BTN.x, PASS_BTN.y - PASS_BTN.hh - 12);
   }
 

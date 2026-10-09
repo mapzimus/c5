@@ -1,6 +1,6 @@
 import { fillArena } from "../../core/draw";
 import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
-import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
+import { GAME_HEIGHT, type GameContext, type GameDefinition, type GameInstance, type GameStat, type Player } from "../../core/types";
 import { blast, collideKinematic, isResting, speed, stepWorld, type Kinematic, type Puck, type PuckKind, type World } from "./physics";
 import {
   BOMB_FUSE_S,
@@ -109,6 +109,7 @@ interface Bolt {
 }
 
 const SETTLE_GRACE_S = 0.8;
+const LEADERBOARD_Y = 34;
 const VOLLEY_S = 24;
 const EVENTS_UNTIL_S = 21;
 
@@ -166,7 +167,7 @@ class EyeOfTheStorm implements GameInstance {
   private time = 0;
   private scores = new Map<string, number>();
   private readonly juice: Juice;
-  private readonly callouts = new Callouts();
+  private readonly callouts = new CalloutLanes(GAME_HEIGHT);
   private cell: BonusCell | null = null;
   private cellTimer: number;
   /** puck id -> who last hit it and when, to credit knockouts. */
@@ -973,18 +974,19 @@ class EyeOfTheStorm implements GameInstance {
       g.strokeStyle = seat.player.color;
       g.lineWidth = isLeader ? 3 : 1.5;
       g.beginPath();
-      g.roundRect(x, 8, chipW, 30, 15);
+      // Sits under the engine's timer bar (y 18-28) instead of being sliced by it.
+      g.roundRect(x, LEADERBOARD_Y, chipW, 30, 15);
       g.fill();
       g.stroke();
       g.fillStyle = seat.player.color;
       g.font = "600 15px Outfit, sans-serif";
       g.textAlign = "left";
       g.textBaseline = "middle";
-      g.fillText(`${isLeader ? "\u{1F451} " : ""}${seat.player.name}`.slice(0, 14), x + 10, 23);
+      g.fillText(`${isLeader ? "\u{1F451} " : ""}${seat.player.name}`.slice(0, 14), x + 10, LEADERBOARD_Y + 15);
       g.fillStyle = "#F4F7FB";
       g.font = "700 22px Bebas Neue, Impact, sans-serif";
       g.textAlign = "right";
-      g.fillText(String(score), x + chipW - 10, 24);
+      g.fillText(String(score), x + chipW - 10, LEADERBOARD_Y + 16);
       g.restore();
     });
   }
@@ -1552,5 +1554,41 @@ class EyeOfTheStorm implements GameInstance {
       g.fill();
     }
     g.restore();
+  }
+}
+
+/**
+ * Callouts that dodge each other: when a new banner would land on top of one still on
+ * screen (e.g. LAST CALL vs a raid score), it slides into the next free lane instead.
+ */
+class CalloutLanes {
+  private readonly inner = new Callouts();
+  private live: { text: string; y: number; size: number; life: number }[] = [];
+
+  constructor(private readonly height: number) {}
+
+  show(text: string, color = "#F4F7FB", options: { life?: number; y?: number; size?: number } = {}): void {
+    const life = options.life ?? 1.2;
+    const size = options.size ?? 64;
+    let y = options.y ?? 0.32;
+    const gap = (other: { size: number }): number => ((size + other.size) / 2) * 0.95 / this.height;
+    for (let tries = 0; tries < 6; tries++) {
+      const hit = this.live.find((item) => Math.abs(item.y - y) < gap(item));
+      if (!hit) break;
+      const down = hit.y + gap(hit);
+      y = down < 0.9 ? down : hit.y - gap(hit);
+    }
+    this.live.push({ text, y, size, life });
+    this.inner.show(text, color, { life, size, y });
+  }
+
+  update(dt: number): void {
+    for (const item of this.live) item.life -= dt;
+    this.live = this.live.filter((item) => item.life > 0.15);
+    this.inner.update(dt);
+  }
+
+  draw(g: CanvasRenderingContext2D, width: number, height: number): void {
+    this.inner.draw(g, width, height);
   }
 }

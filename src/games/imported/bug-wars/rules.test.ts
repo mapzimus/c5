@@ -5,6 +5,7 @@ import {
   ROWS,
   MAX_BUGS,
   MAX_ROUNDS,
+  maxRounds,
   NO_OWNER,
   STASH_MAX,
   generateBoard,
@@ -261,6 +262,8 @@ describe("game end", () => {
   it("detects round limit", () => {
     const board = generateBoard(seeded(), 2);
     expect(gameOver(board, 2, MAX_ROUNDS + 1)).toBe("rounds");
+    expect(maxRounds(4)).toBeLessThan(MAX_ROUNDS);
+    expect(gameOver(board, 4, maxRounds(4) + 1)).toBe("rounds");
   });
 
   it("not over mid-game", () => {
