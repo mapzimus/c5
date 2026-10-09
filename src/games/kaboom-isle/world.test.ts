@@ -76,4 +76,31 @@ describe("Kaboom Isle world", () => {
     expect(f.hp).toBe(80);
     expect(f.shield).toBe(false);
   });
+
+  it("perks change the fighters they belong to", () => {
+    const world = new World(1280, 720, new Rng(6), 2, [["tough", "tough"], ["heavy"]]);
+    expect(world.fighters[0]!.hp).toBe(160);
+    expect(world.fighters[1]!.hp).toBe(100);
+    const a = world.fighters[1]!;
+    const vx0 = a.vx;
+    world.blast(a.x - 30, a.y, 60, 0, 1000, WEAPONS[0]!, 0, 1);
+    expect(a.vx - vx0).toBeLessThan(700);
+  });
+
+  it("fireproof bounces you out of the lava once", () => {
+    const world = new World(1280, 720, new Rng(8), 2, [["fireproof"], []]);
+    const f = world.fighters[0]!;
+    // Far left edge has no ground, only lava.
+    f.x = 20;
+    f.y = world.lava + 5;
+    world.step(1 / 60, 1);
+    expect(f.alive).toBe(true);
+    expect(f.vy).toBeLessThan(0);
+    f.x = 20;
+    f.y = world.lava + 20;
+    f.vx = 0;
+    f.vy = 0;
+    world.step(1 / 60, 1);
+    expect(f.alive).toBe(false);
+  });
 });

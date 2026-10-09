@@ -1,7 +1,10 @@
 import { PLAYER_BINDS } from "../../core/input";
 import type { GameContext, GameDefinition, GameInstance, GameStat } from "../../core/types";
 import { Callouts, Juice } from "../../fx/juice";
-import { FIGHTER_R, TILE, WEAPONS, World, rollWeapon, type Blast, type CrateKind, type Weapon } from "./world";
+import {
+  FIGHTER_R, GRAVITY, PERKS, TILE, WEAPONS, World, perkCount, rollWeapon,
+  type Blast, type CrateKind, type Perk, type PerkId, type Weapon, type WeaponId,
+} from "./world";
 
 const CRATE_LABEL: Record<CrateKind, { text: string; color: string }> = {
   medkit: { text: "+35 HP", color: "#B8FF3D" },
@@ -9,27 +12,69 @@ const CRATE_LABEL: Record<CrateKind, { text: string; color: string }> = {
   shield: { text: "SHIELD", color: "#3EE0FF" },
 };
 
-type Phase = "roulette" | "aim" | "power" | "flight" | "between" | "over";
+type ChaosId = "lowgrav" | "hurricane" | "meteors" | "craterain" | "bouncy" | "quake" | "surge" | "double" | "jackpot";
 
-const ROULETTE_S = 1.4;
+interface Chaos {
+  id: ChaosId;
+  name: string;
+  blurb: string;
+  color: string;
+}
+
+const CHAOS: readonly Chaos[] = [
+  { id: "lowgrav", name: "LOW GRAVITY", blurb: "Everything floats. Blasts fling twice as far.", color: "#c084fc" },
+  { id: "hurricane", name: "HURRICANE", blurb: "Triple wind this round.", color: "#3EE0FF" },
+  { id: "meteors", name: "METEOR SHOWER", blurb: "Rocks are falling. Good luck.", color: "#FF5A1F" },
+  { id: "craterain", name: "CRATE RAIN", blurb: "Three supply crates drop in.", color: "#B8FF3D" },
+  { id: "bouncy", name: "BOUNCY WORLD", blurb: "Every shot bounces on a fuse.", color: "#B8FF3D" },
+  { id: "quake", name: "EARTHQUAKE", blurb: "The ground cracks. Everyone hops.", color: "#FFB020" },
+  { id: "surge", name: "LAVA SURGE", blurb: "The lava jumps up.", color: "#FF3D7A" },
+  { id: "double", name: "DOUBLE TROUBLE", blurb: "Two shots each this round.", color: "#FFE14D" },
+  { id: "jackpot", name: "JACKPOT ROUND", blurb: "Only rare weapons on offer.", color: "#FFB020" },
+];
+
+const RARES: readonly WeaponId[] = ["nuke", "blackhole", "airstrike", "cluster", "triple", "drill"];
+
+/** Rough "how good is this pick" for bots choosing a card. */
+const BOT_VALUE: Record<WeaponId, number> = {
+  nuke: 10, blackhole: 7, airstrike: 7, cluster: 6, triple: 6, grenade: 5, drill: 5, bomb: 4, glove: 4, teleport: 2, chicken: 0,
+};
+
+type Phase = "chaos" | "pick" | "aim" | "power" | "flight" | "between" | "islandOver" | "draft" | "over";
+
+const WINS_NEEDED = 2;
+const MAX_ISLANDS = 5;
+const PICK_TIMEOUT = 6;
 const AIM_TIMEOUT = 7;
 const POWER_TIMEOUT = 5;
-const SUDDEN_DEATH_ROUNDS = 6;
-const LAVA_RISE = 30;
-const MAX_TURNS = 80;
+const SUDDEN_DEATH_ROUNDS = 5;
+const LAVA_RISE = 40;
+const MAX_TURNS = 40;
 const AIM_MIN = 0.1;
 const AIM_MAX = Math.PI - 0.1;
 
+interface Totals {
+  damage: number;
+  kos: number;
+  best: number;
+}
+
 /**
  * Kaboom Isle: Worms-style artillery played only with taps.
- * Luck picks your weapon (slot roll), the wind and the bounces. Skill is timing:
- * tap to stop the swinging aim needle, tap again to stop the power meter.
+ * A match is several islands; first to win two takes it. Every round draws a chaos card,
+ * every turn you pick one of three random weapons, and between islands you draft perks.
+ * Skill is timing: tap to stop the swinging aim needle, tap again to stop the power meter.
  */
 export class KaboomIsle implements GameInstance {
-  readonly world: World;
+  world: World;
   phase: Phase = "between";
   current = -1;
   turn = 0;
+  round = 0;
+  island = 1;
+  readonly wins: number[];
+  readonly perks: PerkId[][];
+  private readonly totals: Totals[];
   private phaseT = 0.6;
   private clock = 0;
   private aimT = 0;
@@ -37,7 +82,14 @@ export class KaboomIsle implements GameInstance {
   angle = Math.PI / 2;
   power = 0;
   weapon: Weapon = WEAPONS[0]!;
-  private rouletteFace = 0;
+  choices: Weapon[] = [];
+  chaos: Chaos | null = null;
+  shotsLeft = 0;
+  draftQueue: number[] = [];
+  draftOptions: Perk[] = [];
+  private shotsPerTurn = 1;
+  private jackpot = false;
+  private fireFrom = { x: 0, y: 0 };
   private botTarget: { angle: number; power: number } | null = null;
   private done = false;
   private readonly juice: Juice;
@@ -48,8 +100,13 @@ export class KaboomIsle implements GameInstance {
   private suddenDeath = false;
 
   constructor(private readonly ctx: GameContext) {
-    this.world = new World(ctx.width, ctx.height, ctx.rng, ctx.players.length);
+    const n = ctx.players.length;
+    this.wins = Array.from({ length: n }, () => 0);
+    this.perks = Array.from({ length: n }, () => []);
+    this.totals = Array.from({ length: n }, () => ({ damage: 0, kos: 0, best: 0 }));
+    this.world = new World(ctx.width, ctx.height, ctx.rng, n, this.perks);
     this.juice = new Juice(() => ctx.rng.next());
+    this.callouts.show("ISLAND 1", "#F4F7FB", { size: 72 });
   }
 
   // ---------- flow ----------
@@ -57,7 +114,7 @@ export class KaboomIsle implements GameInstance {
   private nextTurn(): void {
     const alive = this.world.alive();
     if (alive.length <= 1 || this.turn >= MAX_TURNS) {
-      this.endMatch();
+      this.endIsland();
       return;
     }
     const n = this.world.fighters.length;
@@ -66,59 +123,210 @@ export class KaboomIsle implements GameInstance {
       next = (next + 1) % n;
       if (this.world.fighters[next]!.alive) break;
     }
+    const newRound = this.current < 0 || next <= this.current;
     this.current = next;
     this.turn++;
-    // A supply crate parachutes in most rounds.
-    if (this.turn % n === 1 && this.world.crates.length < 3 && this.ctx.rng.next() < 0.75) this.world.spawnCrate();
-    if (this.turn > SUDDEN_DEATH_ROUNDS * n) {
-      if (!this.suddenDeath) this.callouts.show("SUDDEN DEATH", "#FF5A1F", { size: 72 });
-      this.suddenDeath = true;
-      this.world.lava -= LAVA_RISE;
-      // The lava may have just swallowed someone.
-      for (const f of this.world.fighters) if (f.alive && f.y + FIGHTER_R > this.world.lava) this.world.kill(f, this.turn, null);
-      if (this.world.alive().length <= 1) {
-        this.endMatch();
-        return;
-      }
+    this.world.rollWind();
+    if (newRound) {
+      this.startRound();
+      if (this.phase === "islandOver" || this.phase === "over") return;
       if (!this.world.fighters[this.current]!.alive) {
         this.nextTurn();
         return;
       }
+      if (this.chaos) {
+        this.phase = "chaos";
+        this.phaseT = 0;
+        this.ctx.sfx.streak(2);
+        return;
+      }
     }
-    this.world.rollWind();
-    this.weapon = rollWeapon(this.ctx.rng);
-    this.phase = "roulette";
-    this.phaseT = ROULETTE_S;
+    this.startTurn();
+  }
+
+  private startRound(): void {
+    this.round++;
+    const w = this.world;
+    // Reset last round's chaos.
+    w.gravity = GRAVITY;
+    w.windMul = 1;
+    w.bouncy = false;
+    this.shotsPerTurn = 1;
+    this.jackpot = false;
+    this.chaos = null;
+    if (w.crates.length < 3 && this.ctx.rng.next() < 0.6) w.spawnCrate();
+    if (this.round > SUDDEN_DEATH_ROUNDS) {
+      if (!this.suddenDeath) this.callouts.show("SUDDEN DEATH", "#FF5A1F", { size: 72 });
+      this.suddenDeath = true;
+      w.lava -= LAVA_RISE;
+      this.lavaCheck();
+    }
+    if (this.round >= 2) {
+      const chaos = this.ctx.rng.pick(CHAOS);
+      this.chaos = chaos;
+      switch (chaos.id) {
+        case "lowgrav": w.gravity = GRAVITY * 0.45; break;
+        case "hurricane": w.windMul = 3; break;
+        case "meteors": for (let i = 0; i < 6; i++) w.meteor(this.ctx.rng.float(60, this.ctx.width - 60)); break;
+        case "craterain": for (let i = 0; i < 3; i++) w.spawnCrate(); break;
+        case "bouncy": w.bouncy = true; break;
+        case "quake": w.quake(this.turn); this.juice.shake(1); break;
+        case "surge": w.lava -= 45; this.lavaCheck(); break;
+        case "double": this.shotsPerTurn = 2; break;
+        case "jackpot": this.jackpot = true; break;
+      }
+    }
+    if (w.alive().length <= 1) this.endIsland();
+  }
+
+  private lavaCheck(): void {
+    for (const f of this.world.fighters) {
+      if (f.alive && f.y + FIGHTER_R > this.world.lava) {
+        if (f.fireproofLeft > 0) {
+          f.fireproofLeft--;
+          f.y = this.world.lava - 60;
+          f.vy = -700;
+        } else this.world.kill(f, this.turn, null);
+      }
+    }
+  }
+
+  private startTurn(): void {
+    this.shotsLeft = this.shotsPerTurn;
+    this.startPick();
+  }
+
+  private startPick(): void {
+    const me = this.world.fighters[this.current]!;
+    const count = 3 + Math.min(1, perkCount(me, "lucky"));
+    const lucky = perkCount(me, "lucky") > 0;
+    const pool = this.jackpot ? WEAPONS.filter((w) => RARES.includes(w.id)) : WEAPONS;
+    const choices: Weapon[] = [];
+    for (let tries = 0; choices.length < count && tries < 60; tries++) {
+      let w = this.jackpot ? this.ctx.rng.pick(pool) : rollWeapon(this.ctx.rng);
+      // Lucky: one reroll toward a rare.
+      if (lucky && !RARES.includes(w.id)) w = rollWeapon(this.ctx.rng);
+      if (!choices.some((c) => c.id === w.id)) choices.push(w);
+    }
+    this.choices = choices;
+    this.phase = "pick";
+    this.phaseT = 0;
     this.botTarget = null;
     this.angle = Math.PI / 2;
     this.power = 0;
     this.ctx.sfx.select();
   }
 
-  private endMatch(): void {
-    this.phase = "over";
-    this.phaseT = 4.5;
+  private choose(index: number): void {
+    const w = this.choices[index];
+    if (!w) return;
+    this.weapon = w;
+    this.phase = "aim";
+    this.aimT = this.ctx.rng.float(0, 6);
+    this.phaseT = 0;
+    if (w.id === "nuke") this.callouts.show("MEGA NUKE", "#FF5A1F", { size: 60 });
+    else this.ctx.sfx.tick();
+    if (!this.isHumanTurn) this.botTarget = this.planBot();
+  }
+
+  private endIsland(): void {
     const alive = this.world.alive();
-    if (alive.length === 1) {
-      const p = this.ctx.players[alive[0]!.index]!;
-      this.callouts.show(`${p.name.toUpperCase()} WINS`, p.color, { size: 80, life: 4 });
-    } else if (alive.length === 0) {
-      this.callouts.show("NOBODY SURVIVED", "#F4F7FB", { size: 72, life: 4 });
+    let winner: number | null = null;
+    if (alive.length === 1) winner = alive[0]!.index;
+    else if (alive.length > 1) {
+      const top = Math.max(...alive.map((f) => f.hp));
+      const leaders = alive.filter((f) => f.hp === top);
+      if (leaders.length === 1) winner = leaders[0]!.index;
+    }
+    for (const f of this.world.fighters) {
+      const t = this.totals[f.index]!;
+      t.damage += f.damageDealt;
+      t.kos += f.kos;
+      t.best = Math.max(t.best, f.bestHit);
+    }
+    if (winner !== null) {
+      this.wins[winner]!++;
+      const p = this.ctx.players[winner]!;
+      this.callouts.show(`${p.name.toUpperCase()} TAKES ISLAND ${this.island}`, p.color, { size: 64, life: 2.6 });
     } else {
-      this.callouts.show("TIME! MOST HP WINS", "#FFB020", { size: 64, life: 4 });
+      this.callouts.show(`ISLAND ${this.island}: NO SURVIVORS`, "#F4F7FB", { size: 60, life: 2.6 });
     }
     this.ctx.sfx.win();
+    this.chaos = null;
+    this.phase = "islandOver";
+    this.phaseT = 2.8;
+  }
+
+  private afterIsland(): void {
+    const best = Math.max(...this.wins);
+    if (best >= WINS_NEEDED || this.island >= MAX_ISLANDS) {
+      this.phase = "over";
+      this.phaseT = 4.5;
+      const leaders = this.wins.map((w, i) => (w === best ? i : -1)).filter((i) => i >= 0);
+      const text = leaders.length === 1 ? `${this.ctx.players[leaders[0]!]!.name.toUpperCase()} WINS THE MATCH` : "IT'S A TIE";
+      this.callouts.show(text, leaders.length === 1 ? this.ctx.players[leaders[0]!]!.color : "#F4F7FB", { size: 72, life: 4 });
+      return;
+    }
+    // Losers draft first.
+    this.draftQueue = this.ctx.players.map((_, i) => i).sort((a, b) => this.wins[a]! - this.wins[b]! || a - b);
+    this.startDraftFor();
+  }
+
+  private startDraftFor(): void {
+    if (this.draftQueue.length === 0) {
+      this.newIsland();
+      return;
+    }
+    const opts: Perk[] = [];
+    while (opts.length < 3) {
+      const k = this.ctx.rng.pick(PERKS);
+      if (!opts.includes(k)) opts.push(k);
+    }
+    this.draftOptions = opts;
+    this.phase = "draft";
+    this.phaseT = 0;
+    this.ctx.sfx.select();
+  }
+
+  private draft(index: number): void {
+    const who = this.draftQueue.shift();
+    const perk = this.draftOptions[index];
+    if (who === undefined || !perk) return;
+    this.perks[who]!.push(perk.id);
+    this.ctx.sfx.collect();
+    this.startDraftFor();
+  }
+
+  private newIsland(): void {
+    this.island++;
+    this.world = new World(this.ctx.width, this.ctx.height, this.ctx.rng, this.ctx.players.length, this.perks);
+    this.cachedVersion = -1;
+    this.current = -1;
+    this.turn = 0;
+    this.round = 0;
+    this.suddenDeath = false;
+    this.chaos = null;
+    this.phase = "between";
+    this.phaseT = 1;
+    this.callouts.show(`ISLAND ${this.island}`, "#F4F7FB", { size: 72 });
   }
 
   private get isHumanTurn(): boolean {
     return this.ctx.players[this.current]?.kind === "human";
   }
 
-  private tapped(): boolean {
-    let tap = this.ctx.input.consumeClick() !== null;
-    if (this.ctx.input.justPressed("Space")) tap = true;
-    for (const bind of PLAYER_BINDS) if (this.ctx.input.justPressed(bind.action)) tap = true;
-    return tap;
+  /** Tap position (null for a key press) or false when nothing was pressed. */
+  private readInput(): { x: number; y: number } | null | false {
+    const click = this.ctx.input.consumeClick();
+    if (click) return click;
+    if (this.ctx.input.justPressed("Space")) return null;
+    for (const bind of PLAYER_BINDS) if (this.ctx.input.justPressed(bind.action)) return null;
+    return false;
+  }
+
+  private cardAt(pt: { x: number; y: number } | null, count: number): number {
+    if (!pt) return 0;
+    return this.cardRects(count).findIndex((r) => pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h);
   }
 
   update(dt: number): void {
@@ -132,7 +340,8 @@ export class KaboomIsle implements GameInstance {
     }
     for (let i = this.floaters.length - 1; i >= 0; i--) if (this.floaters[i]!.life <= 0) this.floaters.splice(i, 1);
 
-    const tap = this.tapped();
+    const input = this.readInput();
+    const tap = input !== false;
     const human = this.isHumanTurn;
 
     // Physics always runs so knockback settles between turns too.
@@ -148,6 +357,9 @@ export class KaboomIsle implements GameInstance {
       } else if (e.type === "teleport") {
         this.juice.burst(e.x, e.y, ["#22d3ee", "#F4F7FB"], { count: 24, speed: 260, size: 5, gravity: 0 });
         this.ctx.sfx.go();
+      } else if (e.type === "fireproof") {
+        this.floaters.push({ text: "FIREPROOF!", x: e.x, y: e.y - 30, life: 1.4, color: "#FFB020" });
+        this.juice.burst(e.x, e.y, ["#FF5A1F", "#FFB020"], { count: 24, speed: 300, size: 6, angle: -Math.PI / 2, spread: 1.4 });
       } else {
         const f = this.world.fighters[e.index]!;
         this.floaters.push({ text: "BLOCKED", x: f.x, y: f.y - 50, life: 1.1, color: "#3EE0FF" });
@@ -162,25 +374,33 @@ export class KaboomIsle implements GameInstance {
         this.phaseT -= dt;
         if (this.phaseT <= 0) this.nextTurn();
         break;
-      case "roulette":
-        this.phaseT -= dt;
-        this.rouletteFace += dt * (4 + 26 * Math.max(0, this.phaseT / ROULETTE_S));
-        if (this.phaseT <= 0) {
-          this.phase = "aim";
-          this.aimT = this.ctx.rng.float(0, 6);
-          this.phaseT = 0;
-          if (this.weapon.id === "nuke") this.callouts.show("JACKPOT! MEGA NUKE", "#FF5A1F", { size: 60 });
-          else this.ctx.sfx.tick();
-          if (!human) this.botTarget = this.planBot();
+      case "chaos":
+        this.phaseT += realDt;
+        if (this.phaseT > 1.8 || (tap && this.phaseT > 0.4)) this.startTurn();
+        break;
+      case "pick": {
+        this.phaseT += realDt;
+        if (human) {
+          if (tap && this.phaseT > 0.25) {
+            const i = this.cardAt(input, this.choices.length);
+            if (i >= 0) this.choose(i);
+          } else if (this.phaseT > PICK_TIMEOUT) this.choose(0);
+        } else if (this.phaseT > 0.7) {
+          let best = 0;
+          this.choices.forEach((c, i) => {
+            if (BOT_VALUE[c.id] + this.ctx.rng.float(0, 2.5) > BOT_VALUE[this.choices[best]!.id]) best = i;
+          });
+          this.choose(best);
         }
         break;
+      }
       case "aim": {
         this.phaseT += dt;
         this.aimT += dt;
         this.angle = Math.PI / 2 + (AIM_MAX - Math.PI / 2) * Math.sin(this.aimT * 1.9);
         const lock = human
-          ? tap || this.phaseT > AIM_TIMEOUT
-          : this.phaseT > 0.7 && (Math.abs(this.angle - this.botTarget!.angle) < 0.05 || this.phaseT > AIM_TIMEOUT);
+          ? (tap && this.phaseT > 0.12) || this.phaseT > AIM_TIMEOUT
+          : this.phaseT > 0.35 && (Math.abs(this.angle - this.botTarget!.angle) < 0.05 || this.phaseT > AIM_TIMEOUT);
         if (lock) {
           this.phase = "power";
           this.phaseT = 0;
@@ -195,9 +415,12 @@ export class KaboomIsle implements GameInstance {
         this.power = 0.5 - 0.5 * Math.cos(this.powerT * 3.4);
         const fire = human
           ? (tap && this.phaseT > 0.12) || this.phaseT > POWER_TIMEOUT
-          : this.phaseT > 0.4 && (Math.abs(this.power - this.botTarget!.power) < 0.03 || this.phaseT > POWER_TIMEOUT);
+          : this.phaseT > 0.25 && (Math.abs(this.power - this.botTarget!.power) < 0.03 || this.phaseT > POWER_TIMEOUT);
         if (fire) {
+          const me = this.world.fighters[this.current]!;
+          this.fireFrom = { x: me.x, y: me.y };
           this.world.fire(this.current, this.angle, this.power, this.weapon);
+          this.shotsLeft--;
           this.ctx.sfx.whoosh();
           this.phase = "flight";
           this.phaseT = 0;
@@ -206,11 +429,32 @@ export class KaboomIsle implements GameInstance {
       }
       case "flight":
         this.phaseT += dt;
-        if ((this.world.settled() && this.phaseT > 0.5) || this.phaseT > 14) {
-          this.phase = "between";
-          this.phaseT = 0.8;
+        if ((this.world.settled() && this.phaseT > 0.35) || this.phaseT > 14) {
+          const me = this.world.fighters[this.current]!;
+          if (this.shotsLeft > 0 && me.alive && this.world.alive().length > 1) this.startPick();
+          else {
+            this.phase = "between";
+            this.phaseT = 0.5;
+          }
         }
         break;
+      case "islandOver":
+        this.phaseT -= realDt;
+        if (this.phaseT <= 0) this.afterIsland();
+        break;
+      case "draft": {
+        this.phaseT += realDt;
+        const who = this.draftQueue[0]!;
+        if (this.ctx.players[who]!.kind === "human") {
+          if (tap && this.phaseT > 0.3) {
+            const i = this.cardAt(input, this.draftOptions.length);
+            if (i >= 0) this.draft(i);
+          } else if (this.phaseT > 12) this.draft(0);
+        } else if (this.phaseT > 0.9) {
+          this.draft(this.ctx.rng.int(0, this.draftOptions.length - 1));
+        }
+        break;
+      }
       case "over":
         this.phaseT -= realDt;
         if (this.phaseT <= 0 || (tap && this.phaseT < 3)) this.done = true;
@@ -238,12 +482,18 @@ export class KaboomIsle implements GameInstance {
       const f = this.world.fighters[hit.index]!;
       this.floaters.push({ text: `-${hit.damage}`, x: f.x, y: f.y - 34, life: 1.1, color: "#FF3D7A" });
     }
+    // Trick-shot callouts for the shooter.
+    const enemies = b.hits.filter((h) => h.index !== this.current);
+    if (this.phase === "flight" && enemies.length >= 2) this.callouts.show("MULTI-HIT!", "#FFE14D", { size: 52 });
+    else if (this.phase === "flight" && enemies.length > 0 && Math.hypot(b.x - this.fireFrom.x, b.y - this.fireFrom.y) > 650) {
+      this.callouts.show("SNIPE!", "#3EE0FF", { size: 52 });
+    } else if (this.phase === "flight" && enemies.some((h) => h.damage >= 45)) this.callouts.show("CRUSHED!", "#FF3D7A", { size: 52 });
   }
 
   private onKo(index: number): void {
     const f = this.world.fighters[index]!;
     const p = this.ctx.players[index]!;
-    this.callouts.show(`${p.name.toUpperCase()} IS OUT`, p.color);
+    this.callouts.show(f.hp > 0 ? `${p.name.toUpperCase()} GOT LAVA'D` : `${p.name.toUpperCase()} IS OUT`, p.color);
     this.juice.burst(f.x, Math.min(f.y, this.world.lava), [p.color, "#FF5A1F", "#FFB020"], { count: 40, speed: 420, size: 7 });
     this.juice.shake(0.5);
     this.juice.slowMo(0.6);
@@ -304,6 +554,9 @@ export class KaboomIsle implements GameInstance {
     this.juice.end(g);
 
     this.drawHud(g);
+    if (this.phase === "pick") this.drawPick(g);
+    if (this.phase === "draft") this.drawDraft(g);
+    if (this.phase === "chaos") this.drawChaos(g);
     this.callouts.draw(g, w, h);
   }
 
@@ -350,7 +603,7 @@ export class KaboomIsle implements GameInstance {
     const f = this.world.fighters[index]!;
     if (!f.alive) return;
     const p = this.ctx.players[index]!;
-    const active = index === this.current && this.phase !== "over";
+    const active = index === this.current && this.phase !== "over" && this.phase !== "islandOver" && this.phase !== "draft";
     g.save();
     g.translate(f.x, f.y);
     const squash = f.grounded ? 1 + Math.sin(this.clock * 6 + index) * 0.04 : 1;
@@ -381,10 +634,10 @@ export class KaboomIsle implements GameInstance {
     g.fillStyle = "rgba(7,11,20,0.7)";
     g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, bw, 6);
     g.fillStyle = f.hp > 50 ? "#B8FF3D" : f.hp > 25 ? "#FFB020" : "#FF3D7A";
-    g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * Math.min(100, Math.max(0, f.hp))) / 100, 6);
-    if (f.hp > 100) {
+    g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * Math.min(f.maxHp, Math.max(0, f.hp))) / f.maxHp, 6);
+    if (f.hp > f.maxHp) {
       g.fillStyle = "#3EE0FF";
-      g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * (f.hp - 100)) / 100, 6);
+      g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, (bw * (f.hp - f.maxHp)) / f.maxHp, 6);
     }
     if (f.shield) {
       g.strokeStyle = "rgba(62,224,255,0.7)";
@@ -556,13 +809,105 @@ export class KaboomIsle implements GameInstance {
       g.strokeStyle = s.weapon.color;
       g.lineWidth = 2;
       g.stroke();
-      if (s.weapon.fuse !== undefined) {
+      if (s.fuse !== undefined) {
         g.fillStyle = "#F4F7FB";
         g.font = "700 14px Outfit, sans-serif";
         g.textAlign = "center";
-        g.fillText(Math.max(0, s.weapon.fuse - s.age).toFixed(1), s.x, s.y - 12);
+        g.fillText(Math.max(0, s.fuse - s.age).toFixed(1), s.x, s.y - 12);
       }
     }
+  }
+
+  private cardRects(count: number): { x: number; y: number; w: number; h: number }[] {
+    const { width: w, height: h } = this.ctx;
+    const cw = count > 3 ? 210 : 240;
+    const ch = 150;
+    const gap = 18;
+    const total = count * cw + (count - 1) * gap;
+    return Array.from({ length: count }, (_, i) => ({ x: w / 2 - total / 2 + i * (cw + gap), y: h * 0.36, w: cw, h: ch }));
+  }
+
+  private drawCards(g: CanvasRenderingContext2D, title: string, titleColor: string, cards: { name: string; blurb: string; color: string; tag?: string }[]): void {
+    const { width: w, height: h } = this.ctx;
+    g.fillStyle = "rgba(7,11,20,0.55)";
+    g.fillRect(0, 0, w, h);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.font = "700 46px Bebas Neue, Impact, sans-serif";
+    g.lineWidth = 6;
+    g.strokeStyle = "rgba(7,11,20,0.9)";
+    g.strokeText(title, w / 2, h * 0.27);
+    g.fillStyle = titleColor;
+    g.fillText(title, w / 2, h * 0.27);
+    const pop = Math.min(1, this.phaseT * 5);
+    this.cardRects(cards.length).forEach((r, i) => {
+      const c = cards[i]!;
+      g.save();
+      g.translate(r.x + r.w / 2, r.y + r.h / 2);
+      g.scale(pop, pop);
+      g.fillStyle = "#0f1626";
+      g.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
+      g.strokeStyle = c.color;
+      g.lineWidth = 4;
+      g.strokeRect(-r.w / 2, -r.h / 2, r.w, r.h);
+      g.fillStyle = c.color;
+      g.font = "700 32px Bebas Neue, Impact, sans-serif";
+      g.fillText(c.name, 0, -r.h / 2 + 44, r.w - 16);
+      g.fillStyle = "#cbd5e1";
+      g.font = "500 15px Outfit, sans-serif";
+      wrap(g, c.blurb, 0, 6, r.w - 28, 19);
+      if (c.tag) {
+        g.fillStyle = c.color;
+        g.font = "700 13px Outfit, sans-serif";
+        g.fillText(c.tag, 0, r.h / 2 - 16);
+      }
+      g.restore();
+    });
+    g.textBaseline = "alphabetic";
+  }
+
+  private drawPick(g: CanvasRenderingContext2D): void {
+    const p = this.ctx.players[this.current]!;
+    this.drawCards(g, `${p.name.toUpperCase()}: PICK YOUR WEAPON`, p.color, this.choices.map((c) => ({
+      name: c.name, blurb: c.blurb, color: c.color, tag: c.weight <= 6 ? "RARE" : "",
+    })));
+  }
+
+  private drawDraft(g: CanvasRenderingContext2D): void {
+    const who = this.draftQueue[0];
+    if (who === undefined) return;
+    const p = this.ctx.players[who]!;
+    this.drawCards(g, `${p.name.toUpperCase()}: PICK A PERK`, p.color, this.draftOptions.map((k) => ({
+      name: k.name, blurb: k.blurb, color: k.color, tag: this.perks[who]!.includes(k.id) ? "STACKS" : "",
+    })));
+  }
+
+  private drawChaos(g: CanvasRenderingContext2D): void {
+    if (!this.chaos) return;
+    const { width: w, height: h } = this.ctx;
+    const t = Math.min(1, this.phaseT * 4);
+    g.save();
+    g.translate(w / 2, h * 0.45);
+    g.rotate((1 - t) * 0.6);
+    g.scale(t, t);
+    g.fillStyle = "#0f1626";
+    g.fillRect(-230, -90, 460, 180);
+    g.strokeStyle = this.chaos.color;
+    g.lineWidth = 6;
+    g.strokeRect(-230, -90, 460, 180);
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = "#94a3b8";
+    g.font = "700 18px Outfit, sans-serif";
+    g.fillText(`ROUND ${this.round} CHAOS CARD`, 0, -58);
+    g.fillStyle = this.chaos.color;
+    g.font = "700 56px Bebas Neue, Impact, sans-serif";
+    g.fillText(this.chaos.name, 0, -6);
+    g.fillStyle = "#F4F7FB";
+    g.font = "500 18px Outfit, sans-serif";
+    g.fillText(this.chaos.blurb, 0, 48);
+    g.restore();
+    g.textBaseline = "alphabetic";
   }
 
   private drawHud(g: CanvasRenderingContext2D): void {
@@ -583,33 +928,58 @@ export class KaboomIsle implements GameInstance {
     g.fillRect(cx - 1, 24, 2, 20);
 
     // Turn + weapon card
-    if (this.current >= 0 && this.phase !== "over") {
+    // Island wins
+    g.textAlign = "left";
+    this.ctx.players.forEach((pl, i) => {
+      const y = 92 + i * 22;
+      g.fillStyle = pl.color;
+      g.font = "600 14px Outfit, sans-serif";
+      g.fillText(pl.name, 24, y);
+      for (let k = 0; k < WINS_NEEDED; k++) {
+        g.beginPath();
+        g.arc(100 + k * 16, y, 5, 0, Math.PI * 2);
+        if (k < this.wins[i]!) g.fill();
+        else {
+          g.strokeStyle = pl.color;
+          g.lineWidth = 1.5;
+          g.stroke();
+        }
+      }
+    });
+    if (this.chaos) {
+      g.fillStyle = "rgba(7,11,20,0.6)";
+      g.fillRect(w - 200, 60, 180, 30);
+      g.fillStyle = this.chaos.color;
+      g.font = "700 18px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "center";
+      g.fillText(this.chaos.name, w - 110, 76);
+    }
+    if (this.current >= 0 && this.phase !== "over" && this.phase !== "draft" && this.phase !== "islandOver") {
       const p = this.ctx.players[this.current]!;
       g.textAlign = "left";
       g.font = "700 30px Bebas Neue, Impact, sans-serif";
       g.fillStyle = p.color;
       g.fillText(`${p.name.toUpperCase()}'S TURN`, 24, 34);
-      if (this.suddenDeath) {
-        g.fillStyle = "#FF5A1F";
-        g.font = "700 20px Bebas Neue, Impact, sans-serif";
-        g.fillText("SUDDEN DEATH · LAVA RISING", 24, 62);
+      g.font = "700 20px Bebas Neue, Impact, sans-serif";
+      g.fillStyle = this.suddenDeath ? "#FF5A1F" : "#cbd5e1";
+      g.fillText(`ISLAND ${this.island} · ROUND ${this.round}${this.suddenDeath ? " · LAVA RISING" : ""}`, 24, 62);
+      if (this.phase === "aim" || this.phase === "power" || this.phase === "flight") {
+        const shown = this.weapon;
+        const cardW = 300;
+        const x = w / 2 - cardW / 2;
+        g.fillStyle = "rgba(7,11,20,0.75)";
+        g.fillRect(x, 12, cardW, 58);
+        g.strokeStyle = shown.color;
+        g.lineWidth = 3;
+        g.strokeRect(x, 12, cardW, 58);
+        g.textAlign = "center";
+        g.fillStyle = shown.color;
+        g.font = "700 30px Bebas Neue, Impact, sans-serif";
+        g.fillText(shown.name, w / 2, 34);
+        g.fillStyle = "#cbd5e1";
+        g.font = "500 14px Outfit, sans-serif";
+        g.fillText(this.shotsLeft > 1 ? `${shown.blurb} · ${this.shotsLeft} shots left` : shown.blurb, w / 2, 56);
       }
-      const shown = this.phase === "roulette" ? WEAPONS[Math.floor(this.rouletteFace) % WEAPONS.length]! : this.weapon;
-      const cardW = 300;
-      const x = w / 2 - cardW / 2;
-      g.fillStyle = "rgba(7,11,20,0.75)";
-      g.fillRect(x, 12, cardW, 58);
-      g.strokeStyle = shown.color;
-      g.lineWidth = 3;
-      g.strokeRect(x, 12, cardW, 58);
-      g.textAlign = "center";
-      g.fillStyle = shown.color;
-      g.font = "700 30px Bebas Neue, Impact, sans-serif";
-      g.fillText(shown.name, w / 2, 34);
-      g.fillStyle = "#cbd5e1";
-      g.font = "500 14px Outfit, sans-serif";
-      g.fillText(this.phase === "roulette" ? "spinning…" : shown.blurb, w / 2, 56);
-
       if (this.isHumanTurn && (this.phase === "aim" || this.phase === "power")) {
         const msg = this.phase === "aim" ? "TAP TO LOCK AIM" : "TAP TO FIRE";
         const pulse = 0.75 + 0.25 * Math.sin(this.clock * 8);
@@ -633,19 +1003,20 @@ export class KaboomIsle implements GameInstance {
   }
 
   getScores(): { playerId: string; score: number }[] {
-    return this.ctx.players.map((player, i) => {
-      const f = this.world.fighters[i]!;
-      return { playerId: player.id, score: f.alive ? 1000 + f.hp : f.diedOnTurn };
-    });
+    return this.ctx.players.map((player, i) => ({ playerId: player.id, score: this.wins[i]! * 10000 + this.totals[i]!.damage }));
   }
 
   getStats(): GameStat[] {
     const stats: GameStat[] = [];
     this.ctx.players.forEach((player, i) => {
-      const f = this.world.fighters[i]!;
-      stats.push({ playerId: player.id, label: "Damage", value: String(f.damageDealt) });
-      stats.push({ playerId: player.id, label: "KOs", value: String(f.kos) });
-      if (f.bestHit > 0) stats.push({ playerId: player.id, label: "Best hit", value: String(f.bestHit) });
+      const t = this.totals[i]!;
+      stats.push({ playerId: player.id, label: "Islands", value: String(this.wins[i]) });
+      stats.push({ playerId: player.id, label: "Damage", value: String(t.damage) });
+      stats.push({ playerId: player.id, label: "KOs", value: String(t.kos) });
+      if (t.best > 0) stats.push({ playerId: player.id, label: "Best hit", value: String(t.best) });
+      if (this.perks[i]!.length > 0) {
+        stats.push({ playerId: player.id, label: "Perks", value: this.perks[i]!.map((id) => PERKS.find((k) => k.id === id)!.name).join(", ") });
+      }
     });
     return stats;
   }
@@ -659,13 +1030,28 @@ function powerColor(p: number): string {
   return p > 0.8 ? "#FF3D7A" : p > 0.5 ? "#FFB020" : "#B8FF3D";
 }
 
+function wrap(g: CanvasRenderingContext2D, text: string, x: number, y: number, maxW: number, lineH: number): void {
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (g.measureText(test).width > maxW && line) {
+      lines.push(line);
+      line = word;
+    } else line = test;
+  }
+  if (line) lines.push(line);
+  lines.forEach((l, i) => g.fillText(l, x, y + (i - (lines.length - 1) / 2) * lineH));
+}
+
 export const kaboomIsle: GameDefinition = {
   id: "kaboom-isle",
   name: "Kaboom Isle",
-  tagline: "Tap-timed artillery. Lucky weapons. Lava below.",
+  tagline: "Tap-timed artillery. Chaos cards. Perk drafts. Lava below.",
   description:
-    "Blobs on crumbling floating islands over lava. Each turn a slot spins your weapon: bomb, bouncer, cluster, triple shot, airstrike, drill, black hole, teleporter, boxing glove, the jackpot Mega Nuke, or a useless rubber chicken. Supply crates parachute in: grab one by touching it or blasting it for HP, double damage or a shield. A ghost of your last shot shows while you aim. Tap to stop the swinging aim needle, tap again to stop the power meter. Wind changes every turn. Blasts carve the ground and fling fighters; 0 HP or a dip in the lava and you're out. After six rounds the lava starts rising. Last blob standing wins.",
+    "Blobs on crumbling floating islands over lava. First to win two islands takes the match. Every turn pick one of three random weapons (bomb, bouncer, cluster, triple, airstrike, drill, black hole, teleporter, boxing glove, the rare Mega Nuke, or a rubber chicken), then tap to stop the swinging aim needle and tap again to stop the power meter. Every round flips a chaos card: low gravity, hurricane, meteor shower, crate rain, bouncy world, earthquake, lava surge, double trouble or a jackpot round. Between islands everyone drafts a perk (losers first) and perks stack. Crates give HP, double damage or a shield. 0 HP or lava and you're out; after five rounds the lava rises.",
   durationMs: 0,
-  controls: "Tap to lock aim · tap again to fire (or any action key)",
+  controls: "Tap a card to pick · tap to lock aim · tap again to fire",
   create: (ctx) => new KaboomIsle(ctx),
 };
