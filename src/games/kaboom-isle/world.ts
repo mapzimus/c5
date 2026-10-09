@@ -38,6 +38,26 @@ export const WEAPONS: readonly Weapon[] = [
   { id: "blackhole", name: "BLACK HOLE", blurb: "Sucks everyone in. Then pops.", color: "#a855f7", weight: 6, radius: 64, damage: 30, knock: 700, carves: true },
 ];
 
+export type PerkId = "tough" | "blast" | "heavy" | "vampire" | "fireproof" | "lucky" | "twin" | "sniper";
+
+export interface Perk {
+  id: PerkId;
+  name: string;
+  blurb: string;
+  color: string;
+}
+
+export const PERKS: readonly Perk[] = [
+  { id: "tough", name: "THICK SKIN", blurb: "+30 max HP", color: "#B8FF3D" },
+  { id: "blast", name: "BIG BOOM", blurb: "Your blasts are 30% bigger", color: "#FF5A1F" },
+  { id: "heavy", name: "ANCHOR", blurb: "Take 45% less knockback", color: "#94a3b8" },
+  { id: "vampire", name: "VAMPIRE", blurb: "Heal 35% of damage you deal", color: "#FF3D7A" },
+  { id: "fireproof", name: "FIREPROOF", blurb: "Bounce out of the lava once per island", color: "#FFB020" },
+  { id: "lucky", name: "LUCKY", blurb: "Pick from 4 weapons, rares more likely", color: "#FFE14D" },
+  { id: "twin", name: "TWIN SHOT", blurb: "Every shot fires an extra copy", color: "#3EE0FF" },
+  { id: "sniper", name: "SNIPER", blurb: "Wind can't touch your shots", color: "#c084fc" },
+];
+
 export function rollWeapon(rng: Rng): Weapon {
   const total = WEAPONS.reduce((s, w) => s + w.weight, 0);
   let r = rng.float(0, total);
@@ -66,6 +86,13 @@ export interface Fighter {
   /** Crate buffs, spent on the next shot / next hit. */
   doubleDamage: boolean;
   shield: boolean;
+  maxHp: number;
+  perks: PerkId[];
+  fireproofLeft: number;
+}
+
+export function perkCount(f: Fighter, id: PerkId): number {
+  return f.perks.filter((p) => p === id).length;
 }
 
 export type CrateKind = "medkit" | "double" | "shield";
@@ -89,7 +116,8 @@ export interface Vortex {
 export type WorldEvent =
   | { type: "crate"; index: number; kind: CrateKind; x: number; y: number }
   | { type: "teleport"; index: number; x: number; y: number }
-  | { type: "shielded"; index: number };
+  | { type: "shielded"; index: number }
+  | { type: "fireproof"; index: number; x: number; y: number };
 
 export interface Shot {
   x: number;
@@ -107,6 +135,8 @@ export interface Shot {
   dmgMul: number;
   /** Seconds left boring through terrain (drill only). */
   drilling: number;
+  /** Bouncy World turns every shot into a bouncer with this fuse. */
+  fuse?: number | undefined;
   /** Full flight path of the lead shot, kept as next turn's ghost. */
   path?: { x: number; y: number }[] | undefined;
 }
@@ -134,16 +164,21 @@ export class World {
   ghosts: ({ x: number; y: number }[] | undefined)[] = [];
   lava: number;
   wind = 0;
+  /** Chaos-card knobs. */
+  gravity = GRAVITY;
+  windMul = 1;
+  bouncy = false;
   /** Bumped whenever tiles change so the renderer can re-cache. */
   version = 0;
 
-  constructor(readonly width: number, readonly height: number, private readonly rng: Rng, players: number) {
+  constructor(readonly width: number, readonly height: number, private readonly rng: Rng, players: number, private readonly perks: PerkId[][] = []) {
     this.cols = Math.ceil(width / TILE);
     this.rows = Math.ceil(height / TILE);
     this.tiles = new Uint8Array(this.cols * this.rows);
     this.lava = height - 56;
     this.generate();
     this.spawn(players);
+    this.applyPerks();
   }
 
   solidAt(x: number, y: number): boolean {
@@ -216,9 +251,18 @@ export class World {
       const sy = this.surfaceY(x) ?? this.height * 0.5;
       return {
         index, x, y: sy - FIGHTER_R - 1, vx: 0, vy: 0, hp: 100, alive: true, grounded: true,
+        maxHp: 100, perks: [...(this.perks[index] ?? [])], fireproofLeft: 0,
         diedOnTurn: -1, damageDealt: 0, kos: 0, bestHit: 0, hurt: 0, doubleDamage: false, shield: false,
       };
     });
+  }
+
+  private applyPerks(): void {
+    for (const f of this.fighters) {
+      f.maxHp = 100 + 30 * perkCount(f, "tough");
+      f.hp = f.maxHp;
+      f.fireproofLeft = perkCount(f, "fireproof");
+    }
   }
 
   rollWind(): void {
@@ -226,13 +270,14 @@ export class World {
   }
 
   windAccel(): number {
-    return this.wind * 140;
+    return this.wind * 140 * this.windMul;
   }
 
   fire(owner: number, angle: number, power: number, weapon: Weapon): void {
     const f = this.fighters[owner]!;
     const speed = MAX_SPEED * (0.15 + power * 0.85);
-    const angles = weapon.id === "triple" ? [angle - 0.09, angle, angle + 0.09] : [angle];
+    const base = weapon.id === "triple" ? [angle - 0.09, angle, angle + 0.09] : [angle];
+    const angles = perkCount(f, "twin") > 0 ? [...base, ...base.map((a) => a + 0.05 * perkCount(f, "twin"))] : base;
     const dmgMul = f.doubleDamage ? 2 : 1;
     f.doubleDamage = false;
     for (const [i, a] of angles.entries()) {
@@ -241,7 +286,8 @@ export class World {
       this.shots.push({
         x: f.x + Math.cos(a) * (FIGHTER_R + 6), y: f.y - Math.sin(a) * (FIGHTER_R + 6),
         vx, vy, weapon, owner, age: 0, mini: false, dead: false, trail: [], dmgMul, drilling: 0,
-        path: i === Math.floor(angles.length / 2) ? [] : undefined,
+        path: i === Math.floor(base.length / 2) ? [] : undefined,
+        fuse: this.bouncy && weapon.fuse === undefined && weapon.id !== "teleport" ? 2.5 : weapon.fuse,
       });
     }
   }
@@ -272,8 +318,9 @@ export class World {
 
   private stepShot(shot: Shot, h: number, blasts: Blast[], turn: number): void {
     shot.age += h;
-    shot.vy += GRAVITY * h;
-    shot.vx += this.windAccel() * h;
+    shot.vy += this.gravity * h;
+    const shooter = this.fighters[shot.owner];
+    if (!shooter || perkCount(shooter, "sniper") === 0) shot.vx += this.windAccel() * h;
     const nx = shot.x + shot.vx * h;
     const ny = shot.y + shot.vy * h;
     if (shot.path && (shot.path.length === 0 || Math.hypot(nx - shot.path[shot.path.length - 1]!.x, ny - shot.path[shot.path.length - 1]!.y) > 12)) {
@@ -281,7 +328,7 @@ export class World {
     }
     if (shot.drilling > 0) {
       shot.drilling -= h;
-      shot.vy -= GRAVITY * h * 0.8;
+      shot.vy -= this.gravity * h * 0.8;
       shot.x = nx;
       shot.y = ny;
       this.carve(nx, ny, 13);
@@ -293,7 +340,7 @@ export class World {
       shot.trail.push({ x: nx, y: ny });
       if (shot.trail.length > 24) shot.trail.shift();
     }
-    const fuse = shot.weapon.fuse;
+    const fuse = shot.fuse;
     if (nx < -200 || nx > this.width + 200 || ny > this.lava || shot.age > 9) {
       shot.dead = true;
       if (ny > this.lava && nx > 0 && nx < this.width) {
@@ -315,7 +362,7 @@ export class World {
         shot.y = ny;
         return;
       }
-      if (shot.weapon.bounces && !shot.mini) {
+      if (shot.fuse !== undefined && !shot.mini) {
         // Reflect on whichever axis is blocked.
         const blockX = this.solidAt(nx, shot.y);
         const blockY = this.solidAt(shot.x, ny);
@@ -364,6 +411,8 @@ export class World {
   }
 
   blast(x: number, y: number, radius: number, damage: number, knock: number, weapon: Weapon, owner: number, turn: number): Blast {
+    const shooterPerks = this.fighters[owner];
+    if (shooterPerks) radius *= Math.pow(1.3, perkCount(shooterPerks, "blast"));
     if (weapon.carves) this.carve(x, y, radius * 0.8);
     const hits: Blast["hits"] = [];
     const shooter = this.fighters[owner];
@@ -382,11 +431,11 @@ export class World {
       }
       const nx = d > 0.01 ? dx / d : 0;
       const ny = d > 0.01 ? dy / d : -1;
-      const k = knock * (0.4 + 0.6 * falloff);
+      const k = knock * (0.4 + 0.6 * falloff) * Math.pow(0.55, perkCount(f, "heavy"));
       f.vx += nx * k;
       f.vy += ny * k - k * 0.45;
       f.grounded = false;
-      if (owner !== f.index) this.lastHitBy[f.index] = owner;
+      if (owner >= 0 && owner !== f.index) this.lastHitBy[f.index] = owner;
       if (dmg > 0) {
         f.hp -= dmg;
         f.hurt = 0.5;
@@ -394,6 +443,8 @@ export class World {
         if (shooter && shooter.index !== f.index) {
           shooter.damageDealt += dmg;
           shooter.bestHit = Math.max(shooter.bestHit, dmg);
+          const vamp = perkCount(shooter, "vampire");
+          if (vamp > 0 && shooter.alive) shooter.hp = Math.min(shooter.maxHp, shooter.hp + Math.round(dmg * 0.35 * vamp));
         }
       }
       if (f.hp <= 0) this.kill(f, turn, owner);
@@ -424,7 +475,7 @@ export class World {
     f.alive = false;
     f.hp = Math.max(0, f.hp);
     f.diedOnTurn = turn;
-    if (by !== null && by !== f.index) this.fighters[by]!.kos++;
+    if (by !== null && by >= 0 && by !== f.index) this.fighters[by]!.kos++;
   }
 
   /** Who last hit each fighter, so lava KOs credit the shooter. */
@@ -432,7 +483,7 @@ export class World {
 
   private stepFighter(f: Fighter, h: number, turn: number): void {
     f.hurt = Math.max(0, f.hurt - h);
-    f.vy += GRAVITY * h;
+    f.vy += this.gravity * h;
     f.vx = Math.max(-1400, Math.min(1400, f.vx));
     f.vy = Math.max(-1400, Math.min(1400, f.vy));
     f.x += f.vx * h;
@@ -472,6 +523,14 @@ export class World {
       f.vx *= -0.3;
     }
     if (f.grounded && Math.abs(f.vx) < 6) f.vx = 0;
+    if (f.y + r > this.lava && f.fireproofLeft > 0 && f.x > 0 && f.x < this.width) {
+      f.fireproofLeft--;
+      f.y = this.lava - r - 2;
+      f.vy = -1050;
+      f.vx = (this.width / 2 - f.x) * 0.9;
+      this.events.push({ type: "fireproof", index: f.index, x: f.x, y: f.y });
+      return;
+    }
     if (f.y - r > this.lava || f.x < -60 || f.x > this.width + 60 || f.y > this.height + 60) {
       this.kill(f, turn, this.lastHitBy[f.index] ?? null);
     }
@@ -500,7 +559,7 @@ export class World {
       if (d > range || d < 1) continue;
       const a = 2600 * (1 - d / range);
       f.vx += (dx / d) * a * h;
-      f.vy += (dy / d) * a * h - GRAVITY * h * 0.6;
+      f.vy += (dy / d) * a * h - this.gravity * h * 0.6;
       f.grounded = false;
     }
   }
@@ -534,10 +593,32 @@ export class World {
 
   private grab(c: Crate, f: Fighter): void {
     c.dead = true;
-    if (c.kind === "medkit") f.hp = Math.min(125, f.hp + 35);
+    if (c.kind === "medkit") f.hp = Math.min(f.maxHp + 25, f.hp + 35);
     if (c.kind === "double") f.doubleDamage = true;
     if (c.kind === "shield") f.shield = true;
     this.events.push({ type: "crate", index: f.index, kind: c.kind, x: c.x, y: c.y });
+  }
+
+  /** Meteor: a big rock dropped from the sky at x. */
+  meteor(x: number): void {
+    const rock: Weapon = { id: "bomb", name: "METEOR", blurb: "", color: "#FF5A1F", weight: 0, radius: 46, damage: 24, knock: 520, carves: true };
+    this.shots.push({ x, y: -40 - this.rng.float(0, 300), vx: this.rng.float(-120, 120), vy: 200, weapon: rock, owner: -1, age: 1, mini: true, dead: false, trail: [], dmgMul: 1, drilling: 0 });
+  }
+
+  /** Earthquake: shake everyone loose and crumble random chunks. */
+  quake(turn: number): void {
+    for (let i = 0; i < 7; i++) {
+      const x = this.rng.float(40, this.width - 40);
+      const y = this.surfaceY(x);
+      if (y !== null) this.carve(x, y + this.rng.float(0, 30), this.rng.float(18, 34));
+    }
+    for (const f of this.fighters) {
+      if (!f.alive) continue;
+      f.vy -= this.rng.float(250, 450);
+      f.vx += this.rng.float(-160, 160);
+      f.grounded = false;
+    }
+    void turn;
   }
 
   settled(): boolean {
@@ -559,8 +640,8 @@ export class World {
     let vy = -Math.sin(angle) * speed;
     const h = 1 / 120;
     for (let t = 0; t < 6; t += h) {
-      vy += GRAVITY * h;
-      vx += this.windAccel() * h;
+      vy += this.gravity * h;
+      if (perkCount(f, "sniper") === 0) vx += this.windAccel() * h;
       x += vx * h;
       y += vy * h;
       if (y > this.lava || x < -100 || x > this.width + 100) return { x, y };

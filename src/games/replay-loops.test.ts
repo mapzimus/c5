@@ -44,23 +44,25 @@ describe("replay loops", () => {
     game.destroy();
   });
 
-  it("Kaboom Isle plays itself to a finish when nobody taps", () => {
+  it("Kaboom Isle plays a whole match to a finish when nobody taps", () => {
     const game = new KaboomIsle(context());
-    for (let frame = 0; frame < 60 * 60 * 15 && !game.isFinished(); frame++) game.update(1 / 60);
+    for (let frame = 0; frame < 60 * 60 * 120 && !game.isFinished(); frame++) game.update(1 / 60);
     expect(game.isFinished()).toBe(true);
-    expect(game.turn).toBeGreaterThan(1);
-    expect(game.world.alive().length).toBeLessThanOrEqual(1);
+    expect(game.island).toBeGreaterThan(1);
+    expect(Math.max(...game.wins)).toBeGreaterThanOrEqual(1);
     game.destroy();
-  });
+  }, 120_000);
 
   it("Kaboom Isle bots finish a four-way brawl", () => {
     const ctx = context();
     ctx.players = [0, 1, 2, 3].map((slot) => ({ id: `p${slot}`, name: `P${slot}`, color: "#3EE0FF", kind: "bot", slot })) as GameContext["players"];
     const game = new KaboomIsle(ctx);
-    for (let frame = 0; frame < 60 * 60 * 15 && !game.isFinished(); frame++) game.update(1 / 60);
+    for (let frame = 0; frame < 60 * 60 * 120 && !game.isFinished(); frame++) game.update(1 / 60);
     expect(game.isFinished()).toBe(true);
     const stats = game.getStats().filter((s) => s.label === "Damage");
     expect(stats.some((s) => Number(s.value) > 0)).toBe(true);
+    expect(Math.max(...game.wins)).toBe(2);
+    expect(game.perks.some((p) => p.length > 0)).toBe(true);
     game.destroy();
-  });
+  }, 120_000);
 });
