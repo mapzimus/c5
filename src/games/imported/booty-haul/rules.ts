@@ -169,6 +169,19 @@ export function scoreShipsInRange(
   return total;
 }
 
+/** Re-launch a sunk ship from a random port with a fresh cargo (keeps its id). */
+export function respawnShip(ship: Ship, rng: Rng, lanes: readonly Lane[]): void {
+  const fresh = spawnShip(rng, lanes);
+  ship.type = fresh.type;
+  ship.laneIdx = fresh.laneIdx;
+  ship.dir = fresh.dir;
+  ship.km = fresh.km;
+  ship.driftLat = fresh.driftLat;
+  ship.driftLng = fresh.driftLng;
+  ship.speedMult = fresh.speedMult;
+  ship.alive = true;
+}
+
 /** Spawn a convoy pack: 3-5 ships on the same lane near the same km position. */
 export function spawnConvoyPack(rng: Rng, lanes: readonly Lane[]): Ship[] {
   const count = rng.int(3, 5);
@@ -244,6 +257,7 @@ export function botPickSpot(
   lanes: readonly Lane[],
   doors: readonly { ll: LatLng }[],
   takenSpots: readonly ParkingSpot[],
+  avoidKm = 100,
 ): LatLng {
   let bestScore = -1;
   let bestLL = doors[0]!.ll;
@@ -258,7 +272,7 @@ export function botPickSpot(
   }
   for (const c of candidates) {
     const taken = takenSpots.some(
-      (s) => s.parked && haversineKm(s.ll, c) < 100,
+      (s) => s.parked && haversineKm(s.ll, c) < avoidKm,
     );
     if (taken) continue;
     const score = scoreShipsInRange(ships, c, lanes);
