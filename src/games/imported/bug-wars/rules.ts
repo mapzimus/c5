@@ -26,6 +26,9 @@ export const SPECIES_NAMES: Record<Species, string> = {
   spiders: "Spiders",
 };
 
+/** Snacks and gadgets lying on a tile. Whoever captures the tile triggers it. */
+export type ItemKind = "cake" | "firecracker" | "egg" | "pepper" | "trap";
+
 export interface Tile {
   id: number;
   col: number;
@@ -33,6 +36,7 @@ export interface Tile {
   /** Seat index, or NO_OWNER. Every land tile starts owned. */
   owner: number;
   bugs: number;
+  item?: ItemKind | null;
 }
 
 export interface Board {
@@ -55,6 +59,25 @@ export interface Battle {
   attackSum: number;
   defendSum: number;
   captured: boolean;
+  /** Extra dice from bonuses (revenge, pepper, frenzy). */
+  attackBonus?: number;
+  /** Extra dice from bonuses (last stand). */
+  defendBonus?: number;
+  /** Three or more matching dice: attack auto-wins, defence auto-holds (defence wins if both). */
+  jackpot?: "attack" | "defend" | null;
+}
+
+/** Bonus dice on top of the bug count. */
+export interface BattleMods {
+  attackDice?: number;
+  defendDice?: number;
+}
+
+/** A roll of this many dice or more that all match is a jackpot. */
+export const JACKPOT_MIN_DICE = 3;
+
+export function isJackpot(rolls: readonly number[]): boolean {
+  return rolls.length >= JACKPOT_MIN_DICE && rolls.every((d) => d === rolls[0]);
 }
 
 export function cellKey(col: number, row: number): string {
@@ -145,7 +168,7 @@ export function generateBoard(rng: Rng, playerCount: number, options: BoardOptio
     }
   }
 
-  const tiles: Tile[] = land.map((cell, id) => ({ id, col: cell.col, row: cell.row, owner: NO_OWNER, bugs: 1 }));
+  const tiles: Tile[] = land.map((cell, id) => ({ id, col: cell.col, row: cell.row, owner: NO_OWNER, bugs: 1, item: null }));
   const byKey = new Map(tiles.map((tile) => [cellKey(tile.col, tile.row), tile.id]));
   const adjacency = tiles.map((tile) =>
     hexNeighbours(tile.col, tile.row, cols, rows)
@@ -221,25 +244,49 @@ export function rollDice(rng: Rng, count: number): number[] {
   return Array.from({ length: count }, () => rng.int(1, 6));
 }
 
-/** Roll a fight without touching the board. Attacker needs strictly more; ties go to the defender. */
-export function rollBattle(board: Board, from: number, to: number, rng: Rng): Battle {
+/**
+ * Roll a fight without touching the board. Attacker needs strictly more; ties go to the defender.
+ * Jackpots (3+ matching dice) override the sums, and a defending jackpot beats an attacking one.
+ */
+export function rollBattle(board: Board, from: number, to: number, rng: Rng, mods: BattleMods = {}): Battle {
   const source = board.tiles[from]!;
   const target = board.tiles[to]!;
   if (!canAttack(board, from, to, source.owner)) throw new Error(`Illegal attack ${from} -> ${to}`);
-  const attackRolls = rollDice(rng, source.bugs);
-  const defendRolls = rollDice(rng, target.bugs);
+  const attackBonus = Math.max(0, Math.floor(mods.attackDice ?? 0));
+  const defendBonus = Math.max(0, Math.floor(mods.defendDice ?? 0));
+  const attackRolls = rollDice(rng, source.bugs + attackBonus);
+  const defendRolls = rollDice(rng, target.bugs + defendBonus);
+  return judgeBattle(from, to, source.owner, target.owner, attackRolls, defendRolls, attackBonus, defendBonus);
+}
+
+/** Score already-rolled dice. Split out so the rule is testable with fixed dice. */
+export function judgeBattle(
+  from: number,
+  to: number,
+  attacker: number,
+  defender: number,
+  attackRolls: number[],
+  defendRolls: number[],
+  attackBonus = 0,
+  defendBonus = 0,
+): Battle {
   const attackSum = attackRolls.reduce((a, b) => a + b, 0);
   const defendSum = defendRolls.reduce((a, b) => a + b, 0);
+  const jackpot = isJackpot(defendRolls) ? "defend" : isJackpot(attackRolls) ? "attack" : null;
+  const captured = jackpot === "defend" ? false : jackpot === "attack" ? true : attackSum > defendSum;
   return {
     from,
     to,
-    attacker: source.owner,
-    defender: target.owner,
+    attacker,
+    defender,
     attackRolls,
     defendRolls,
     attackSum,
     defendSum,
-    captured: attackSum > defendSum,
+    captured,
+    attackBonus,
+    defendBonus,
+    jackpot,
   };
 }
 
@@ -293,8 +340,8 @@ export function reinforce(board: Board, seat: number, amount: number, rng: Rng):
 }
 
 /** End of turn: income (biggest patch + stash) lands on the board, the rest waits in the nest. */
-export function endTurnIncome(board: Board, seat: number, stash: number, rng: Rng): { income: number; placed: number[]; stash: number } {
-  const income = largestRegion(board, seat) + stash;
+export function endTurnIncome(board: Board, seat: number, stash: number, rng: Rng, bonus = 0): { income: number; placed: number[]; stash: number } {
+  const income = largestRegion(board, seat) + stash + Math.max(0, bonus);
   const result = reinforce(board, seat, income, rng);
   return { income, placed: result.placed, stash: Math.min(STASH_MAX, result.leftover) };
 }
@@ -314,24 +361,39 @@ export interface AttackChoice {
   to: number;
 }
 
+export interface BotOptions {
+  /** Smallest bug edge worth attacking at (default 1). Reckless bots use 0 or -1. */
+  minEdge?: number;
+  /** Extra score for a target tile (items, grudges, the leader...). */
+  favour?: (to: number) => number;
+  /** Random noise added to every option score (chaotic bots). */
+  noise?: number;
+  /** Bonus dice the bot would bring, counted as bugs when judging the edge. */
+  bonusDice?: (to: number) => number;
+}
+
 /**
  * Bot: attack when it has more bugs than the target, biggest edge first (bigger prize on ties).
  * A full stack will also gamble on an equal fight, which keeps late games moving.
+ * Personas tune it with `options`.
  */
-export function botPickAttack(board: Board, seat: number, rng: Rng): AttackChoice | null {
-  const options: { choice: AttackChoice; score: number }[] = [];
+export function botPickAttack(board: Board, seat: number, rng: Rng, options: BotOptions = {}): AttackChoice | null {
+  const minEdge = options.minEdge ?? 1;
+  const noise = options.noise ?? 0.5;
+  const choices: { choice: AttackChoice; score: number }[] = [];
   for (const from of attackers(board, seat)) {
     const source = board.tiles[from]!;
     for (const to of targetsFrom(board, from)) {
       const target = board.tiles[to]!;
-      const edge = source.bugs - target.bugs;
-      if (edge <= 0 && !(edge === 0 && source.bugs >= MAX_BUGS - 1)) continue;
-      options.push({ choice: { from, to }, score: edge * 10 + target.bugs + rng.float(0, 0.5) });
+      const edge = source.bugs + (options.bonusDice?.(to) ?? 0) - target.bugs;
+      const gamble = edge === 0 && source.bugs >= MAX_BUGS - 1;
+      if (edge < minEdge && !gamble) continue;
+      choices.push({ choice: { from, to }, score: edge * 10 + target.bugs + (options.favour?.(to) ?? 0) + rng.float(0, noise) });
     }
   }
-  if (options.length === 0) return null;
-  options.sort((a, b) => b.score - a.score);
-  return options[0]!.choice;
+  if (choices.length === 0) return null;
+  choices.sort((a, b) => b.score - a.score);
+  return choices[0]!.choice;
 }
 
 /** Game over when one seat holds the whole garden or the round cap has passed. */
@@ -343,4 +405,36 @@ export function gameOver(board: Board, playerCount: number, round: number): "con
 
 export function speciesFor(slot: number): Species {
   return SPECIES[slot % SPECIES.length]!;
+}
+
+const sumCache = new Map<number, number[]>();
+
+/** Probability distribution of the sum of `count` d6 (index = sum). */
+export function diceSumDistribution(count: number): number[] {
+  const cached = sumCache.get(count);
+  if (cached) return cached;
+  let dist = [1];
+  for (let n = 0; n < count; n += 1) {
+    const next = new Array(dist.length + 6).fill(0);
+    dist.forEach((p, sum) => {
+      if (p === 0) return;
+      for (let face = 1; face <= 6; face += 1) next[sum + face] += p / 6;
+    });
+    dist = next;
+  }
+  sumCache.set(count, dist);
+  return dist;
+}
+
+/** Chance the attacker's sum beats the defender's (ignores jackpots, which are rare). */
+export function winChance(attackDice: number, defendDice: number): number {
+  const a = diceSumDistribution(attackDice);
+  const d = diceSumDistribution(defendDice);
+  let below = 0;
+  let chance = 0;
+  for (let sum = 0; sum < a.length; sum += 1) {
+    chance += (a[sum] ?? 0) * below;
+    below += d[sum] ?? 0;
+  }
+  return chance;
 }
