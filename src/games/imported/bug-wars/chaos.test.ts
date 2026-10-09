@@ -21,7 +21,20 @@ import {
   triggerItem,
   underdogBonus,
 } from "./chaos";
-import { MAX_BUGS, MAX_ROUNDS, STASH_MAX, type Board, botPickAttack, endTurnIncome, generateBoard, judgeBattle, rollBattle, winChance } from "./rules";
+import {
+  BOT_BATTLE_SPEED,
+  MAX_BUGS,
+  MAX_ROUNDS,
+  STASH_MAX,
+  type Board,
+  botPickAttack,
+  endTurnIncome,
+  generateBoard,
+  judgeBattle,
+  playbackSpeed,
+  rollBattle,
+  winChance,
+} from "./rules";
 
 function line(owners: number[], bugs: number[]): Board {
   return {
@@ -265,4 +278,51 @@ describe("full game", () => {
       }
     });
   }
+});
+
+describe("pacing with bots", () => {
+  it("humans' own fights play at full speed, bot fights zip, and a tap skips further", () => {
+    expect(playbackSpeed({ humanTurn: true })).toBe(1);
+    expect(playbackSpeed({ humanTurn: true, skipping: true })).toBe(1);
+    const vsHuman = playbackSpeed({ humanTurn: false, humanDefending: true });
+    expect(vsHuman).toBeGreaterThan(1);
+    expect(vsHuman).toBeLessThan(BOT_BATTLE_SPEED);
+    expect(playbackSpeed({ humanTurn: false })).toBe(BOT_BATTLE_SPEED);
+    expect(playbackSpeed({ humanTurn: false, skipping: true })).toBeGreaterThan(BOT_BATTLE_SPEED);
+  });
+
+  /** Seconds a human (seat 0, passing instantly) waits between turns against three bots. */
+  function averageWait(seed: number, tapDuringBots: boolean): number {
+    let tap = false;
+    const ctx = context(["human", "bot", "bot", "bot"], seed);
+    ctx.input.consumeClick = () => (tap ? { x: 10, y: 10 } : null);
+    const game = bugWars.create(ctx);
+    const state = game as any;
+    const waits: number[] = [];
+    let waitStart = -1;
+    let t = 0;
+    for (let f = 0; f < 60 * 60 * 20 && !game.isFinished() && waits.length < 6; f++) {
+      tap = tapDuringBots && waitStart >= 0 && f % 20 === 0;
+      game.update(1 / 60);
+      t += 1 / 60;
+      if (state.currentSeat === 0 && (state.phase === "pick" || state.phase === "target")) {
+        expect(state.skipping).toBe(false);
+        if (waitStart >= 0) waits.push(t - waitStart);
+        state.advanceTurn();
+        waitStart = t;
+      }
+    }
+    game.destroy();
+    expect(waits.length).toBeGreaterThan(2);
+    return waits.reduce((a, b) => a + b, 0) / waits.length;
+  }
+
+  it("a human waits well under 20s between turns with three bots, and tapping cuts it further", () => {
+    for (const seed of [1, 2, 3]) {
+      const normal = averageWait(seed, false);
+      const skipped = averageWait(seed, true);
+      expect(normal).toBeLessThan(12);
+      expect(skipped).toBeLessThan(normal * 0.7);
+    }
+  });
 });

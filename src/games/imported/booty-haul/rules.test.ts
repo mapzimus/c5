@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../../core/rng";
-import { buildLanes, DOORS } from "./geo";
+import { buildLanes, DOORS, haversineKm } from "./geo";
 import {
   advanceShips,
   botPickSpot,
+  BOT_SPREAD_KM,
   FLEET_SIZE,
+  PLUNDER_COOLDOWN_S,
+  plunderShipsInRange,
+  raidValue,
+  richestShipInRange,
   scoreShipsInRange,
   shipPos,
   SHIP_TYPES,
@@ -12,6 +17,7 @@ import {
   spawnShip,
   spawnConvoyPack,
   spawnGoldRushShips,
+  type ParkingSpot,
 } from "./rules";
 
 const lanes = buildLanes();
@@ -103,6 +109,38 @@ describe("Park Your Pirate rules", () => {
     for (const ship of ships) {
       expect(ship.laneIdx).toBe(laneIdx);
       expect(["treasure", "convoy"]).toContain(ship.type.key);
+    }
+  });
+
+  it("ship values are small and readable", () => {
+    expect(SHIP_TYPES.map((t) => t.points)).toEqual([1, 2, 5, 10]);
+  });
+
+  it("each passing ship pays its listed value once, not every tick", () => {
+    const ship = spawnShip(rng(), lanes);
+    const pos = shipPos(ship, lanes);
+    const plundered = new Map<number, number>();
+    expect(plunderShipsInRange([ship], pos, lanes, plundered, 0)).toEqual({ points: ship.type.points, count: 1 });
+    expect(plunderShipsInRange([ship], pos, lanes, plundered, 0.4).points).toBe(0);
+    expect(plunderShipsInRange([ship], pos, lanes, plundered, PLUNDER_COOLDOWN_S + 1).points).toBe(ship.type.points);
+  });
+
+  it("raids rob the richest ship in range for 2x (3x on the beat)", () => {
+    const fleet = spawnFleet(rng(), lanes, 3);
+    const pos = shipPos(fleet[0]!, lanes);
+    expect(richestShipInRange(fleet, pos, lanes)).toBeGreaterThanOrEqual(fleet[0]!.type.points);
+    expect(raidValue(10, false)).toBe(20);
+    expect(raidValue(10, true)).toBe(30);
+  });
+
+  it("bots fan out instead of stacking on the same spot", () => {
+    const r = new Rng(7);
+    const fleet = spawnFleet(r, lanes, FLEET_SIZE);
+    const taken: ParkingSpot[] = [];
+    for (let i = 0; i < 3; i++) {
+      const ll = botPickSpot(r, fleet, lanes, DOORS, taken);
+      for (const t of taken) expect(haversineKm(t.ll, ll)).toBeGreaterThanOrEqual(BOT_SPREAD_KM);
+      taken.push({ ll, parked: true, score: 0 });
     }
   });
 });

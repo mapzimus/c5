@@ -7,10 +7,14 @@ import { LAND } from "./land";
 import {
   advanceShips,
   botPickSpot,
+  BOT_SPREAD_KM,
   FLEET_SIZE,
   GAME_DURATION_S,
   REPARK_COUNT,
   respawnShip,
+  plunderShipsInRange,
+  raidValue,
+  richestShipInRange,
   scoreShipsInRange,
   shipPos,
   SHIP_SPEED_KM_S,
@@ -29,8 +33,9 @@ import {
   assignPersonas,
   bark,
   type BarkKey,
-  BOARD_RANGE_KM,
   BOARD_SHIELD_S,
+  boardPairBlocked,
+  boardPairKey,
   boardingSteal,
   botBoardTarget,
   canStartEvent,
@@ -73,6 +78,19 @@ const GLOBE_R_MIN = 200;
 const GLOBE_R_MAX = 500;
 const SPIN_SPEED = 8;
 const MOVE_RECHARGE_S = 6;
+/** Streak multiplier cap (x2 after 3 busy ticks). */
+const MAX_MULT = 2;
+const RAID_COOLDOWN_S = 8;
+
+/** A point ~150 km from `ll` in direction `ang`: inside boarding range, but visibly beside it. */
+function alongside(ll: LatLng, ang: number): LatLng {
+  const dLat = Math.cos(ang) * 1.35;
+  const dLng = (Math.sin(ang) * 1.35) / Math.max(0.2, Math.cos((ll[0] * Math.PI) / 180));
+  let lng = ll[1] + dLng;
+  if (lng > 180) lng -= 360;
+  if (lng < -180) lng += 360;
+  return [Math.max(-80, Math.min(80, ll[0] + dLat)), lng];
+}
 
 const RAID_BTN = { x: 850, y: 368, w: 380, h: 92 } as const;
 const HELM_Y = 470;
@@ -91,9 +109,9 @@ export const bootyHaul: GameDefinition = {
   name: "Booty Haul",
   tagline: "Drop anchor, rob your mates, dodge the kraken. 75 seconds of piracy.",
   description:
-    "Tap the globe to drop anchor. Every vessel within 200 km pays out: cargo 2, tanker 5, treasure 15, convoy 30, and streaks multiply it up to x4. " +
-    "Drop anchor ON a rival to BOARD them and steal 12% of their booty (25% if they're WANTED for leading by a mile, and extra if it's revenge). " +
-    "Raid on the gold flash for a burst. Every ~10s the sea goes mad: a kraken surfaces next to the leader, treasure rains from the sky, a ghost ship worth 150 races past, or cursed gold makes raids triple-or-nothing. " +
+    "Tap the globe to drop anchor. Every vessel that sails within 200 km pays you its value once: cargo 1, tanker 2, treasure 5, convoy 10, and a hot streak doubles it. " +
+    "Drop anchor ON a rival to BOARD them and steal 25 booty (50 if they're WANTED for leading by a mile, +15 for revenge); you can't board the same captain again for 20 seconds. " +
+    "Raid to rob the richest ship in range for double its value (triple on the gold flash, every 8s). Every ~10s the sea goes mad: a kraken surfaces next to the leader, treasure rains from the sky, a ghost ship worth 40 races past, or cursed gold makes raids triple-or-nothing. " +
     "The last 15 seconds are LAST CALL: everything pays double. Moves recharge every six seconds.",
   durationMs: GAME_DURATION_S * 1000,
   controls: "Tap/click the globe to anchor (tap a rival to board) · RAID button or your action key (Space / Enter / R-Shift / Y) · Tap your helm button or Tab to switch captain · 1–9 landmarks · Scroll/pinch zoom",
@@ -115,6 +133,8 @@ interface PlayerState {
   lastBoardedBy: string | null;
   lastBoardedAt: number;
   bubble: { text: string; life: number } | null;
+  /** Ship id -> elapsed time it last paid this captain. */
+  plundered: Map<number, number>;
   stolen: number;
   boards: number;
   lost: number;
@@ -199,6 +219,8 @@ class ParkYourPirateGame implements GameInstance {
   private lastCountdown = -1;
   private log: LogLine[] = [];
   private boardFx: BoardFx[] = [];
+  /** boarder>victim -> elapsed time of their last boarding. */
+  private readonly boardHistory = new Map<string, number>();
   private flash = { color: "#fff", life: 0 };
   private readonly wheelHandler: (e: WheelEvent) => void;
   private readonly touchStartHandler: (e: TouchEvent) => void;
@@ -256,7 +278,7 @@ class ParkYourPirateGame implements GameInstance {
       this.playerStates.set(p.id, {
         parked: false, ll: [0, 0], score: 0, displayScore: 0,
         reparks: REPARK_COUNT, streak: 0, multiplier: 1, dryTicks: 0, moveCharge: 0, raidCooldown: 0,
-        shield: 0, lastBoardedBy: null, lastBoardedAt: -99, bubble: null,
+        shield: 0, lastBoardedBy: null, lastBoardedAt: -99, bubble: null, plundered: new Map(),
         stolen: 0, boards: 0, lost: 0, loot: 0,
       });
     }
@@ -390,11 +412,19 @@ class ParkYourPirateGame implements GameInstance {
     const stretch = stretchMultiplier(this.elapsed);
     for (const [id, state] of this.playerStates) {
       if (!state.parked) continue;
-      const raw = scoreShipsInRange(this.ships, state.ll, this.lanes);
-      if (raw > 0) {
+      const inRange = scoreShipsInRange(this.ships, state.ll, this.lanes);
+      if (inRange > 0) {
         state.streak++;
         state.dryTicks = 0;
-        state.multiplier = Math.min(4, 1 + Math.floor(state.streak / STREAK_THRESHOLD));
+        state.multiplier = Math.min(MAX_MULT, 1 + Math.floor(state.streak / STREAK_THRESHOLD));
+        if (state.streak === STREAK_THRESHOLD) {
+          this.ctx.sfx.streak(2);
+          this.juice.shake(0.2);
+          this.callouts.show(`${this.player(id)?.name ?? ""} HOT STREAK x2`.trim(), "#FF3D7A", { life: 0.8, size: 46 });
+        }
+      }
+      const { points: raw } = plunderShipsInRange(this.ships, state.ll, this.lanes, state.plundered, this.elapsed);
+      if (raw > 0) {
         const pts = raw * state.multiplier * stretch;
         state.score += pts;
         const p = globeProject(state.ll, globe);
@@ -403,19 +433,7 @@ class ParkYourPirateGame implements GameInstance {
           const label = state.multiplier * stretch > 1 ? `+${pts} x${state.multiplier * stretch}` : `+${pts}`;
           this.popups.push({ x: p.x, y: p.y - 24, text: label, color: player?.color ?? "#fff", life: 0.7, size: 16 });
         }
-        if (state.streak === STREAK_THRESHOLD) {
-          this.ctx.sfx.streak(1);
-          this.juice.shake(0.15);
-        } else if (state.streak === STREAK_THRESHOLD * 2) {
-          this.ctx.sfx.streak(2);
-          this.juice.shake(0.2);
-          this.callouts.show("x3", "#FFB020", { life: 0.6, size: 48 });
-        } else if (state.streak === STREAK_THRESHOLD * 3) {
-          this.ctx.sfx.streak(3);
-          this.juice.shake(0.3);
-          this.callouts.show(`${this.player(id)?.name ?? ""} MAX x4`.trim(), "#FF3D7A", { life: 0.8, size: 52 });
-        }
-      } else {
+      } else if (inRange === 0) {
         state.dryTicks++;
         if (state.dryTicks >= 3) {
           state.streak = 0;
@@ -430,13 +448,13 @@ class ParkYourPirateGame implements GameInstance {
     const state = this.playerStates.get(playerId)!;
     if (!state.parked || state.raidCooldown > 0) return;
     const player = this.player(playerId);
-    const raw = scoreShipsInRange(this.ships, state.ll, this.lanes);
-    if (raw === 0) {
+    const prize = richestShipInRange(this.ships, state.ll, this.lanes);
+    if (prize === 0) {
       if (player?.kind === "human") this.callouts.show("NO SHIPS IN RANGE — CHASE THE LANES", "#94a3b8", { size: 30 });
       return;
     }
     const perfect = this.elapsed % 4 < 1;
-    const base = raw * state.multiplier * (perfect ? 8 : 4) * stretchMultiplier(this.elapsed);
+    const base = raidValue(prize, perfect) * stretchMultiplier(this.elapsed);
     let points = base;
     let cursed = false;
     if (this.event?.kind === "cursed-gold") {
@@ -445,7 +463,7 @@ class ParkYourPirateGame implements GameInstance {
       points = cursed ? -Math.min(state.score, base) : res.delta;
     }
     state.score = Math.max(0, state.score + points);
-    state.raidCooldown = 3;
+    state.raidCooldown = RAID_COOLDOWN_S;
     const p = globeProject(state.ll, this.globe());
     const color = player?.color ?? "#fff";
     const name = player?.name ?? "";
@@ -467,7 +485,7 @@ class ParkYourPirateGame implements GameInstance {
     if (this.event?.kind === "cursed-gold") {
       this.callouts.show(`${name} BEATS THE CURSE +${points}`, "#C084FC", { size: 40, life: 0.9 });
       this.addLog(bark(this.ctx.rng, "curseWin", name), "#C084FC");
-    } else if (player?.kind === "human" || points >= 1000) {
+    } else if (player?.kind === "human" || points >= 40) {
       this.callouts.show(`${perfect ? "PERFECT RAID" : "RAID"} +${points}`, color, { size: 44, life: 0.8 });
     } else if (p.z > 0) {
       // Routine bot raids pop at their ship instead of shouting over the whole table.
@@ -497,11 +515,15 @@ class ParkYourPirateGame implements GameInstance {
     const p = globeProject(ll, this.globe());
     this.juice.burst(p.x, p.y, player?.color ?? "#fff", { count: 20, speed: 220, life: 0.6, gravity: 200 });
 
-    const victim = findBoardingVictim(playerId, ll, this.anchorages());
+    const victim = findBoardingVictim(playerId, ll, this.anchorages(), (v) => this.pairBlocked(playerId, v));
     if (victim) this.board(playerId, victim.id);
   }
 
   // ---- boarding ------------------------------------------------------------
+
+  private pairBlocked(boarderId: string, victimId: string): boolean {
+    return boardPairBlocked(this.boardHistory, boarderId, victimId, this.elapsed);
+  }
 
   private board(boarderId: string, victimId: string): void {
     const bs = this.playerStates.get(boarderId)!;
@@ -517,6 +539,7 @@ class ParkYourPirateGame implements GameInstance {
     bs.score += steal;
     bs.stolen += steal;
     bs.boards++;
+    this.boardHistory.set(boardPairKey(boarderId, victimId), this.elapsed);
     vs.streak = 0;
     vs.multiplier = 1;
     vs.dryTicks = 0;
@@ -611,7 +634,7 @@ class ParkYourPirateGame implements GameInstance {
         this.popupAt(chest.ll, `+${value}`, "#FFB020", 26);
         this.ctx.sfx.collect();
         this.juice.shake(0.2);
-        if (chest.value >= 100) {
+        if (chest.value >= 40) {
           this.callouts.show(`MEGA CHEST! ${player.name} +${value}`, "#FFB020", { size: 48, life: 1.1, y: 0.24 });
           this.addLog(`${player.name} hauls the MEGA chest!`, player.color);
         } else {
@@ -821,9 +844,9 @@ class ParkYourPirateGame implements GameInstance {
     const taken = [...this.playerStates.entries()]
       .filter(([id, s]) => s.parked && id !== selfId)
       .map(([, s]) => ({ ll: s.ll, parked: true, score: s.score }));
-    let spot = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, taken, BOARD_RANGE_KM + 20);
+    let spot = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, taken);
     for (let i = 0; i < 4 && avoid && inRadius(spot, avoid, KRAKEN_RADIUS_KM + 80); i++) {
-      spot = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, taken, BOARD_RANGE_KM + 20);
+      spot = botPickSpot(this.ctx.rng, this.ships, this.lanes, DOORS, taken);
     }
     return spot;
   }
@@ -874,11 +897,23 @@ class ParkYourPirateGame implements GameInstance {
       }
       const boardOdds = persona.board * (this.wanted && this.wanted !== p.id ? 1.8 : 1);
       if (this.elapsed > 5 && rng.next() < boardOdds) {
-        const target = botBoardTarget(p.id, this.anchorages(), this.wanted);
+        const target = botBoardTarget(p.id, this.anchorages(), this.wanted, (v) => this.pairBlocked(p.id, v));
         if (target) {
-          this.park(p.id, target.ll);
+          // Swing in alongside rather than stacking on the victim's exact anchor.
+          this.park(p.id, alongside(target.ll, rng.next() * Math.PI * 2));
           continue;
         }
+      }
+      // Don't loiter on top of another captain (that's how boarding wars start):
+      // after a raid-and-run, sail back out to open water of your own.
+      const crowded = this.ctx.players.some((o) => {
+        if (o.id === p.id) return false;
+        const os = this.playerStates.get(o.id)!;
+        return os.parked && haversineKm(os.ll, state.ll) < BOT_SPREAD_KM * 0.6;
+      });
+      if (crowded && rng.next() < 0.6) {
+        this.park(p.id, this.botSpot(p.id, null));
+        continue;
       }
       if (this.elapsed > GAME_DURATION_S * 0.4 && rng.next() < 0.1) {
         this.park(p.id, this.botSpot(p.id, null));
@@ -1474,7 +1509,7 @@ class ParkYourPirateGame implements GameInstance {
       }
       g.font = "700 12px Outfit, sans-serif";
       if (state.multiplier > 1) {
-        g.fillStyle = state.multiplier >= 4 ? "#FF3D7A" : state.multiplier >= 3 ? "#FFB020" : "#3EE0FF";
+        g.fillStyle = state.multiplier >= MAX_MULT ? "#FF3D7A" : state.multiplier >= 2 ? "#FFB020" : "#3EE0FF";
         g.fillText(`x${state.multiplier}`, tx, y + 14);
         tx += 26;
       }
@@ -1502,8 +1537,8 @@ class ParkYourPirateGame implements GameInstance {
       }
       if (state.streak > 0) {
         const barW = (state.streak % STREAK_THRESHOLD) / STREAK_THRESHOLD * (panelW - 200);
-        g.fillStyle = state.multiplier >= 4 ? "rgba(255,61,122,0.5)" : "rgba(62,224,255,0.35)";
-        g.fillRect(panelX + 76, y + 28, state.multiplier >= 4 ? panelW - 200 : barW, 4);
+        g.fillStyle = state.multiplier >= MAX_MULT ? "rgba(255,61,122,0.5)" : "rgba(62,224,255,0.35)";
+        g.fillRect(panelX + 76, y + 28, state.multiplier >= MAX_MULT ? panelW - 200 : barW, 4);
       }
     }
 

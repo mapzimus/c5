@@ -17,6 +17,7 @@ import {
   hasAnyAttack,
   isAlive,
   nextSeat,
+  playbackSpeed,
   rollBattle,
   speciesFor,
   targetsFrom,
@@ -58,8 +59,11 @@ const CHAOS_TOTAL = 2.3;
 const ROLL_ATTACK = 0.55;
 const ROLL_DEFEND = 0.85;
 const ROLL_END = 1.5;
-/** Bot-vs-bot battles play this much faster (a 4-seat game with 3 bots dragged past 6 minutes). */
-const BOT_BATTLE_SPEED = 2;
+/** Pause before a bot's first attack, and between its attacks (scaled by playback speed). */
+const BOT_START_DELAY = 0.5;
+/** Chaos events normally play at full length (everyone should see the shoe); a tap speeds them up. */
+const SKIP_CHAOS_SPEED = 3;
+const BOT_NEXT_DELAY = 0.35;
 
 type Phase = "intro" | "chaos" | "pick" | "target" | "rolling" | "reinforce" | "bot" | "done";
 
@@ -151,6 +155,11 @@ class BugWarsGame implements GameInstance {
   private botDelay = 0;
   private botAttacksLeft = 0;
   private botTaunted = false;
+  /** A human tapped while the bots were playing: fast-forward until a human's turn. */
+  private skipping = false;
+  /** This bot turn's tally, shown as a one-line recap when it ends. */
+  private turnAttacks = 0;
+  private turnCaptures = 0;
   private winnerSeat = -1;
   private hexCenters: { x: number; y: number }[] = [];
   private readonly attacks: number[];
@@ -218,6 +227,12 @@ class BugWarsGame implements GameInstance {
       return;
     }
 
+    const botsPlaying = !this.isHuman(this.currentSeat) && this.phase !== "intro";
+    if (botsPlaying || this.phase === "chaos") this.checkSkip();
+    // Everything animated outside a human's own turn plays back faster.
+    const fast = this.phase === "chaos" ? (this.skipping ? SKIP_CHAOS_SPEED : 1) : this.pace();
+    const pdt = dt * fast;
+
     switch (this.phase) {
       case "intro":
         this.introTimer -= dt;
@@ -227,16 +242,16 @@ class BugWarsGame implements GameInstance {
         }
         return;
       case "chaos":
-        this.updateChaos(dt);
+        this.updateChaos(pdt);
         return;
       case "rolling":
         this.updateDiceAnim(dt);
         return;
       case "reinforce":
-        this.updateReinforce(dt);
+        this.updateReinforce(pdt);
         return;
       case "bot":
-        this.updateBot(dt);
+        this.updateBot(pdt);
         return;
       case "pick":
       case "target":
@@ -258,6 +273,23 @@ class BugWarsGame implements GameInstance {
     for (let i = 0; i < this.pulse.length; i++) this.pulse[i] = Math.max(0, this.pulse[i]! - dt * 2.5);
   }
 
+  /** Playback speed for the current seat's turn (1 for a human's own turn). */
+  private pace(): number {
+    return playbackSpeed({ humanTurn: this.isHuman(this.currentSeat), skipping: this.skipping });
+  }
+
+  /** Any tap / key while the bots are playing fast-forwards to the next human turn. */
+  private checkSkip(): void {
+    if (!this.ctx.players.some((p) => p.kind === "human")) return;
+    const input = this.ctx.input;
+    const tapped = input.consumeClick() !== null || input.justPressed("Space") || input.justPressed("Enter");
+    if (tapped && !this.skipping) {
+      this.skipping = true;
+      this.ctx.sfx.whoosh();
+      this.floatAtTop("FAST-FORWARD ▶▶", "#94a3b8");
+    }
+  }
+
   private isHuman(seat: number): boolean {
     return this.ctx.players[seat]?.kind === "human";
   }
@@ -272,13 +304,16 @@ class BugWarsGame implements GameInstance {
     this.selected = -1;
     this.turnTimer = TURN_SECONDS;
     this.lastTickSecond = -1;
-    this.callouts.show(`${player.name}'s turn`, player.color, { size: 46, life: 0.9, y: 0.22 });
+    this.turnAttacks = 0;
+    this.turnCaptures = 0;
+    this.callouts.show(`${player.name}'s turn`, player.color, { size: 46, life: this.isHuman(seat) ? 0.9 : 0.6, y: 0.22 });
     if (this.isHuman(seat)) {
+      this.skipping = false;
       this.phase = "pick";
       if (this.cursor >= 0 && this.board.tiles[this.cursor]?.owner !== seat) this.cursor = -1;
     } else {
       this.phase = "bot";
-      this.botDelay = 0.7;
+      this.botDelay = BOT_START_DELAY;
       this.botAttacksLeft = this.personas[seat]!.maxAttacks;
       this.botTaunted = false;
     }
@@ -413,11 +448,11 @@ class BugWarsGame implements GameInstance {
     }
     this.pepper[seat] = 0;
     const battle = rollBattle(this.board, from, to, this.ctx.rng, { attackDice: bonus.attackDice, defendDice: bonus.defendDice });
-    const watched = this.isHuman(seat) || (target.owner >= 0 && this.isHuman(target.owner));
+    const humanDefending = target.owner >= 0 && this.isHuman(target.owner);
     this.diceAnim = {
       battle,
       timer: 0,
-      speed: watched ? 1 : BOT_BATTLE_SPEED,
+      speed: playbackSpeed({ humanTurn: this.isHuman(seat), humanDefending, skipping: this.skipping }),
       attackSettled: false,
       defendSettled: false,
       attackShown: battle.attackRolls.map(() => 1),
@@ -437,6 +472,8 @@ class BugWarsGame implements GameInstance {
   private updateDiceAnim(dt: number): void {
     const anim = this.diceAnim;
     if (!anim) return;
+    // A tap mid-roll speeds up the rest of this battle too.
+    if (this.skipping && !this.isHuman(this.currentSeat)) anim.speed = Math.max(anim.speed, this.pace());
     anim.timer += dt * anim.speed;
     const rng = this.ctx.rng;
     if (!anim.attackSettled) {
@@ -475,7 +512,8 @@ class BugWarsGame implements GameInstance {
     if (anim.headline) {
       const big = anim.headline === "UPSET!" || b.jackpot;
       this.callouts.show(anim.headline, big ? "#FFD54A" : "#F4F7FB", { size: big ? 70 : 50, life: 1.2, y: 0.3 });
-      if (big) {
+      // Slow-mo is for fights a human is in; bot-vs-bot upsets just flash by.
+      if (big && anim.speed <= 1.5) {
         this.juice.slowMo(0.6, 0.35);
         this.ctx.sfx.streak(4);
       }
@@ -490,6 +528,8 @@ class BugWarsGame implements GameInstance {
     const movers = this.board.tiles[b.from]!.bugs - 1;
     applyBattle(this.board, b);
     this.attacks[b.attacker] = (this.attacks[b.attacker] ?? 0) + 1;
+    this.turnAttacks++;
+    if (b.captured) this.turnCaptures++;
     this.pulse[b.to] = 1;
 
     if (b.captured) {
@@ -520,7 +560,7 @@ class BugWarsGame implements GameInstance {
       else this.advanceTurn();
     } else {
       this.phase = "bot";
-      this.botDelay = anim.speed > 1 ? 0.3 : 0.45;
+      this.botDelay = BOT_NEXT_DELAY;
     }
   }
 
@@ -556,6 +596,11 @@ class BugWarsGame implements GameInstance {
   private advanceTurn(): void {
     const seat = this.currentSeat;
     this.selected = -1;
+    if (!this.isHuman(seat)) {
+      // One-line recap so a fast bot turn is still easy to follow.
+      const name = this.ctx.players[seat]?.name ?? "Bot";
+      this.floatAtTop(this.turnAttacks === 0 ? `${name} waits` : `${name}: ${this.turnCaptures}/${this.turnAttacks} attacks won`, this.color(seat));
+    }
     const underdog = underdogBonus(this.board, seat, this.n);
     const income = endTurnIncome(this.board, seat, this.stash[seat]!, this.ctx.rng, underdog);
     this.stash[seat] = income.stash;
@@ -573,7 +618,7 @@ class BugWarsGame implements GameInstance {
     const anim = this.reinforceAnim;
     if (!anim) return;
     anim.timer += dt;
-    const pace = 0.055;
+    const pace = Math.min(0.055, 0.9 / Math.max(1, anim.tiles.length));
     while (anim.index < anim.tiles.length && anim.timer >= pace) {
       anim.timer -= pace;
       const id = anim.tiles[anim.index]!;
@@ -782,6 +827,17 @@ class BugWarsGame implements GameInstance {
     }
     this.callouts.draw(g, this.ctx.width, this.ctx.height);
     if ((this.phase === "pick" || this.phase === "target") && this.isHuman(this.currentSeat)) this.drawPassButton(g);
+    else if (this.phase !== "intro" && this.phase !== "done" && !this.isHuman(this.currentSeat) && this.ctx.players.some((p) => p.kind === "human")) this.drawSkipHint(g);
+  }
+
+  private drawSkipHint(g: CanvasRenderingContext2D): void {
+    g.save();
+    g.font = "600 20px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillStyle = this.skipping ? "#B8FF3D" : "rgba(203,213,225,0.8)";
+    g.fillText(this.skipping ? "▶▶ Fast-forwarding to your turn" : "Tap to fast-forward the bots", PASS_BTN.x, PASS_BTN.y);
+    g.restore();
   }
 
   private drawGarden(g: CanvasRenderingContext2D): void {

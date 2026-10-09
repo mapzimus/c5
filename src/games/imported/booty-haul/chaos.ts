@@ -12,15 +12,17 @@ import { GAME_DURATION_S, SHIP_SPEED_KM_S, SPOT_RANGE_KM } from "./rules";
 
 /** Drop anchor this close to a rival and you board them. */
 export const BOARD_RANGE_KM = 260;
-export const BOARD_STEAL_FRAC = 0.12;
+/** Boarding takes a flat, human-sized haul (never more than the victim has). */
+export const BOARD_STEAL = 25;
 /** Boarding the WANTED leader pays a fat bounty. */
-export const WANTED_STEAL_FRAC = 0.25;
-/** Boarding the captain who just boarded you (within the revenge window). */
-export const REVENGE_MULT = 1.5;
+export const WANTED_STEAL = 50;
+/** Boarding the captain who just boarded you (within the revenge window) adds this. */
+export const REVENGE_BONUS = 15;
 export const REVENGE_WINDOW_S = 15;
-export const BOARD_MIN_STEAL = 10;
-/** A freshly boarded ship can't be boarded again for this long. */
+/** A freshly boarded ship can't be boarded again by anyone for this long. */
 export const BOARD_SHIELD_S = 5;
+/** The same boarder can't hit the same victim again for this long (no ping-pong). */
+export const BOARD_PAIR_COOLDOWN_S = 20;
 
 export interface Anchorage {
   id: string;
@@ -30,12 +32,27 @@ export interface Anchorage {
   shield: number;
 }
 
-/** How much booty a boarding takes. Never more than the victim has. */
+/** How much booty a boarding takes: a flat amount, capped at what the victim holds. */
 export function boardingSteal(victimScore: number, wanted: boolean, revenge = false): number {
   if (victimScore <= 0) return 0;
-  const frac = wanted ? WANTED_STEAL_FRAC : BOARD_STEAL_FRAC;
-  const base = Math.max(BOARD_MIN_STEAL, Math.floor(victimScore * frac));
-  return Math.min(victimScore, Math.floor(base * (revenge ? REVENGE_MULT : 1)));
+  const base = (wanted ? WANTED_STEAL : BOARD_STEAL) + (revenge ? REVENGE_BONUS : 0);
+  return Math.min(victimScore, base);
+}
+
+/** Key for the boarder -> victim cooldown table. */
+export function boardPairKey(boarderId: string, victimId: string): string {
+  return `${boarderId}>${victimId}`;
+}
+
+/** True when `boarderId` boarded `victimId` too recently to do it again. */
+export function boardPairBlocked(
+  history: ReadonlyMap<string, number>,
+  boarderId: string,
+  victimId: string,
+  now: number,
+): boolean {
+  const last = history.get(boardPairKey(boarderId, victimId));
+  return last !== undefined && now - last < BOARD_PAIR_COOLDOWN_S;
 }
 
 /** The nearest unshielded, anchored rival within boarding range of `ll`. */
@@ -43,11 +60,12 @@ export function findBoardingVictim(
   boarderId: string,
   ll: LatLng,
   fleet: readonly Anchorage[],
+  blocked: (victimId: string) => boolean = () => false,
 ): Anchorage | null {
   let best: Anchorage | null = null;
   let bestKm = BOARD_RANGE_KM;
   for (const a of fleet) {
-    if (a.id === boarderId || !a.parked || a.shield > 0) continue;
+    if (a.id === boarderId || !a.parked || a.shield > 0 || blocked(a.id)) continue;
     const km = haversineKm(ll, a.ll);
     if (km <= bestKm) {
       bestKm = km;
@@ -59,7 +77,7 @@ export function findBoardingVictim(
 
 // ---- WANTED (catch-up) ----------------------------------------------------
 
-export const WANTED_LEAD = 60;
+export const WANTED_LEAD = 40;
 
 /**
  * The runaway leader gets a bounty on their head once their lead is big:
@@ -78,8 +96,9 @@ export function botBoardTarget(
   selfId: string,
   fleet: readonly Anchorage[],
   wanted: string | null,
+  blocked: (victimId: string) => boolean = () => false,
 ): Anchorage | null {
-  const rivals = fleet.filter((a) => a.id !== selfId && a.parked && a.shield <= 0 && a.score > 0);
+  const rivals = fleet.filter((a) => a.id !== selfId && a.parked && a.shield <= 0 && a.score > 0 && !blocked(a.id));
   if (rivals.length === 0) return null;
   const w = rivals.find((a) => a.id === wanted);
   if (w) return w;
@@ -180,7 +199,7 @@ export function spawnChests(rng: Rng, lanes: readonly Lane[], count: number, nea
       if (haversineKm(ll, near) <= maxKm) break;
     }
     const mega = i === 0;
-    chests.push({ ll, value: mega ? 120 : 30 + rng.int(0, 5) * 10, alive: true, age: 0 });
+    chests.push({ ll, value: mega ? 30 : 5 + rng.int(0, 2) * 5, alive: true, age: 0 });
   }
   return chests;
 }
@@ -209,7 +228,7 @@ export function collectChests(chests: Chest[], fleet: readonly Anchorage[]): { c
 }
 
 // Ghost ship: a fast spectral galleon worth a fortune to the first captain in range.
-export const GHOST_VALUE = 150;
+export const GHOST_VALUE = 40;
 export const GHOST_SPEED_MULT = 3.2;
 
 export interface GhostShip {

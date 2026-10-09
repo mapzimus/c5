@@ -6,8 +6,11 @@ import { PUCK_RADIUS, blast, collideKinematic, collidePucks, isResting, slideDis
 import {
   CATCH_UP_GAP,
   PUCK_SPECS,
+  BULLY_MIN_POINTS,
   botShot,
+  bullyTarget,
   catchUpPlayers,
+  clearShot,
   launchVelocity,
   leaderOf,
   lightningTarget,
@@ -18,6 +21,8 @@ import {
   rollMagazine,
   scoreBoard,
   splitVelocities,
+  matchRemaining,
+  volleyRemaining,
 } from "./rules";
 
 const W = 1280;
@@ -172,6 +177,76 @@ function context(kinds: ("human" | "bot")[], seed: number): GameContext {
     sfx: new Proxy({}, { get: () => vi.fn() }),
   } as unknown as GameContext;
 }
+
+describe("the Bully is a real threat", () => {
+  it("only targets enemy pucks worth a takeout with a clear lane", () => {
+    const pad = padPositions(W, H)[0]!;
+    const juicy = puck("rival", center.x, center.y);
+    const outer = puck("rival", center.x + 140, center.y);
+    expect(ringPoints(outer.x, outer.y, center)).toBeLessThan(BULLY_MIN_POINTS);
+    expect(bullyTarget(pad, center, [outer], "bot")).toBeNull();
+    expect(bullyTarget(pad, center, [outer, juicy], "bot")).toBe(juicy);
+    // A blocker sitting on the line protects the bullseye puck.
+    const mid = { x: (pad.x + juicy.x) / 2, y: (pad.y + juicy.y) / 2 };
+    const blocker = puck("other", mid.x, mid.y);
+    expect(clearShot(pad, juicy, [juicy, blocker])).toBe(false);
+    expect(bullyTarget(pad, center, [juicy, blocker], "bot")).toBeNull();
+    // Never its own puck.
+    expect(bullyTarget(pad, center, [puck("bot", center.x, center.y)], "bot")).toBeNull();
+  });
+
+  it("knocks a bullseye puck out of the 10 most of the time, from every corner", () => {
+    const rng = new Rng(8);
+    let hits = 0;
+    let shots = 0;
+    for (const pad of padPositions(W, H)) {
+      for (let i = 0; i < 8; i += 1) {
+        const enemy = puck("rival", center.x + rng.float(-25, 25), center.y + rng.float(-25, 25));
+        const v = launchVelocity(pad, botShot(rng, "bully", pad, center, [enemy], "bot"))!;
+        const w = world([enemy, puck("bot", pad.x, pad.y, v)]);
+        settle(w);
+        shots += 1;
+        if (ringPoints(enemy.x, enemy.y, center) < 10) hits += 1;
+      }
+    }
+    expect(hits / shots).toBeGreaterThan(0.6);
+  });
+});
+
+describe("match clock", () => {
+  it("the volley bar drains with pucks fired, or the volley clock, whichever is closer to empty", () => {
+    expect(volleyRemaining(24, 24, 0, 24)).toBe(1);
+    expect(volleyRemaining(12, 24, 2, 24)).toBe(0.5);
+    expect(volleyRemaining(24, 24, 18, 24)).toBe(0.25);
+    expect(volleyRemaining(0, 24, 3, 24)).toBe(0);
+  });
+
+  it("the match bar spans three volleys and empties with the final puck", () => {
+    expect(matchRemaining(1, 1)).toBe(1);
+    expect(matchRemaining(2, 1)).toBeCloseTo(2 / 3);
+    expect(matchRemaining(3, 0.5)).toBeCloseTo(1 / 6);
+    expect(matchRemaining(3, 0)).toBe(0);
+  });
+
+  it("has no fixed engine timer and counts down a settle before the end", () => {
+    expect(eyeOfTheStorm.durationMs).toBe(0);
+    const game = eyeOfTheStorm.create(context(["bot", "bot"], 4));
+    const state = game as any;
+    let frames = 0;
+    // Run until the very last puck of the match has left a pad.
+    while (!(state.volley === 3 && state.seats.every((s: any) => s.mag.length === 0)) && frames < 120 * 60) {
+      game.update(1 / 60);
+      frames++;
+    }
+    expect(game.isFinished()).toBe(false);
+    for (let i = 0; i < 2.5 * 60; i++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(false);
+    for (let i = 0; i < 20 * 60 && !game.isFinished(); i++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(true);
+    expect(state.finalSettle).toBeGreaterThanOrEqual(3);
+    game.destroy();
+  });
+});
 
 describe("whole game", () => {
   it.each([1, 2, 3, 4, 5])("four bots always finish (seed %i) and score something", (seed) => {

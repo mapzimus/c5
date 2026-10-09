@@ -443,3 +443,23 @@ export function winChance(attackDice: number, defendDice: number): number {
   }
   return chance;
 }
+
+// ---- pacing ------------------------------------------------------------------
+
+/** Bot-vs-bot battles roll this much faster than ones a human is in. */
+export const BOT_BATTLE_SPEED = 5;
+/** Battles where a bot attacks a human still roll a touch faster than a human's own. */
+export const BOT_VS_HUMAN_SPEED = 1.4;
+/** Tapping during the bots' turns fast-forwards everything by this much more. */
+export const SKIP_SPEED = 4;
+
+/**
+ * Playback speed for the animated parts of a turn (dice, reinforcements,
+ * chaos). Humans attacking roll at full drama; bots hitting a human roll a bit
+ * quicker; bot-vs-bot fights zip by. A tap while bots play skips ahead.
+ */
+export function playbackSpeed(opts: { humanTurn: boolean; humanDefending?: boolean; skipping?: boolean }): number {
+  if (opts.humanTurn) return 1;
+  const base = opts.humanDefending ? BOT_VS_HUMAN_SPEED : BOT_BATTLE_SPEED;
+  return opts.skipping ? base * SKIP_SPEED : base;
+}

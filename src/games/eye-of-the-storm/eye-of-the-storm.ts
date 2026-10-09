@@ -26,6 +26,7 @@ import {
   eyeOffset,
   launchVelocity,
   leaderOf,
+  matchRemaining,
   lightningTarget,
   padPositions,
   placeCell,
@@ -35,6 +36,8 @@ import {
   scoreBoard,
   splitVelocities,
   touchesCell,
+  volleyRemaining,
+  VOLLEYS,
   type BonusCell,
   type BotPersona,
   type Point,
@@ -46,7 +49,9 @@ export const eyeOfTheStorm: GameDefinition = {
   tagline: "Everyone fires at once. Bombs, lightning, flying cows.",
   description:
     "Three volleys: Calm, Gale, Tempest. Everyone slingshots pucks from their corner at the same time. Centre 10, middle 5, outer 2. Your magazine hides special pucks: HEAVY rams anything, BOMB blows up its neighbours, STICKY glues itself down, SPLIT bursts into three shards. The storm fights back: lightning hunts the leader's best puck, cows get blown across the table, and in the Tempest the eye itself wanders. Trailing players get a free bomb. Knock pucks out, steal bullseyes, and watch the last shot in slow motion.",
-  durationMs: 90_000,
+  // The match is three volleys, not a fixed clock: it ends when the final
+  // volley's pucks have all been fired and settled. Our own bar tracks that.
+  durationMs: 0,
   controls: "Drag back from your corner pad, release to fire",
   create: (ctx) => new EyeOfTheStorm(ctx),
 };
@@ -109,6 +114,8 @@ interface Bolt {
 }
 
 const SETTLE_GRACE_S = 0.8;
+/** After the final puck of the match is fired, a visible settle countdown before the end. */
+const FINAL_SETTLE_S = 3;
 const LEADERBOARD_Y = 34;
 const VOLLEY_S = 24;
 const EVENTS_UNTIL_S = 21;
@@ -201,6 +208,11 @@ class EyeOfTheStorm implements GameInstance {
   private lastShotId = -1;
   private lastShotSlowed = false;
   private lastCountdown = 99;
+  /** Pucks dealt this volley (magazines + bonus pucks), for the progress bar. */
+  private volleyPucks = 0;
+  /** Seconds since the last puck of the match left a pad (final settle countdown). */
+  private finalSettle = -1;
+  private finalTick = 99;
 
   constructor(private readonly ctx: GameContext) {
     const { width, height, rng } = ctx;
@@ -243,6 +255,7 @@ class EyeOfTheStorm implements GameInstance {
     canvas.addEventListener("pointermove", this.onMove);
     canvas.addEventListener("pointerup", this.onUp);
     canvas.addEventListener("pointercancel", this.onCancel);
+    this.volleyPucks = this.seats.reduce((n, s) => n + s.mag.length, 0);
     this.callouts.show("VOLLEY 1: CALM", vc.color);
     this.callouts.show(vc.tagline, "#F4F7FB", { y: 0.42, size: 30, life: 1.6 });
   }
@@ -287,7 +300,7 @@ class EyeOfTheStorm implements GameInstance {
       if (seat.persona && seat.mag.length > 0 && seat.reload === 0) {
         seat.botWait -= dt;
         if (seat.botWait <= 0) {
-          this.fire(seat, botShot(this.ctx.rng, seat.persona, seat.pad, this.center, this.world.pucks, seat.player.id));
+          this.fire(seat, botShot(this.ctx.rng, seat.persona, seat.pad, this.center, this.world.pucks, seat.player.id, this.world.pegs));
           const wait = PERSONAS[seat.persona].wait;
           seat.botWait = this.ctx.rng.float(wait[0], wait[1]);
         }
@@ -354,11 +367,27 @@ class EyeOfTheStorm implements GameInstance {
     const allOut = this.seats.every((s) => s.mag.length === 0);
     const calm = this.world.pucks.every(isResting) && !this.debris && !this.strike;
     this.settled = allOut && (calm || this.volleyTime >= 27) ? this.settled + dt : 0;
-    if (this.settled >= SETTLE_GRACE_S && this.volley < 3) this.bankVolley();
+    if (this.settled >= SETTLE_GRACE_S && this.volley < VOLLEYS) this.bankVolley();
+    if (this.volley === VOLLEYS && allOut) this.updateFinalSettle(realDt);
   }
 
   isFinished(): boolean {
-    return this.volley === 3 && this.settled >= SETTLE_GRACE_S;
+    return this.volley === VOLLEYS && this.settled >= SETTLE_GRACE_S && this.finalSettle >= FINAL_SETTLE_S;
+  }
+
+  /** Last puck of the match is out: count the table down so the end never comes out of nowhere. */
+  private updateFinalSettle(dt: number): void {
+    if (this.finalSettle < 0) {
+      this.finalSettle = 0;
+      this.callouts.show("ALL PUCKS FIRED!", "#FFB020", { y: 0.3, size: 52, life: 1.2 });
+    }
+    this.finalSettle += dt;
+    const left = Math.ceil(FINAL_SETTLE_S - this.finalSettle);
+    if (left >= 1 && left < this.finalTick) {
+      this.finalTick = left;
+      this.ctx.sfx.countdown();
+      this.callouts.show(`FINAL WHISTLE ${left}`, left === 1 ? "#ff6b6b" : "#F4F7FB", { y: 0.5, size: 64, life: 0.9 });
+    }
   }
 
   getScores(): { playerId: string; score: number }[] {
@@ -424,6 +453,8 @@ class EyeOfTheStorm implements GameInstance {
     this.lastShotId = -1;
     this.lastShotSlowed = false;
     this.lastCountdown = 99;
+    this.finalSettle = -1;
+    this.finalTick = 99;
     this.goldenScored.clear();
     this.goldenPoints.clear();
     this.center.x = this.home.x;
@@ -456,7 +487,8 @@ class EyeOfTheStorm implements GameInstance {
       seat.reload = 0;
       seat.aim = null;
     }
-    const label = n === 3 ? `FINAL VOLLEY: ${vc.name}` : `VOLLEY ${n}: ${vc.name}`;
+    this.volleyPucks = this.seats.reduce((count, s) => count + s.mag.length, 0);
+    const label = n === VOLLEYS ? `FINAL VOLLEY: ${vc.name}` : `VOLLEY ${n}: ${vc.name}`;
     this.callouts.show(label, vc.color, { size: 48 });
     this.callouts.show(vc.tagline, "#F4F7FB", { y: 0.42, size: 30, life: 1.6 });
     if (lucky.size > 0) {
@@ -762,7 +794,10 @@ class EyeOfTheStorm implements GameInstance {
       const puck = this.world.pucks.find((p) => !isResting(p) && touchesCell(this.cell!, p));
       if (puck) {
         const seat = this.seatOf(puck.owner);
-        if (seat) seat.mag.push(this.ctx.rng.next() < 0.5 ? "normal" : this.ctx.rng.pick(["heavy", "bomb", "sticky", "splitter"] as const));
+        if (seat) {
+          seat.mag.push(this.ctx.rng.next() < 0.5 ? "normal" : this.ctx.rng.pick(["heavy", "bomb", "sticky", "splitter"] as const));
+          this.volleyPucks += 1;
+        }
         this.bonusPucks.set(puck.owner, (this.bonusPucks.get(puck.owner) ?? 0) + 1);
         this.callouts.show(`+1 PUCK ${this.nameOf(puck.owner)}`, this.colorOf(puck.owner), { y: 0.68, size: 48 });
         this.juice.burst(this.cell.x, this.cell.y, ["#9ad9ff", "#ffffff", this.colorOf(puck.owner)], { count: 36, speed: 360, gravity: 0 });
@@ -808,9 +843,12 @@ class EyeOfTheStorm implements GameInstance {
     seat.reload = RELOAD_S;
     this.ctx.sfx.go();
     if (kind !== "normal") this.popup(seat.pad.x, seat.pad.y - PAD_RADIUS - 20, `${spec.label}!`, spec.color);
-    if (this.seats.every((s) => s.mag.length === 0)) {
+    const left = this.seats.reduce((n, s) => n + s.mag.length, 0);
+    if (left === 0) {
       this.lastShotId = puck.id;
-      this.callouts.show(this.volley === 3 ? "FINAL SHOT!" : "LAST SHOT!", "#F4F7FB", { y: 0.78, size: 36, life: 1 });
+      this.callouts.show(this.volley === VOLLEYS ? "FINAL PUCK!" : "LAST SHOT!", "#F4F7FB", { y: 0.78, size: 44, life: 1.1 });
+    } else if (left === 1 && this.volley === VOLLEYS) {
+      this.callouts.show("ONE PUCK LEFT!", "#FFB020", { y: 0.78, size: 36, life: 0.9 });
     }
   }
 
@@ -920,13 +958,49 @@ class EyeOfTheStorm implements GameInstance {
       g.fillText(`BEST ${this.best}`, 200, height - 10);
     }
     const left = Math.max(0, VOLLEY_S - this.volleyTime);
-    const urgent = left <= 5 && this.seats.some((s) => s.mag.length > 0);
+    const pucksLeft = this.seats.reduce((n, s) => n + s.mag.length, 0);
+    const urgent = left <= 5 && pucksLeft > 0;
     g.fillStyle = urgent ? "#ff6b6b" : "#F4F7FB";
-    g.font = urgent ? "700 26px Outfit, sans-serif" : "600 18px Outfit, sans-serif";
+    g.font = urgent ? "700 30px Outfit, sans-serif" : "600 24px Outfit, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "alphabetic";
-    g.fillText(`VOLLEY ${this.volley}/3: ${vc.name} • ${Math.ceil(left)}s`, width / 2, height - 18);
+    const status = pucksLeft > 0
+      ? `${pucksLeft} puck${pucksLeft === 1 ? "" : "s"} left • ${Math.ceil(left)}s`
+      : this.volley === VOLLEYS ? "final pucks settling…" : "settling…";
+    g.fillText(`VOLLEY ${this.volley}/${VOLLEYS}: ${vc.name} • ${status}`, width / 2, height - 18);
+    this.drawMatchBar(g);
     this.callouts.draw(g, width, height);
+  }
+
+  /**
+   * The match bar (where the engine's timer would sit): three segments, one per
+   * volley. The current one drains as pucks are fired (or its clock runs down),
+   * so the bar empties exactly when the last puck of the match leaves a pad.
+   */
+  private drawMatchBar(g: CanvasRenderingContext2D): void {
+    const { width } = this.ctx;
+    const pucksLeft = this.seats.reduce((n, s) => n + s.mag.length, 0);
+    const frac = this.intermission > 0 ? 0 : volleyRemaining(pucksLeft, this.volleyPucks, this.volleyTime, VOLLEY_S);
+    const x = 40;
+    const w = width - 80;
+    const segW = w / VOLLEYS;
+    g.save();
+    g.fillStyle = "rgba(7,11,20,0.55)";
+    g.fillRect(x, 18, w, 10);
+    const remaining = matchRemaining(this.volley, frac);
+    const final = this.volley === VOLLEYS;
+    g.fillStyle = final && frac < 0.35 ? "#FF3D7A" : VOLLEY_CONDITIONS[this.volley - 1]!.color;
+    g.fillRect(x, 18, w * remaining, 10);
+    g.fillStyle = "rgba(7,11,20,0.9)";
+    for (let i = 1; i < VOLLEYS; i += 1) g.fillRect(x + segW * i - 2, 16, 4, 14);
+    if (this.finalSettle >= 0) {
+      // Final settle: the empty bar pulses while the last pucks come to rest.
+      const t = Math.min(1, this.finalSettle / FINAL_SETTLE_S);
+      g.globalAlpha = 0.5 + 0.5 * Math.sin(this.time * 12);
+      g.fillStyle = "#FFB020";
+      g.fillRect(x + w * t, 18, w * (1 - t), 10);
+    }
+    g.restore();
   }
 
   private drawStormSky(g: CanvasRenderingContext2D): void {
@@ -974,7 +1048,7 @@ class EyeOfTheStorm implements GameInstance {
       g.strokeStyle = seat.player.color;
       g.lineWidth = isLeader ? 3 : 1.5;
       g.beginPath();
-      // Sits under the engine's timer bar (y 18-28) instead of being sliced by it.
+      // Sits under the match bar (y 18-28) instead of being sliced by it.
       g.roundRect(x, LEADERBOARD_Y, chipW, 30, 15);
       g.fill();
       g.stroke();
@@ -1129,24 +1203,36 @@ class EyeOfTheStorm implements GameInstance {
       this.drawPuckBody(g, { id: -1, owner: player.id, x: 0, y: -44 + bob, vx: 0, vy: 0, r: spec.r * 0.8, kind: loaded }, seat.reload > 0 ? 0.4 : 1);
       if (loaded !== "normal") {
         g.fillStyle = spec.color;
-        g.font = "700 16px Bebas Neue, Impact, sans-serif";
+        g.font = "700 24px Bebas Neue, Impact, sans-serif";
         g.textAlign = "center";
         g.textBaseline = "middle";
-        g.fillText(spec.label, 0, 50);
+        g.fillText(spec.label, 0, -78);
       }
     }
     g.fillStyle = "#F4F7FB";
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.font = "700 34px Bebas Neue, Impact, sans-serif";
-    g.fillText(String(this.scores.get(player.id) ?? 0), 0, 2);
-    g.font = "600 14px Outfit, sans-serif";
+    // Big enough to read on a phone (the board shrinks to ~half size at 390px wide).
+    g.font = "700 46px Bebas Neue, Impact, sans-serif";
+    g.lineWidth = 6;
+    g.strokeStyle = "rgba(7,11,20,0.85)";
+    g.lineJoin = "round";
+    const score = String(this.scores.get(player.id) ?? 0);
+    g.strokeText(score, 0, -2);
+    g.fillText(score, 0, -2);
+    g.font = "700 26px Outfit, sans-serif";
     g.fillStyle = player.color;
-    const label = seat.persona ? `${player.name} · ${PERSONAS[seat.persona].label}` : player.name;
-    g.fillText(label, 0, 28);
+    g.strokeText(player.name, 0, 34);
+    g.fillText(player.name, 0, 34);
+    if (seat.persona) {
+      g.font = "600 19px Outfit, sans-serif";
+      const persona = PERSONAS[seat.persona].label;
+      g.strokeText(persona, 0, 58);
+      g.fillText(persona, 0, 58);
+    }
     if (this.leader === player.id) {
-      g.font = "26px sans-serif";
-      g.fillText("\u{1F451}", 0, -78);
+      g.font = "30px sans-serif";
+      g.fillText("\u{1F451}", 0, loaded && loaded !== "normal" && !seat.aim ? -104 : -80);
     }
     g.restore();
   }

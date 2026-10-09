@@ -20,10 +20,10 @@ export interface ShipType {
 }
 
 export const SHIP_TYPES: readonly ShipType[] = [
-  { key: "cargo",    label: "Cargo",    points: 2,   weight: 0.55, color: "#64748b", size: 3 },
-  { key: "tanker",   label: "Tanker",   points: 5,   weight: 0.25, color: "#f59e0b", size: 4 },
-  { key: "treasure", label: "Treasure", points: 15,  weight: 0.12, color: "#a855f7", size: 5 },
-  { key: "convoy",   label: "Convoy",   points: 30,  weight: 0.08, color: "#22d3ee", size: 6 },
+  { key: "cargo",    label: "Cargo",    points: 1,   weight: 0.55, color: "#64748b", size: 3 },
+  { key: "tanker",   label: "Tanker",   points: 2,   weight: 0.25, color: "#f59e0b", size: 4 },
+  { key: "treasure", label: "Treasure", points: 5,   weight: 0.12, color: "#a855f7", size: 5 },
+  { key: "convoy",   label: "Convoy",   points: 10,  weight: 0.08, color: "#22d3ee", size: 6 },
 ];
 
 function pickType(rng: Rng): ShipType {
@@ -155,6 +155,53 @@ export function shipsInRange(
   return hits;
 }
 
+/**
+ * Each passing vessel pays its listed value ONCE per captain: after a ship pays
+ * you it is marked plundered (by id) for this long, which comfortably outlasts
+ * the time it spends inside your 200 km spyglass.
+ */
+export const PLUNDER_COOLDOWN_S = 10;
+
+/**
+ * Sum the listed values of ships in range that have not paid this captain
+ * recently, and mark them plundered. `plundered` maps ship id -> time paid.
+ */
+export function plunderShipsInRange(
+  ships: readonly Ship[],
+  pos: LatLng,
+  lanes: readonly Lane[],
+  plundered: Map<number, number>,
+  now: number,
+): { points: number; count: number } {
+  let points = 0;
+  let count = 0;
+  for (const ship of ships) {
+    if (!ship.alive) continue;
+    const last = plundered.get(ship.id);
+    if (last !== undefined && now - last < PLUNDER_COOLDOWN_S) continue;
+    if (haversineKm(pos, shipPos(ship, lanes)) > SPOT_RANGE_KM) continue;
+    plundered.set(ship.id, now);
+    points += ship.type.points;
+    count++;
+  }
+  return { points, count };
+}
+
+/** Listed value of the richest live ship inside the spyglass (0 if none). */
+export function richestShipInRange(ships: readonly Ship[], pos: LatLng, lanes: readonly Lane[]): number {
+  let best = 0;
+  for (const ship of ships) {
+    if (!ship.alive || ship.type.points <= best) continue;
+    if (haversineKm(pos, shipPos(ship, lanes)) <= SPOT_RANGE_KM) best = ship.type.points;
+  }
+  return best;
+}
+
+/** A raid robs one ship for double its listed value, triple on the gold flash. */
+export function raidValue(shipPoints: number, perfect: boolean): number {
+  return shipPoints * (perfect ? 3 : 2);
+}
+
 export function scoreShipsInRange(
   ships: readonly Ship[],
   pos: LatLng,
@@ -251,36 +298,39 @@ export interface ParkingSpot {
   score: number;
 }
 
+/** Bots keep at least this far from every other anchored captain when picking a spot. */
+export const BOT_SPREAD_KM = 700;
+
+/**
+ * Pick a bot anchorage. Candidates are the landmark doors plus random lane
+ * points; anything within `avoidKm` of another captain is skipped (with a
+ * fallback to the least crowded spots), and the bot takes a random pick from
+ * the top few, so a table of bots fans out instead of stacking on one door.
+ */
 export function botPickSpot(
   rng: Rng,
   ships: readonly Ship[],
   lanes: readonly Lane[],
   doors: readonly { ll: LatLng }[],
   takenSpots: readonly ParkingSpot[],
-  avoidKm = 100,
+  avoidKm = BOT_SPREAD_KM,
 ): LatLng {
-  let bestScore = -1;
-  let bestLL = doors[0]!.ll;
-  // Build candidates from doors + random lane positions
   const candidates: LatLng[] = doors.map((d) => d.ll);
-  // Add some random lane positions so bots don't only pick doors
-  for (let i = 0; i < 6; i++) {
-    const li = rng.int(0, lanes.length - 1);
-    const lane = lanes[li]!;
-    const km = rng.next() * lane.lengthKm;
-    candidates.push(lanePos(lane, km));
+  for (let i = 0; i < 10; i++) {
+    const lane = lanes[rng.int(0, lanes.length - 1)]!;
+    candidates.push(lanePos(lane, rng.next() * lane.lengthKm));
   }
-  for (const c of candidates) {
-    const taken = takenSpots.some(
-      (s) => s.parked && haversineKm(s.ll, c) < avoidKm,
-    );
-    if (taken) continue;
-    const score = scoreShipsInRange(ships, c, lanes);
-    const jitter = rng.next() * 0.5;
-    if (score + jitter > bestScore) {
-      bestScore = score + jitter;
-      bestLL = c;
-    }
+  const parked = takenSpots.filter((s) => s.parked);
+  const scored = candidates.map((ll) => {
+    const nearest = parked.reduce((m, s) => Math.min(m, haversineKm(s.ll, ll)), Infinity);
+    return { ll, nearest, value: scoreShipsInRange(ships, ll, lanes) + rng.next() * 3 };
+  });
+  let pool = scored.filter((c) => c.nearest >= avoidKm);
+  if (pool.length === 0) {
+    // Crowded sea: fall back to the roomiest third of the candidates.
+    pool = [...scored].sort((a, b) => b.nearest - a.nearest).slice(0, Math.max(1, Math.ceil(scored.length / 3)));
   }
-  return bestLL;
+  pool.sort((a, b) => b.value - a.value);
+  const top = pool.slice(0, Math.min(3, pool.length));
+  return rng.pick(top).ll;
 }

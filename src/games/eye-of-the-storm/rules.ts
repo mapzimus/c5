@@ -224,7 +224,7 @@ export type BotPersona = "sniper" | "bully" | "cannon";
 
 export const PERSONAS: Record<BotPersona, { label: string; wobble: number; wait: readonly [number, number] }> = {
   sniper: { label: "the Sniper", wobble: 0.1, wait: [1.8, 3.4] },
-  bully: { label: "the Bully", wobble: 0.14, wait: [1.3, 2.8] },
+  bully: { label: "the Bully", wobble: 0.045, wait: [1.1, 2.4] },
   cannon: { label: "Loose Cannon", wobble: 0.4, wait: [0.7, 1.6] },
 };
 
@@ -246,32 +246,109 @@ function releaseToward(pad: Point, target: Point, angleNoise: number, distance: 
   return { x: pad.x - Math.cos(angle) * pull, y: pad.y - Math.sin(angle) * pull };
 }
 
+/** Shortest distance from point `p` to the segment a-b. */
+function segmentDistance(p: Point, a: Point, b: Point): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
+/** True when nothing (another puck or a peg) sits on the straight path from `from` to `target`. */
+export function clearShot(
+  from: Point,
+  target: Puck,
+  pucks: readonly Puck[],
+  pegs: readonly { x: number; y: number; r: number }[] = [],
+  r = 18,
+): boolean {
+  for (const p of pucks) {
+    if (p === target) continue;
+    if (segmentDistance(p, from, target) < p.r + r) return false;
+  }
+  for (const peg of pegs) if (segmentDistance(peg, from, target) < peg.r + r) return false;
+  return true;
+}
+
+/** The Bully only bothers with a takeout on a puck worth at least this much. */
+export const BULLY_MIN_POINTS = 5;
+
 /**
- * Persona shot. Sniper: careful bullseye. Bully: rams the best enemy puck on the board.
- * Loose Cannon: roughly at the eye, wildly over- or under-powered.
+ * The Bully's pick: the juiciest enemy puck with a clear lane to it. Points
+ * matter most, then distance (closer is easier to hit).
  */
-export function botShot(rng: Rng, persona: BotPersona, pad: Point, center: Point, pucks: readonly Puck[], self: string): Point {
+
+export function bullyTarget(
+  pad: Point,
+  center: Point,
+  pucks: readonly Puck[],
+  self: string,
+  pegs: readonly { x: number; y: number; r: number }[] = [],
+): Puck | null {
+  let target: Puck | null = null;
+  let best = 0;
+  for (const p of pucks) {
+    if (p.owner === self || p.owner.startsWith("@") || Math.hypot(p.vx, p.vy) > 40) continue;
+    const pts = puckPoints(p, center);
+    // Only worth a takeout if it's in the money and there's a lane to it.
+    if (pts < BULLY_MIN_POINTS || !clearShot(pad, p, pucks, pegs)) continue;
+    const d = Math.hypot(p.x - pad.x, p.y - pad.y);
+    const score = pts - d / 400;
+    if (score > best) {
+      best = score;
+      target = p;
+    }
+  }
+  return target;
+}
+
+/**
+ * Persona shot. Sniper: careful bullseye. Bully: a hard, accurate takeout on
+ * the best enemy puck it can reach (equal-mass hits leave the Bully's puck
+ * roughly where the victim was, so a good takeout also scores), else a steady
+ * bullseye shot. Loose Cannon: roughly at the eye, wildly over- or under-powered.
+ */
+export function botShot(
+  rng: Rng,
+  persona: BotPersona,
+  pad: Point,
+  center: Point,
+  pucks: readonly Puck[],
+  self: string,
+  pegs: readonly { x: number; y: number; r: number }[] = [],
+): Point {
   const spec = PERSONAS[persona];
   const noise = rng.float(-spec.wobble, spec.wobble);
   if (persona === "bully") {
-    let target: Puck | null = null;
-    let best = 0;
-    for (const p of pucks) {
-      if (p.owner === self) continue;
-      const pts = puckPoints(p, center);
-      if (pts > best) {
-        best = pts;
-        target = p;
-      }
-    }
+    const target = bullyTarget(pad, center, pucks, self, pegs);
     if (target) {
       const d = Math.hypot(target.x - pad.x, target.y - pad.y);
-      return releaseToward(pad, target, noise, d + rng.float(160, 300));
+      return releaseToward(pad, target, noise, d + rng.float(200, 320));
     }
   }
   const d = Math.hypot(center.x - pad.x, center.y - pad.y);
   if (persona === "cannon") return releaseToward(pad, center, noise, d * rng.float(0.7, 1.35));
   return releaseToward(pad, center, noise, d * rng.float(0.94, 1.04));
+}
+
+// ---- match clock ------------------------------------------------------------
+
+export const VOLLEYS = 3;
+
+/**
+ * How much of the current volley is left, 0..1. A volley ends when the pucks
+ * run out OR its clock does, so the bar tracks whichever is closer to empty.
+ */
+export function volleyRemaining(pucksLeft: number, pucksTotal: number, volleyTime: number, volleyS: number): number {
+  const pucks = pucksTotal > 0 ? pucksLeft / pucksTotal : 0;
+  const clock = 1 - volleyTime / volleyS;
+  return Math.max(0, Math.min(1, pucks, clock));
+}
+
+/** Whole-match bar, 0..1: untouched future volleys count full, finished ones empty. */
+export function matchRemaining(volley: number, volleyFrac: number, volleys = VOLLEYS): number {
+  return Math.max(0, Math.min(1, (volleys - volley + volleyFrac) / volleys));
 }
 
 // ---- comedy ------------------------------------------------------------------
