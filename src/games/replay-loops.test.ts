@@ -4,7 +4,7 @@ import type { GameContext } from "../core/types";
 import { eyeOfTheStorm } from "./eye-of-the-storm/eye-of-the-storm";
 import { bootyHaul } from "./imported/booty-haul/booty-haul";
 import { shipPos } from "./imported/booty-haul/rules";
-import { KnockaboutGame } from "./imported/knockabout";
+import { KaboomIsle } from "./kaboom-isle/kaboom-isle";
 
 function context(): GameContext {
   return {
@@ -44,15 +44,23 @@ describe("replay loops", () => {
     game.destroy();
   });
 
-  it("Knockabout allows every human to aim and never stalls on missing shots", () => {
-    const game = new KnockaboutGame(context(), 3);
-    const state = game as any;
-    for (let i = 0; i < 75; i++) game.update(1 / 60);
-    expect(state.phase).toBe("plan");
-    const disc = state.world.aliveDiscs(1)[0];
-    expect(state.findGrabbableDisc(disc.x, disc.y)?.owner).toBe(1);
-    for (let i = 0; i < 11 * 60; i++) game.update(1 / 60);
-    expect(state.turn).toBeGreaterThan(1);
+  it("Kaboom Isle plays itself to a finish when nobody taps", () => {
+    const game = new KaboomIsle(context());
+    for (let frame = 0; frame < 60 * 60 * 15 && !game.isFinished(); frame++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(true);
+    expect(game.turn).toBeGreaterThan(1);
+    expect(game.world.alive().length).toBeLessThanOrEqual(1);
+    game.destroy();
+  });
+
+  it("Kaboom Isle bots finish a four-way brawl", () => {
+    const ctx = context();
+    ctx.players = [0, 1, 2, 3].map((slot) => ({ id: `p${slot}`, name: `P${slot}`, color: "#3EE0FF", kind: "bot", slot })) as GameContext["players"];
+    const game = new KaboomIsle(ctx);
+    for (let frame = 0; frame < 60 * 60 * 15 && !game.isFinished(); frame++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(true);
+    const stats = game.getStats().filter((s) => s.label === "Damage");
+    expect(stats.some((s) => Number(s.value) > 0)).toBe(true);
     game.destroy();
   });
 });
