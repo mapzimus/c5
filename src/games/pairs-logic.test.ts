@@ -189,3 +189,165 @@ describe("fever and golden scoring", () => {
     expect(bestHumanScore([{ kind: "bot" }], [5])).toBeNull();
   });
 });
+
+import {
+  allFlagsMatched,
+  applyTrickScores,
+  assignPersonas,
+  BOT_PERSONAS,
+  dealBoard,
+  FLAG_PAIRS,
+  flagPairsLeft,
+  fillLine,
+  FRENZY_FACTOR,
+  inFrenzy,
+  JACKPOT_POINTS,
+  leaderExcept,
+  missedObvious,
+  pickLine,
+  QUIPS,
+  reshuffleDown,
+  snipeBonus,
+  stealAmount,
+  totalMatchPoints,
+  tricksFor,
+  turnClockSeconds,
+  underdogBonus,
+  type TrickCard,
+} from "./pairs-logic";
+import { PAIR_COLS as COLS, PAIR_ROWS as ROWS } from "./pairs-layout";
+
+describe("trick board", () => {
+  it("fills the 6x6 board with 16 flag pairs and 4 tricks", () => {
+    const faces = pickFaces(PAIR_FACES, FLAG_PAIRS, (max) => max - 1);
+    for (const count of [1, 2, 4]) {
+      const deck = dealBoard(faces, tricksFor(count), (max) => max - 1);
+      expect(deck).toHaveLength(COLS * ROWS);
+      expect(deck.filter((card) => card.trick)).toHaveLength(4);
+      expect(flagPairsLeft(deck)).toBe(FLAG_PAIRS);
+      expect(new Set(deck.map((card) => card.id)).size).toBe(deck.length);
+    }
+    expect(tricksFor(1)).not.toContain("swap");
+    expect(tricksFor(1)).not.toContain("thief");
+    expect(tricksFor(3)).toEqual(expect.arrayContaining(["peek", "bomb", "thief", "swap"]));
+  });
+
+  it("ends the round when every flag is matched, ignoring leftover tricks", () => {
+    const cards: TrickCard[] = [
+      { id: 0, face: "a", state: "matched" },
+      { id: 1, face: "a", state: "matched" },
+      { id: 2, face: "trick:bomb", state: "down", trick: "bomb" },
+    ];
+    expect(allFlagsMatched(cards)).toBe(true);
+    cards[1]!.state = "down";
+    expect(allFlagsMatched(cards)).toBe(false);
+  });
+
+  it("bomb reshuffles only face-down cards", () => {
+    const cards: TrickCard[] = [
+      { id: 0, face: "a", state: "matched" },
+      { id: 1, face: "b", state: "down" },
+      { id: 2, face: "c", state: "down" },
+      { id: 3, face: "a", state: "matched" },
+      { id: 4, face: "d", state: "down" },
+    ];
+    reshuffleDown(cards, () => 0);
+    expect(cards[0]!.id).toBe(0);
+    expect(cards[3]!.id).toBe(3);
+    expect([cards[1]!.id, cards[2]!.id, cards[4]!.id].sort()).toEqual([1, 2, 4]);
+    expect([cards[1]!.id, cards[2]!.id, cards[4]!.id]).not.toEqual([1, 2, 4]);
+  });
+});
+
+describe("trick scores", () => {
+  it("thief steals a quarter of the leader (min 3, capped at what they have)", () => {
+    expect(stealAmount(0)).toBe(0);
+    expect(stealAmount(2)).toBe(2);
+    expect(stealAmount(8)).toBe(3);
+    expect(stealAmount(40)).toBe(10);
+    const out = applyTrickScores("thief", [4, 20, 10], 0);
+    expect(out.target).toBe(1);
+    expect(out.scores).toEqual([9, 15, 10]);
+    expect(out.scores.reduce((a, b) => a + b)).toBe(34);
+  });
+
+  it("swap trades with the leader, and backfires on the leader", () => {
+    expect(applyTrickScores("swap", [2, 20, 9], 0)).toMatchObject({ scores: [20, 2, 9], target: 1, delta: 18 });
+    const backfire = applyTrickScores("swap", [20, 2, 9], 0);
+    expect(backfire.target).toBe(1);
+    expect(backfire.scores).toEqual([2, 20, 9]);
+    expect(backfire.delta).toBeLessThan(0);
+  });
+
+  it("jackpot pays flat points and solo tricks never crash", () => {
+    expect(applyTrickScores("jackpot", [3], 0).scores).toEqual([3 + JACKPOT_POINTS]);
+    expect(applyTrickScores("swap", [3], 0)).toMatchObject({ scores: [3], target: -1 });
+    expect(applyTrickScores("thief", [3], 0)).toMatchObject({ scores: [3], target: -1 });
+    expect(leaderExcept([5], 0)).toBe(-1);
+  });
+});
+
+describe("tension and catch-up", () => {
+  it("doubles the last three pairs in the final frenzy", () => {
+    expect(inFrenzy(4)).toBe(false);
+    expect(inFrenzy(3)).toBe(true);
+    expect(inFrenzy(1)).toBe(true);
+    expect(inFrenzy(0)).toBe(false);
+    const plain = totalMatchPoints(1, 2, false, { frenzy: false, underdog: 0, snipe: 0 });
+    expect(totalMatchPoints(1, 2, false, { frenzy: true, underdog: 0, snipe: 0 })).toBe(plain * FRENZY_FACTOR);
+    expect(totalMatchPoints(1, 2, false, { frenzy: false, underdog: 2, snipe: 1 })).toBe(plain + 3);
+  });
+
+  it("gives trailing players an underdog bonus", () => {
+    expect(underdogBonus([0, 4], 0)).toBe(0);
+    expect(underdogBonus([0, 5], 0)).toBe(1);
+    expect(underdogBonus([0, 12], 0)).toBe(2);
+    expect(underdogBonus([12, 0], 0)).toBe(0);
+    expect(underdogBonus([0], 0)).toBe(0);
+  });
+
+  it("pays a snipe for matching a rival's just-missed flag", () => {
+    expect(snipeBonus(["fr", "de"], 1, "fr", 0)).toBe(1);
+    expect(snipeBonus(["fr", "de"], 0, "fr", 0)).toBe(0);
+    expect(snipeBonus(["fr", "de"], 1, "it", 0)).toBe(0);
+    expect(snipeBonus([], -1, "fr", 0)).toBe(0);
+  });
+
+  it("shrinks the shot clock as the board empties", () => {
+    expect(turnClockSeconds(FLAG_PAIRS)).toBe(9);
+    expect(turnClockSeconds(0)).toBe(4);
+    expect(turnClockSeconds(8)).toBeLessThan(turnClockSeconds(12));
+  });
+
+  it("spots a miss when the mate was already shown elsewhere", () => {
+    const cards: TrickCard[] = [
+      { id: 0, face: "fr", state: "up" },
+      { id: 1, face: "de", state: "up" },
+      { id: 2, face: "fr", state: "down" },
+      { id: 3, face: "de", state: "down" },
+    ];
+    expect(missedObvious(cards, new Set([0, 1]), 0, 1)).toBe(false);
+    expect(missedObvious(cards, new Set([0, 1, 2]), 0, 1)).toBe(true);
+  });
+});
+
+describe("bot personas and announcer", () => {
+  it("hands out distinct personas while they last", () => {
+    const four = assignPersonas(4, () => 0);
+    expect(new Set(four.map((p) => p.id)).size).toBe(4);
+    expect(assignPersonas(6, () => 0)).toHaveLength(6);
+    for (const persona of BOT_PERSONAS) {
+      expect(persona.memory).toBeGreaterThan(0);
+      expect(persona.match.length).toBeGreaterThan(0);
+      expect(persona.miss.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("fills names into lines and leaves no holes", () => {
+    expect(fillLine("Thanks, {victim}! — {name}", { name: "Ace", victim: "Blitz" })).toBe("Thanks, Blitz! — Ace");
+    for (const kind of Object.keys(QUIPS) as (keyof typeof QUIPS)[]) {
+      const line = pickLine(kind, { name: "A", victim: "B", n: 3 }, () => 0);
+      expect(line).not.toMatch(/\{\w+\}/);
+    }
+  });
+});
