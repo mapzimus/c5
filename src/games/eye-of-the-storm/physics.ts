@@ -1,8 +1,24 @@
 /** Tiny top-down puck physics: sliding discs, static pegs, walls, and a swirl that curves paths. */
 
+export type PuckKind = "normal" | "heavy" | "bomb" | "sticky" | "splitter" | "mini";
+
 export interface Puck {
   id: number;
   owner: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  /** Defaults to 1. Heavy pucks shove, minis get shoved. */
+  mass?: number;
+  /** Sticky pucks glue down once slow: puck hits can't move them (blasts can). */
+  anchored?: boolean;
+  kind?: PuckKind;
+}
+
+/** A body that moves on its own path and shoves pucks aside (flying cows). */
+export interface Kinematic {
   x: number;
   y: number;
   vx: number;
@@ -83,6 +99,11 @@ export function stepWorld(world: World, dt: number, jitter: () => number = () =>
 }
 
 function integrate(world: World, p: Puck, h: number): void {
+  if (p.anchored) {
+    p.vx = 0;
+    p.vy = 0;
+    return;
+  }
   const v = speed(p);
   if (v === 0) return;
 
@@ -110,6 +131,10 @@ function integrate(world: World, p: Puck, h: number): void {
   p.y += p.vy * h;
 }
 
+function invMass(p: Puck): number {
+  return p.anchored ? 0 : 1 / (p.mass ?? 1);
+}
+
 export function collidePucks(a: Puck, b: Puck): boolean {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -118,19 +143,74 @@ export function collidePucks(a: Puck, b: Puck): boolean {
   if (dist >= min || dist === 0) return false;
   const nx = dx / dist;
   const ny = dy / dist;
-  const overlap = (min - dist) / 2;
-  a.x -= nx * overlap;
-  a.y -= ny * overlap;
-  b.x += nx * overlap;
-  b.y += ny * overlap;
+  const ia = invMass(a);
+  const ib = invMass(b);
+  const total = ia + ib;
+  const overlap = min - dist;
+  const shareA = total === 0 ? 0.5 : ia / total;
+  const shareB = total === 0 ? 0.5 : ib / total;
+  a.x -= nx * overlap * shareA;
+  a.y -= ny * overlap * shareA;
+  b.x += nx * overlap * shareB;
+  b.y += ny * overlap * shareB;
   const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
-  if (rel <= 0) return false;
-  const impulse = (rel * (1 + PUCK_BOUNCE)) / 2;
-  a.vx -= impulse * nx;
-  a.vy -= impulse * ny;
-  b.vx += impulse * nx;
-  b.vy += impulse * ny;
+  if (rel <= 0 || total === 0) return false;
+  const impulse = (rel * (1 + PUCK_BOUNCE)) / total;
+  a.vx -= impulse * ia * nx;
+  a.vy -= impulse * ia * ny;
+  b.vx += impulse * ib * nx;
+  b.vy += impulse * ib * ny;
   return rel > 40;
+}
+
+/** Shove a puck out of a moving body's way. Returns the impact speed (0 = no touch). */
+export function collideKinematic(p: Puck, body: Kinematic): number {
+  const dx = p.x - body.x;
+  const dy = p.y - body.y;
+  const dist = Math.hypot(dx, dy);
+  const min = p.r + body.r;
+  if (dist >= min) return 0;
+  const nx = dist === 0 ? 0 : dx / dist;
+  const ny = dist === 0 ? -1 : dy / dist;
+  p.x = body.x + nx * min;
+  p.y = body.y + ny * min;
+  const rel = (body.vx - p.vx) * nx + (body.vy - p.vy) * ny;
+  if (rel <= 0) return 0;
+  p.anchored = false;
+  const kick = (rel * 1.6) / (p.mass ?? 1);
+  p.vx += nx * kick;
+  p.vy += ny * kick;
+  return rel;
+}
+
+/**
+ * Explosion: every puck within `radius` (except `skipId`) flies outward, harder the closer it is.
+ * Unsticks anchored pucks. Returns the pucks that were pushed.
+ */
+export function blast(pucks: readonly Puck[], x: number, y: number, radius: number, power: number, skipId = -1): Puck[] {
+  const hit: Puck[] = [];
+  for (const p of pucks) {
+    if (p.id === skipId) continue;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > radius + p.r) continue;
+    const nx = dist === 0 ? 1 : dx / dist;
+    const ny = dist === 0 ? 0 : dy / dist;
+    const falloff = 1 - Math.min(1, dist / (radius + p.r)) * 0.7;
+    const kick = (power * falloff) / (p.mass ?? 1);
+    p.anchored = false;
+    p.vx += nx * kick;
+    p.vy += ny * kick;
+    hit.push(p);
+  }
+  return hit;
+}
+
+/** How far a puck launched at `v0` slides on open ground before stopping (closed form of the drag model). */
+export function slideDistance(v0: number): number {
+  if (v0 <= 0) return 0;
+  return v0 / LINEAR_DRAG - (FLAT_DRAG / (LINEAR_DRAG * LINEAR_DRAG)) * Math.log(1 + (LINEAR_DRAG * v0) / FLAT_DRAG);
 }
 
 export function collidePeg(p: Puck, peg: Peg, jitter: () => number): boolean {
