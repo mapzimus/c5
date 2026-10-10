@@ -10,25 +10,38 @@ import type {
 
 export const whack: GameDefinition = {
   id: "whack",
-  name: "Whack-a-Mole",
-  tagline: "Tap fast. Score big.",
+  name: "Bonk",
+  tagline: "Bonk them before they hide.",
   description:
-    "Moles pop up across your zone — tap them before they dive back down. " +
-    "Regular moles score 1, golden moles score 3 but vanish faster. " +
-    "Hit a bomb and lose 2 points. Speed streaks earn bonus points. " +
-    "Built for multi-touch: everyone plays at once on the same screen.",
+    "Critters pop out of holes in your zone. Tap them before they duck back down. " +
+    "Hit 8 in a row to fill your combo meter and start FEVER: double points and more targets for a few seconds. " +
+    "Gold critters are worth 10 but only show up for a blink. " +
+    "Don't tap the bombs: they cost 5 points and wipe your combo. " +
+    "Everyone plays at once on the same screen.",
   durationMs: 45_000,
-  controls: "Tap moles in your zone",
+  controls: "Tap critters in your zone. Avoid bombs.",
   create: (ctx) => new WhackGame(ctx),
 };
 
 const HOLE_RADIUS = 38;
 const MOLE_UP_TIME = 1.4;
 const MOLE_UP_MIN = 0.6;
-const GOLDEN_UP_TIME = 0.7;
+const GOLDEN_UP_TIME = 0.55;
 const BOMB_UP_TIME = 1.2;
 const SPAWN_INTERVAL = 0.9;
 const SPAWN_MIN = 0.45;
+
+const GOLDEN_CHANCE = 0.04;
+const BOMB_CHANCE = 0.1;
+const NORMAL_POINTS = 1;
+const GOLDEN_POINTS = 10;
+const BOMB_PENALTY = 5;
+/** Consecutive hits needed to fill the combo meter and trigger FEVER. */
+export const COMBO_TO_FEVER = 8;
+export const FEVER_TIME = 5;
+const FEVER_SPAWN_SCALE = 0.4;
+/** Per-frame odds a bot slaps a bomb that's been up a while. Small on purpose. */
+const BOT_BOMB_SLIP = 0.006;
 
 type MoleKind = "normal" | "golden" | "bomb";
 
@@ -41,6 +54,7 @@ interface Mole {
   whacked: boolean;
   whackFlash: number;
   whackedBy: string | null;
+  points: number;
 }
 
 interface Seat {
@@ -59,6 +73,10 @@ interface Seat {
   goldenHits: number;
   bombHits: number;
   misses: number;
+  combo: number;
+  fever: number;
+  fevers: number;
+  feverFlash: number;
 }
 
 class WhackGame implements GameInstance {
@@ -116,6 +134,10 @@ class WhackGame implements GameInstance {
         goldenHits: 0,
         bombHits: 0,
         misses: 0,
+        combo: 0,
+        fever: 0,
+        fevers: 0,
+        feverFlash: 0,
       };
     });
 
@@ -143,6 +165,7 @@ class WhackGame implements GameInstance {
             mole.whackFlash = 0;
             if (mole.kind !== "bomb") {
               seat.streak = 0;
+              seat.combo = 0;
               seat.misses++;
             }
           }
@@ -154,9 +177,13 @@ class WhackGame implements GameInstance {
         (m) => !m.whacked || m.whackFlash > 0,
       );
 
+      if (seat.fever > 0) seat.fever = Math.max(0, seat.fever - dt);
+      if (seat.feverFlash > 0) seat.feverFlash = Math.max(0, seat.feverFlash - dt);
+
       seat.spawnTimer -= dt;
       if (seat.spawnTimer <= 0) {
-        seat.spawnTimer = spawnInterval + this.ctx.rng.float(-0.15, 0.15);
+        const scale = seat.fever > 0 ? FEVER_SPAWN_SCALE : 1;
+        seat.spawnTimer = (spawnInterval + this.ctx.rng.float(-0.15, 0.15)) * scale;
         this.spawnMole(seat, upTime);
       }
 
@@ -175,10 +202,12 @@ class WhackGame implements GameInstance {
     const roll = this.ctx.rng.next();
     let kind: MoleKind = "normal";
     let life = upTime;
-    if (roll < 0.08) {
+    // Fewer bombs during FEVER so it feels like a reward, not a trap.
+    const bombChance = seat.fever > 0 ? BOMB_CHANCE * 0.5 : BOMB_CHANCE;
+    if (roll < bombChance) {
       kind = "bomb";
       life = BOMB_UP_TIME;
-    } else if (roll < 0.2) {
+    } else if (roll < bombChance + GOLDEN_CHANCE) {
       kind = "golden";
       life = GOLDEN_UP_TIME;
     }
@@ -192,6 +221,7 @@ class WhackGame implements GameInstance {
       whacked: false,
       whackFlash: 0,
       whackedBy: null,
+      points: 0,
     });
   }
 
@@ -201,7 +231,36 @@ class WhackGame implements GameInstance {
     );
     if (target && this.ctx.rng.next() < 0.12) {
       this.whackMole(seat, target);
+      return;
     }
+    // Bots mostly read bombs correctly, but sometimes slap one anyway.
+    const bomb = seat.moles.find(
+      (m) => !m.whacked && m.kind === "bomb" && m.life < m.maxLife * 0.7,
+    );
+    if (bomb && this.ctx.rng.next() < BOT_BOMB_SLIP) {
+      this.whackMole(seat, bomb);
+    }
+  }
+
+  private startFever(seat: Seat, mole: Mole): void {
+    seat.fever = FEVER_TIME;
+    seat.feverFlash = 0.5;
+    seat.fevers++;
+    seat.combo = 0;
+    this.callouts.show(`${seat.player.name} FEVER!`, seat.player.color, {
+      size: 64,
+      life: 1.1,
+      y: 0.45,
+    });
+    this.ctx.sfx.streak(4);
+    this.juice.shake(0.35);
+    this.juice.hitStop(0.06);
+    this.juice.burst(mole.x, mole.y, ["#FFD700", "#FF3D7A", "#3EE0FF", seat.player.color], {
+      count: 50,
+      speed: 420,
+      gravity: 200,
+      life: 0.8,
+    });
   }
 
   private whackMole(seat: Seat, mole: Mole): void {
@@ -210,11 +269,15 @@ class WhackGame implements GameInstance {
     mole.whackedBy = seat.player.id;
 
     if (mole.kind === "bomb") {
-      seat.score = Math.max(0, seat.score - 2);
+      const lost = Math.min(seat.score, BOMB_PENALTY);
+      seat.score -= lost;
+      mole.points = -BOMB_PENALTY;
       seat.bombHits++;
       seat.streak = 0;
+      seat.combo = 0;
+      seat.fever = 0;
       this.ctx.sfx.miss();
-      this.juice.shake(0.2);
+      this.juice.shake(0.45);
       this.juice.burst(mole.x, mole.y, ["#FF3D7A", "#FF4136", "#FF6B35"], {
         count: 24,
         speed: 300,
@@ -222,21 +285,25 @@ class WhackGame implements GameInstance {
         life: 0.5,
       });
     } else {
-      const points = mole.kind === "golden" ? 3 : 1;
+      const base = mole.kind === "golden" ? GOLDEN_POINTS : NORMAL_POINTS;
+      const points = seat.fever > 0 ? base * 2 : base;
+      mole.points = points;
       seat.score += points;
       seat.streak++;
       seat.bestStreak = Math.max(seat.bestStreak, seat.streak);
       seat.hits++;
-      if (mole.kind === "golden") seat.goldenHits++;
+      if (mole.kind === "golden") {
+        seat.goldenHits++;
+        this.juice.shake(0.25);
+        this.callouts.show(`GOLD +${points}`, "#FFD700", { size: 44, life: 0.7, y: 0.55 });
+      }
 
-      if (seat.streak > 0 && seat.streak % 5 === 0) {
-        seat.score += 2;
-        this.callouts.show(
-          `${seat.player.name} x${seat.streak}!`,
-          seat.player.color,
-          { size: 48, life: 0.8, y: 0.5 },
-        );
-        this.ctx.sfx.streak(seat.streak / 5);
+      // The meter only fills outside FEVER, so FEVER can't chain forever.
+      if (seat.fever <= 0) seat.combo++;
+      if (seat.fever <= 0 && seat.combo >= COMBO_TO_FEVER) {
+        this.startFever(seat, mole);
+      } else if (mole.kind === "golden") {
+        this.ctx.sfx.streak(3);
       } else {
         this.ctx.sfx.collect();
       }
@@ -309,6 +376,20 @@ class WhackGame implements GameInstance {
 
     g.fillStyle = "rgba(244,247,251,0.02)";
     g.fillRect(zx + 1, zy, zw - 2, zh);
+    if (s.fever > 0) {
+      const pulse = 0.12 + 0.08 * Math.sin(this.time * 14);
+      g.save();
+      g.globalAlpha = pulse + s.feverFlash * 0.6;
+      g.fillStyle = player.color;
+      g.fillRect(zx + 1, zy, zw - 2, zh);
+      g.restore();
+      g.save();
+      g.strokeStyle = "#FFD700";
+      g.lineWidth = 4;
+      g.globalAlpha = 0.5 + 0.5 * Math.sin(this.time * 20);
+      g.strokeRect(zx + 3, zy + 2, zw - 6, zh - 4);
+      g.restore();
+    }
     g.strokeStyle = "rgba(244,247,251,0.08)";
     g.lineWidth = 1;
     g.beginPath();
@@ -325,6 +406,7 @@ class WhackGame implements GameInstance {
     g.fillStyle = "#F4F7FB";
     g.font = "700 32px Bebas Neue, Impact, sans-serif";
     g.fillText(String(s.score), zx + zw / 2, zy + 24);
+    this.drawMeter(g, s);
 
     for (const hole of s.holes) {
       g.beginPath();
@@ -344,8 +426,7 @@ class WhackGame implements GameInstance {
         g.font = "700 28px Bebas Neue, Impact, sans-serif";
         g.textAlign = "center";
         g.textBaseline = "middle";
-        const pts =
-          mole.kind === "bomb" ? "-2" : mole.kind === "golden" ? "+3" : "+1";
+        const pts = mole.points < 0 ? String(mole.points) : `+${mole.points}`;
         g.fillText(pts, mole.x, mole.y - HOLE_RADIUS - 10);
         g.restore();
         continue;
@@ -380,7 +461,7 @@ class WhackGame implements GameInstance {
         const r = HOLE_RADIUS * 0.75 * show;
         const col = mole.kind === "golden" ? "#FFD700" : "#8B6914";
         g.shadowColor = mole.kind === "golden" ? "#FFD700" : "#B8860B";
-        g.shadowBlur = mole.kind === "golden" ? 20 : 10;
+        g.shadowBlur = mole.kind === "golden" ? 20 + 12 * Math.sin(this.time * 30) : 10;
         g.beginPath();
         g.arc(0, -r * 0.3, r, 0, Math.PI * 2);
         g.fillStyle = col;
@@ -400,7 +481,37 @@ class WhackGame implements GameInstance {
         g.ellipse(0, -r * 0.2, r * 0.2, r * 0.1, 0, 0, Math.PI);
         g.fillStyle = "rgba(255,255,255,0.2)";
         g.fill();
+
+        if (mole.kind === "golden") {
+          // Shrinking ring shows how little time is left.
+          g.beginPath();
+          g.arc(0, -r * 0.3, r + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (mole.life / mole.maxLife));
+          g.strokeStyle = "#FFF6C0";
+          g.lineWidth = 3;
+          g.stroke();
+        }
       }
+      g.restore();
+    }
+  }
+
+  private drawMeter(g: CanvasRenderingContext2D, s: Seat): void {
+    const w = Math.min(160, s.zoneW * 0.5);
+    const h = 8;
+    const x = s.zoneX + s.zoneW / 2 - w / 2;
+    const y = s.zoneY + 58;
+    const fill = s.fever > 0 ? s.fever / FEVER_TIME : s.combo / COMBO_TO_FEVER;
+    g.fillStyle = "rgba(244,247,251,0.12)";
+    g.fillRect(x, y, w, h);
+    g.fillStyle = s.fever > 0 ? "#FFD700" : s.player.color;
+    g.fillRect(x, y, w * fill, h);
+    if (s.fever > 0) {
+      g.save();
+      g.fillStyle = "#FFD700";
+      g.font = "700 18px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillText("FEVER x2", x + w + 8, y + h / 2);
       g.restore();
     }
   }
@@ -422,7 +533,9 @@ class WhackGame implements GameInstance {
       const id = s.player.id;
       out.push({ playerId: id, label: "Hits", value: String(s.hits) });
       if (s.goldenHits > 0)
-        out.push({ playerId: id, label: "Golden moles", value: String(s.goldenHits) });
+        out.push({ playerId: id, label: "Gold hits", value: String(s.goldenHits) });
+      if (s.fevers > 0)
+        out.push({ playerId: id, label: "Fevers", value: String(s.fevers) });
       if (s.bombHits > 0)
         out.push({ playerId: id, label: "Bombs hit", value: String(s.bombHits) });
       if (s.bestStreak > 1)
