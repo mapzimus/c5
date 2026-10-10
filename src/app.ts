@@ -65,30 +65,18 @@ export class App {
   private renderMenu(): void {
     const screen = this.screens.get("menu")!;
     clear(screen);
+    const games = this.registry.list();
     screen.append(
-      el("p", { class: "brand", text: "Category Five" }),
-      el("h1", { class: "display", text: "Games" }),
-      el("p", { class: "lede", text: this.pickPrompt() ?? "Pick a game. Win it and you pick the next one." }),
+      el("header", { class: "menu-head" },
+        el("p", { class: "brand", text: "Category Five" }),
+        el("h1", { class: "display", text: "Pick a game" }),
+        el("p", { class: "lede", text: this.pickPrompt() ?? "Win it and you pick the next one." }),
+      ),
+      el("div", { class: "section-label", text: "Players" }),
+      this.playerBar(),
+      el("div", { class: "section-label", text: `${games.length} games` }),
+      this.gameCards(),
     );
-
-    const seats = el("div", { class: "seats" });
-    this.players.forEach((player, index) => {
-      seats.append(this.seatCard(player, index));
-    });
-    if (this.players.length < 4) {
-      const add = button("Add player", () => {
-        this.players.push(makePlayer(this.players.length as 0 | 1 | 2 | 3));
-        this.resetSession();
-        this.renderMenu();
-        this.show("menu");
-      }, "ghost");
-      seats.append(add);
-    }
-    screen.append(seats);
-
-    if (this.session.gamesPlayed > 0) screen.append(this.standingRow());
-
-    screen.append(this.gameCards());
   }
 
   /** Who picks next, e.g. "Gale won, Gale picks next". Null before the first game. */
@@ -97,12 +85,19 @@ export class App {
     return picker ? `${picker.name} won. ${picker.name} picks the next game.` : null;
   }
 
+  private rerenderMenu(): void {
+    this.renderMenu();
+    this.show("menu");
+  }
+
   private gameCards(): HTMLElement {
     const games = this.registry.list();
-    const cards = el("div", { class: "grid cards" });
-    for (const game of games) {
-      const card = el("button", { class: "card" });
+    const cards = el("div", { class: "cards" });
+    games.forEach((game, index) => {
+      const accent = ACCENTS[index % ACCENTS.length]!;
+      const card = el("button", { class: "card", style: `--accent:${accent}` });
       card.append(
+        el("span", { class: "card-icon", text: GAME_ICONS[game.id] ?? "🎲", "aria-hidden": "true" }),
         el("span", { class: "tag", text: game.durationMs > 0 ? `${game.durationMs / 1000}s` : "Turns" }),
         el("h3", { text: game.name }),
         el("p", { text: game.tagline }),
@@ -113,7 +108,7 @@ export class App {
         this.launch(game);
       });
       cards.append(card);
-    }
+    });
     if (games.length === 0) {
       cards.append(
         el("div", { class: "card empty-card" },
@@ -126,45 +121,62 @@ export class App {
     return cards;
   }
 
-  private seatCard(player: Player, index: number): HTMLElement {
+  private playerBar(): HTMLElement {
+    const bar = el("div", { class: "players" });
+    this.players.forEach((player, index) => bar.append(this.playerPill(player, index)));
+    if (this.players.length < 4) {
+      const add = el("button", { class: "pill add-pill", text: "+ Add player" });
+      add.addEventListener("click", () => {
+        this.players.push(makePlayer(this.players.length as 0 | 1 | 2 | 3));
+        this.resetSession();
+        this.rerenderMenu();
+      });
+      bar.append(add);
+    }
+    return bar;
+  }
+
+  private playerPill(player: Player, index: number): HTMLElement {
+    const pill = el("div", { class: "pill", style: `--accent:${player.color}` });
     const name = el("input", {
       type: "text",
       value: player.name,
       maxlength: "12",
+      size: "7",
       "aria-label": `Player ${index + 1} name`,
     });
     name.addEventListener("input", () => {
       player.name = name.value.slice(0, 12) || DEFAULT_NAMES[index]!;
     });
-    const kind = button(player.kind === "human" ? "Human" : "Bot", () => {
-      player.kind = player.kind === "human" ? "bot" : "human";
-      this.renderMenu();
-      this.show("menu");
+    const isBot = player.kind === "bot";
+    const kind = el("button", {
+      class: `pill-kind${isBot ? " bot" : ""}`,
+      text: isBot ? "🤖 Bot" : "🙂 Human",
+      title: "Switch Human / Bot",
     });
-    kind.classList.toggle("ghost", player.kind === "bot");
-    const seat = el("div", { class: "seat" });
-    seat.append(
-      el("div", { class: "row" },
-        el("span", { class: "swatch", style: `background:${player.color}` }),
-        el("strong", { text: `P${index + 1}` }),
-      ),
-      name,
-    );
-    const actions = el("div", { class: "row" });
-    actions.append(kind);
+    kind.addEventListener("click", () => {
+      player.kind = isBot ? "human" : "bot";
+      this.rerenderMenu();
+    });
+    pill.append(el("span", { class: "swatch" }), name, kind);
+
+    const wins = this.session.standings.find((s) => s.playerId === player.id)?.wins ?? 0;
+    if (this.session.gamesPlayed > 0) {
+      pill.append(el("span", { class: "pill-pts", text: `${wins} ${wins === 1 ? "pt" : "pts"}` }));
+    }
     if (this.players.length > 1) {
-      actions.append(ghost("Remove", () => {
+      const remove = el("button", { class: "pill-x", text: "×", "aria-label": `Remove ${player.name}` });
+      remove.addEventListener("click", () => {
         this.players.splice(index, 1);
         this.players.forEach((item, slot) => {
           item.slot = slot as 0 | 1 | 2 | 3;
         });
         this.resetSession();
-        this.renderMenu();
-        this.show("menu");
-      }));
+        this.rerenderMenu();
+      });
+      pill.append(remove);
     }
-    seat.append(actions);
-    return seat;
+    return pill;
   }
 
   private standingRow(): HTMLElement {
@@ -290,6 +302,25 @@ export class App {
     this.session = new Session(this.players);
   }
 }
+
+const ACCENTS = ["#3EE0FF", "#FF3D7A", "#FFB020", "#B8FF3D", "#A78BFA", "#FF8A3D"] as const;
+
+const GAME_ICONS: Record<string, string> = {
+  pairs: "🃏",
+  "parrot-flip": "🦜",
+  "castle-siege": "🏰",
+  "lucky-drop": "🍀",
+  "eye-of-the-storm": "🎯",
+  "booty-haul": "🏴‍☠️",
+  "chaos-derby": "🏇",
+  "bug-wars": "🐞",
+  "kaboom-isle": "💣",
+  nerve: "🧠",
+  fling: "🪀",
+  whack: "🔨",
+  "flappy-race": "🐦",
+  "connect-four": "🔴",
+};
 
 function makePlayer(index: 0 | 1 | 2 | 3): Player {
   return {
