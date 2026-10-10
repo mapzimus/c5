@@ -28,7 +28,10 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 
 | Game | How it plays |
 | --- | --- |
-| **Pairs** | A 5s peek (tap to skip), then 18 flags on a 6×6 board sized for the phone. Match two to stay on streak (bigger points). Last pair pays a closer bonus. Miss and the turn moves on. |
+| **Flag Snap** | A 5s peek (tap to skip), then 18 flags on a 6×6 board sized for the phone. Match two to stay on streak (bigger points). One secret golden pair pays triple. Every 4 misses, a shake-up slides 4 hidden cards to new spots. Miss and the turn moves on. |
+| **Bonk** | Tap critters in your zone before they hide. 8 hits in a row fills the meter and triggers 5s of FEVER (double points, more targets). Rare gold targets pay +10; bombs cost 5 and wipe your combo. |
+| **Sky Dash** | Tap your lane to climb and thread neon gates. Coins in the gaps, +3 for skimming an edge, shield and ghost pickups, and the speed keeps climbing. Last jet flying wins. |
+| **Drop Zone** | Get four in a row. Each round you also get one Bomb (clears a 3×3) and one Anvil (smashes down a column). Pieces fall after every blast, so lines can appear for anyone. First to 2 rounds. |
 | **Parrot Flip** | Flick a pirate macaw and land it standing. Real bottle-game rules from [flipgame](https://github.com/mapzimus/flipgame): 10 lives each, every make raises the shared stake, a miss costs that many lives. 3 in a row = ON FIRE (bonus lives, free misses). Last one standing wins. **Duel mode:** two players flip at once on a split screen (both make = stake +2, a miss pays it, winner stays on). |
 | **Castle Siege** | Hide your king, then drop pieces to wall him in (25s). Then take turns firing random ammo (cannonball, bomb, triple shot, boulder) through the wind. Blocks crack and shatter, and 3 hits take out a king. First to 2 rounds wins. [Details](src/games/castle-siege/README.md) **Real-time mode:** no turns, both cannons fire whenever reloaded. |
 | **Eye of the Storm** | Big-touchscreen game. Everyone fires at once: drag back from your corner pad to slingshot six pucks into the eye (10/5/2). Random pegs, a swirl that bends shots and flips direction, and puck-on-puck knockouts. Ends when every puck is out and still, or at 60s. |
@@ -50,4 +53,4 @@ Pitches and half-thoughts go in `ideas/inbox.md` until they are a real game.
 
 `GameContext` hands you canvas size, the roster, keyboard + click input, a seeded RNG, and tiny synth SFX. Untimed games use `durationMs: 0` and end when `isFinished()` is true.
 
-Flag art on Pairs is the PNG set in `public/flags/` ([flagcdn](https://flagcdn.com/) / [flag-icons](https://github.com/lipis/flag-icons)).
+Flag art on Flag Snap is the PNG set in `public/flags/` ([flagcdn](https://flagcdn.com/) / [flag-icons](https://github.com/lipis/flag-icons)).
