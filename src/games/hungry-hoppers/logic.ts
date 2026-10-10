@@ -1,4 +1,4 @@
-/** Pure rules for Hungry Hoppers: board geometry, marble physics, chomp hitboxes, scoring. */
+/** Pure rules for Chomp (id "hungry-hoppers"): board geometry, marble physics, chomp hitboxes, scoring. */
 
 export type MarbleKind = "normal" | "gold" | "bomb";
 
@@ -26,15 +26,36 @@ export const MOUTH_R = 58;
 export const STUN_TIME = 1;
 export const BOMB_PENALTY = 2;
 
-export const FRENZY_AT = 25; // seconds in (20s left of 45s)
-export const FRENZY_COUNT = 40;
+/** Seconds into the 45s round when a frenzy wave floods the bowl. */
+export const FRENZY_TIMES: readonly number[] = [12, 25, 37];
+export const FRENZY_COUNT = 24;
 export const SPAWN_INTERVAL = 0.4;
 export const MAX_LIVE = 34;
 
 const FRICTION = 0.35; // fraction of speed kept per second
 const MIN_SPEED = 70;
+/** Gold marbles never slow below this: they're fast and hard to catch. */
+export const GOLD_MIN_SPEED = 260;
+export const GOLD_SPEED_BOOST = 1.8;
 
-export const POINTS: Record<MarbleKind, number> = { normal: 1, gold: 3, bomb: -BOMB_PENALTY };
+export const POINTS: Record<MarbleKind, number> = { normal: 1, gold: 8, bomb: -BOMB_PENALTY };
+
+/** Every 3 good chomps in a row adds +1x, up to 4x. */
+export const STREAK_STEP = 3;
+export const MAX_MULT = 4;
+
+export function streakMultiplier(streak: number): number {
+  return Math.min(MAX_MULT, 1 + Math.floor(Math.max(0, streak) / STREAK_STEP));
+}
+
+/**
+ * Streak after a chomp finishes. Eating food (without a bomb) extends it;
+ * a whiff (nothing eaten) or a bomb resets it to 0.
+ */
+export function nextStreak(streak: number, ateFood: boolean, ateBomb: boolean): number {
+  if (ateBomb || !ateFood) return 0;
+  return streak + 1;
+}
 
 /**
  * Angle (from arena centre) where each seat's creature sits.
@@ -83,29 +104,32 @@ export interface EatResult {
   bombs: number;
 }
 
-/** Apply a mouthful to a score. Bombs cost 2 each (score floors at 0) and stun. */
-export function applyEat(score: number, kinds: readonly MarbleKind[]): EatResult {
+/**
+ * Apply a mouthful to a score. Food is multiplied by the streak multiplier;
+ * bombs cost 2 each (never multiplied, score floors at 0) and stun.
+ */
+export function applyEat(score: number, kinds: readonly MarbleKind[], mult = 1): EatResult {
   let s = score;
   let golds = 0;
   let bombs = 0;
   for (const k of kinds) {
     if (k === "gold") golds++;
     if (k === "bomb") bombs++;
-    s = Math.max(0, s + POINTS[k]);
+    s = Math.max(0, s + (k === "bomb" ? POINTS[k] : POINTS[k] * mult));
   }
   return { score: s, stunned: bombs > 0, eaten: kinds.length, golds, bombs };
 }
 
-/** ~8% gold, ~12% bomb, rest normal. */
+/** ~4% gold, ~12% bomb, rest normal. */
 export function rollKind(r: number): MarbleKind {
-  if (r < 0.08) return "gold";
-  if (r < 0.2) return "bomb";
+  if (r < 0.04) return "gold";
+  if (r < 0.16) return "bomb";
   return "normal";
 }
 
 export function spawnMarble(rand: () => number, kind = rollKind(rand())): Marble {
   const a = rand() * Math.PI * 2;
-  const sp = 160 + rand() * 180;
+  const sp = (160 + rand() * 180) * (kind === "gold" ? GOLD_SPEED_BOOST : 1);
   return {
     x: ARENA_X + (rand() - 0.5) * 30,
     y: ARENA_Y + (rand() - 0.5) * 30,
@@ -123,13 +147,14 @@ export function stepMarbles(marbles: Marble[], dt: number): void {
     m.vx *= keep;
     m.vy *= keep;
     const sp = Math.hypot(m.vx, m.vy);
-    if (sp < MIN_SPEED) {
+    const floor = m.kind === "gold" ? GOLD_MIN_SPEED : MIN_SPEED;
+    if (sp < floor) {
       if (sp < 1e-3) {
-        m.vx = MIN_SPEED;
+        m.vx = floor;
         m.vy = 0;
       } else {
-        m.vx *= MIN_SPEED / sp;
-        m.vy *= MIN_SPEED / sp;
+        m.vx *= floor / sp;
+        m.vy *= floor / sp;
       }
     }
     m.x += m.vx * dt;
