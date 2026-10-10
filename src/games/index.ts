@@ -9,7 +9,6 @@ import { bootyHaul } from "./imported/booty-haul/booty-haul";
 import { chaosDerby } from "./chaos-derby/chaos-derby";
 import { bugWars } from "./imported/bug-wars/bug-wars";
 import { kaboomIsle } from "./kaboom-isle/kaboom-isle";
-import { nerve } from "./nerve/nerve";
 import { fling } from "./fling/fling";
 import { whack } from "./whack/whack";
 import { flappyRace } from "./flappy/flappy";
@@ -22,7 +21,7 @@ import { hungryHoppers } from "./hungry-hoppers/hungry-hoppers";
 import { blockBrawl } from "./block-brawl/block-brawl";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, nerve, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();

@@ -151,80 +151,6 @@ input {
   gap: 16px;
 }
 
-.cards {
-  grid-template-columns: repeat(auto-fill, minmax(240px, 280px));
-  margin-top: 28px;
-}
-
-.seats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: stretch;
-  margin: 24px 0 8px;
-}
-
-.seats .seat {
-  width: 200px;
-  margin: 0;
-}
-
-.seats .btn {
-  min-height: 44px;
-  padding: 10px 14px;
-}
-
-.card.empty-card {
-  cursor: default;
-  opacity: 0.7;
-}
-
-.card {
-  text-align: left;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  padding: 20px;
-  color: inherit;
-  cursor: pointer;
-  min-height: 180px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  transition: border-color 0.15s, transform 0.12s, box-shadow 0.2s;
-}
-
-.card:hover,
-.card:focus-visible {
-  border-color: var(--cyan);
-  outline: none;
-  transform: translateY(-2px);
-  box-shadow: 0 6px 24px rgba(62, 224, 255, 0.08);
-}
-
-.card:active {
-  transform: translateY(0);
-}
-
-.card h3 {
-  font-family: "Bebas Neue", Impact, sans-serif;
-  font-size: 32px;
-  margin: 0;
-}
-
-.card p,
-.hint {
-  margin: 0;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
-.card .tag {
-  color: var(--amber);
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .roster {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -472,32 +398,6 @@ footer.fine {
     font-size: 16px;
   }
 
-  .seats {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-
-  .seats .seat {
-    width: auto;
-    padding: 12px;
-    gap: 8px;
-  }
-
-  .seats .row {
-    gap: 8px;
-  }
-
-  .cards {
-    grid-template-columns: 1fr;
-    margin-top: 20px;
-  }
-
-  .card {
-    min-height: 0;
-    padding: 16px 18px;
-  }
-
   .btn {
     min-height: 44px;
   }
@@ -506,5 +406,271 @@ footer.fine {
 @media (pointer: coarse) {
   .btn {
     min-height: 44px;
+  }
+}
+
+/* ---------- Main menu ---------- */
+#screen-menu.active {
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+.wordmark {
+  margin: 0;
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: 0.32em;
+  color: var(--muted);
+}
+
+.menu-head .lede {
+  margin: 6px 0 0;
+}
+
+/* YOU vs BOT */
+.matchup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 18px;
+  margin: 18px 0 36px;
+}
+
+.fighter {
+  --accent: var(--cyan);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fighter-name {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-bottom: 4px solid transparent;
+  color: var(--accent);
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-size: clamp(64px, 11vw, 132px);
+  line-height: 0.9;
+  text-transform: uppercase;
+  caret-color: var(--ink);
+}
+
+.fighter-name:hover {
+  border-bottom-color: rgba(244, 247, 251, 0.12);
+}
+
+.fighter-name:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.fighter-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.fighter-kind,
+.fighter-x,
+.add-fighter {
+  appearance: none;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.fighter-kind {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fighter-kind:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.fighter-pts {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.fighter-x {
+  min-height: 36px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.fighter-x:hover {
+  color: var(--magenta);
+}
+
+.vs {
+  align-self: flex-start;
+  padding-top: clamp(18px, 3.2vw, 40px);
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-size: clamp(28px, 4vw, 48px);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.add-fighter {
+  align-self: flex-start;
+  width: 56px;
+  height: 56px;
+  margin-top: clamp(8px, 2.6vw, 34px);
+  border: 2px dashed rgba(244, 247, 251, 0.25);
+  border-radius: 12px;
+  background: none;
+  color: var(--muted);
+  font-size: 28px;
+  line-height: 1;
+}
+
+.add-fighter:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* Game tiles: flat, chunky, pressable. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px 16px;
+  padding-bottom: 8px;
+}
+
+.card {
+  --accent: var(--cyan);
+  --depth: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 176px;
+  padding: 16px 18px 18px;
+  text-align: left;
+  color: #0a0d14;
+  background: var(--accent);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 var(--depth) 0 color-mix(in srgb, var(--accent) 45%, #000);
+  cursor: pointer;
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+
+.card:hover,
+.card:focus-visible {
+  outline: none;
+  transform: translateY(-2px);
+  --depth: 8px;
+}
+
+.card:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.card:active {
+  transform: translateY(var(--depth));
+  --depth: 0px;
+}
+
+.card-num {
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-size: 18px;
+  opacity: 0.55;
+}
+
+.card h3 {
+  margin: auto 0 0;
+  font-family: "Bebas Neue", Impact, sans-serif;
+  font-size: 40px;
+  line-height: 0.9;
+}
+
+.card p,
+.hint {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.card p {
+  color: rgba(10, 13, 20, 0.72);
+  font-size: 14px;
+  font-weight: 500;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card .tag {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.card.empty-card {
+  cursor: default;
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+@media (max-width: 600px) {
+  .matchup {
+    gap: 0 12px;
+    margin: 12px 0 26px;
+  }
+
+  .fighter-name {
+    font-size: 64px;
+  }
+
+  .vs {
+    padding-top: 16px;
+    font-size: 28px;
+  }
+
+  .add-fighter {
+    width: 44px;
+    height: 44px;
+    margin-top: 10px;
+  }
+
+  .cards {
+    grid-template-columns: 1fr 1fr;
+    gap: 14px 10px;
+  }
+
+  .card {
+    min-height: 140px;
+    padding: 12px 14px 14px;
+    --depth: 5px;
+  }
+
+  .card h3 {
+    font-size: 30px;
+  }
+
+  .card p {
+    font-size: 12.5px;
   }
 }

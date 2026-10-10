@@ -143,7 +143,7 @@ export function pickKnownIndex(
 }
 
 export const FEVER_STREAK = 3;
-export const GOLDEN_FACTOR = 2;
+export const GOLDEN_FACTOR = 3;
 
 /** Fever multiplier from the current consecutive-match streak: x1, then x2 at 3, x3 at 5+. */
 export function feverMultiplier(streak: number): number {
@@ -156,7 +156,7 @@ export function inFever(streak: number): boolean {
   return streak >= FEVER_STREAK;
 }
 
-/** Full match score: combo points (with closer bonus) × fever multiplier, doubled again for the golden pair. */
+/** Full match score: combo points (with closer bonus) × fever multiplier, tripled for the golden pair. */
 export function scoreMatch(streak: number, remainingPairsAfter: number, golden: boolean): number {
   const base = pointsForMatch(streak, remainingPairsAfter) * feverMultiplier(streak);
   return golden ? base * GOLDEN_FACTOR : base;
@@ -174,4 +174,60 @@ export function bestHumanScore(
     if (best === null || score > best) best = score;
   });
   return best;
+}
+
+export const SHAKE_EVERY = 4;
+export const SHAKE_COUNT = 4;
+
+/** A shake-up fires on every SHAKE_EVERY-th miss (4, 8, 12…), counted across all players. */
+export function shakeDue(totalMisses: number, every = SHAKE_EVERY): boolean {
+  return totalMisses > 0 && every > 0 && totalMisses % every === 0;
+}
+
+/** Misses left until the next shake-up (never 0: right after one fires it reads a full cycle). */
+export function missesUntilShake(totalMisses: number, every = SHAKE_EVERY): number {
+  return every - (Math.max(0, totalMisses) % every);
+}
+
+/** Up to `take` random face-down tiles to shuffle. Fewer than 2 candidates means no shake-up. */
+export function pickShakeIndices(
+  cards: readonly PairCard[],
+  take: number,
+  pickIndex: (maxExclusive: number) => number,
+): number[] {
+  const open = cards.flatMap((card, index) => (card.state === "down" ? [index] : []));
+  if (open.length < 2) return [];
+  return shuffleInPlace(open, pickIndex).slice(0, Math.min(take, open.length));
+}
+
+export interface ShakeMove {
+  /** Slot the card left. */
+  from: number;
+  /** Slot the card landed in. */
+  to: number;
+}
+
+/**
+ * Rotate the cards at `indices` one step (the card at indices[i] moves to indices[i+1]),
+ * so every chosen tile changes place. Returns the moves for animation.
+ */
+export function shakeUp(cards: PairCard[], indices: readonly number[]): ShakeMove[] {
+  if (indices.length < 2) return [];
+  const moved = indices.map((index) => cards[index]!);
+  const moves: ShakeMove[] = [];
+  indices.forEach((from, i) => {
+    const to = indices[(i + 1) % indices.length]!;
+    cards[to] = moved[i]!;
+    moves.push({ from, to });
+  });
+  return moves;
+}
+
+/** Wipe tiles from bot memory (and its recency queue) after they have been moved. */
+export function forgetCards(memory: Map<string, number[]>, recency: number[], indices: readonly number[]): void {
+  for (const index of indices) {
+    forget(memory, index);
+    const at = recency.indexOf(index);
+    if (at >= 0) recency.splice(at, 1);
+  }
 }

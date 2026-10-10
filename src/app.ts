@@ -3,7 +3,7 @@ import { Engine } from "./core/engine";
 import { InputManager } from "./core/input";
 import { GameRegistry } from "./core/registry";
 import { Session } from "./core/session";
-import { DEFAULT_NAMES, PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
+import { PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
 import { Sky } from "./fx/sky";
 import { createRegistry } from "./games";
 import { clear, el } from "./ui/dom";
@@ -65,30 +65,12 @@ export class App {
   private renderMenu(): void {
     const screen = this.screens.get("menu")!;
     clear(screen);
-    screen.append(
-      el("p", { class: "brand", text: "Category Five" }),
-      el("h1", { class: "display", text: "Games" }),
-      el("p", { class: "lede", text: this.pickPrompt() ?? "Pick a game. Win it and you pick the next one." }),
+    const head = el("header", { class: "menu-head" },
+      el("h1", { class: "wordmark", text: "Category Five" }),
     );
-
-    const seats = el("div", { class: "seats" });
-    this.players.forEach((player, index) => {
-      seats.append(this.seatCard(player, index));
-    });
-    if (this.players.length < 4) {
-      const add = button("Add player", () => {
-        this.players.push(makePlayer(this.players.length as 0 | 1 | 2 | 3));
-        this.resetSession();
-        this.renderMenu();
-        this.show("menu");
-      }, "ghost");
-      seats.append(add);
-    }
-    screen.append(seats);
-
-    if (this.session.gamesPlayed > 0) screen.append(this.standingRow());
-
-    screen.append(this.gameCards());
+    const prompt = this.pickPrompt();
+    if (prompt) head.append(el("p", { class: "lede", text: prompt }));
+    screen.append(head, this.matchup(), this.gameCards());
   }
 
   /** Who picks next, e.g. "Gale won, Gale picks next". Null before the first game. */
@@ -97,15 +79,22 @@ export class App {
     return picker ? `${picker.name} won. ${picker.name} picks the next game.` : null;
   }
 
+  private rerenderMenu(): void {
+    this.renderMenu();
+    this.show("menu");
+  }
+
   private gameCards(): HTMLElement {
     const games = this.registry.list();
-    const cards = el("div", { class: "grid cards" });
-    for (const game of games) {
-      const card = el("button", { class: "card" });
+    const cards = el("div", { class: "cards" });
+    games.forEach((game, index) => {
+      const accent = ACCENTS[index % ACCENTS.length]!;
+      const card = el("button", { class: "card", style: `--accent:${accent}` });
       card.append(
-        el("span", { class: "tag", text: game.durationMs > 0 ? `${game.durationMs / 1000}s` : "Turns" }),
+        el("span", { class: "card-num", text: String(index + 1).padStart(2, "0") }),
         el("h3", { text: game.name }),
         el("p", { text: game.tagline }),
+        el("span", { class: "tag", text: game.durationMs > 0 ? `${game.durationMs / 1000} sec` : "Turns" }),
       );
       card.addEventListener("click", () => {
         this.sfx.unlock();
@@ -113,11 +102,10 @@ export class App {
         this.launch(game);
       });
       cards.append(card);
-    }
+    });
     if (games.length === 0) {
       cards.append(
         el("div", { class: "card empty-card" },
-          el("span", { class: "tag", text: "Soon" }),
           el("h3", { text: "No games yet" }),
           el("p", { text: "Register a game and it will land here." }),
         ),
@@ -126,45 +114,69 @@ export class App {
     return cards;
   }
 
-  private seatCard(player: Player, index: number): HTMLElement {
+  /** "YOU vs BOT" header. Tap a name to rename, tap the tag to swap Human / Bot. */
+  private matchup(): HTMLElement {
+    const row = el("div", { class: "matchup" });
+    this.players.forEach((player, index) => {
+      if (index > 0) row.append(el("span", { class: "vs", text: "vs" }));
+      row.append(this.fighter(player, index));
+    });
+    if (this.players.length < 4) {
+      const add = el("button", { class: "add-fighter", text: "+", "aria-label": "Add player", title: "Add player" });
+      add.addEventListener("click", () => {
+        this.players.push(makePlayer(this.players.length as 0 | 1 | 2 | 3));
+        this.resetSession();
+        this.rerenderMenu();
+      });
+      row.append(add);
+    }
+    return row;
+  }
+
+  private fighter(player: Player, index: number): HTMLElement {
+    const box = el("div", { class: "fighter", style: `--accent:${player.color}` });
     const name = el("input", {
+      class: "fighter-name",
       type: "text",
       value: player.name,
-      maxlength: "12",
+      maxlength: "10",
+      spellcheck: "false",
       "aria-label": `Player ${index + 1} name`,
     });
+    name.style.width = `${Math.max(3, player.name.length) + 0.5}ch`;
     name.addEventListener("input", () => {
-      player.name = name.value.slice(0, 12) || DEFAULT_NAMES[index]!;
+      name.style.width = `${Math.max(3, name.value.length) + 0.5}ch`;
+      player.name = name.value.slice(0, 10) || defaultName(index, player.kind);
     });
-    const kind = button(player.kind === "human" ? "Human" : "Bot", () => {
-      player.kind = player.kind === "human" ? "bot" : "human";
-      this.renderMenu();
-      this.show("menu");
+
+    const isBot = player.kind === "bot";
+    const kind = el("button", { class: "fighter-kind", text: isBot ? "Bot" : "Human", title: "Switch Human / Bot" });
+    kind.addEventListener("click", () => {
+      const nextKind = isBot ? "human" : "bot";
+      if (player.name === defaultName(index, player.kind)) player.name = defaultName(index, nextKind);
+      player.kind = nextKind;
+      this.rerenderMenu();
     });
-    kind.classList.toggle("ghost", player.kind === "bot");
-    const seat = el("div", { class: "seat" });
-    seat.append(
-      el("div", { class: "row" },
-        el("span", { class: "swatch", style: `background:${player.color}` }),
-        el("strong", { text: `P${index + 1}` }),
-      ),
-      name,
-    );
-    const actions = el("div", { class: "row" });
-    actions.append(kind);
-    if (this.players.length > 1) {
-      actions.append(ghost("Remove", () => {
+    const meta = el("div", { class: "fighter-meta" }, kind);
+
+    if (this.session.gamesPlayed > 0) {
+      const wins = this.session.standings.find((s) => s.playerId === player.id)?.wins ?? 0;
+      meta.append(el("span", { class: "fighter-pts", text: `${wins} ${wins === 1 ? "pt" : "pts"}` }));
+    }
+    if (this.players.length > 2) {
+      const remove = el("button", { class: "fighter-x", text: "Remove", "aria-label": `Remove ${player.name}` });
+      remove.addEventListener("click", () => {
         this.players.splice(index, 1);
         this.players.forEach((item, slot) => {
           item.slot = slot as 0 | 1 | 2 | 3;
         });
         this.resetSession();
-        this.renderMenu();
-        this.show("menu");
-      }));
+        this.rerenderMenu();
+      });
+      meta.append(remove);
     }
-    seat.append(actions);
-    return seat;
+    box.append(name, meta);
+    return box;
   }
 
   private standingRow(): HTMLElement {
@@ -291,14 +303,22 @@ export class App {
   }
 }
 
+const ACCENTS = ["#3EE0FF", "#FF3D7A", "#FFB020", "#B8FF3D", "#A78BFA", "#FF8A3D"] as const;
+
 function makePlayer(index: 0 | 1 | 2 | 3): Player {
   return {
     id: `p${index + 1}`,
-    name: DEFAULT_NAMES[index]!,
+    name: defaultName(index, index === 0 ? "human" : "bot"),
     color: PLAYER_COLORS[index]!,
     kind: index === 0 ? "human" : "bot",
     slot: index,
   };
+}
+
+/** "You" for the first seat, "Bot" / "Bot 2" for bots, "Player 3" for added humans. */
+function defaultName(index: number, kind: Player["kind"]): string {
+  if (kind === "bot") return index <= 1 ? "Bot" : `Bot ${index}`;
+  return index === 0 ? "You" : `Player ${index + 1}`;
 }
 
 function button(label: string, onClick: () => void, extraClass?: string): HTMLButtonElement {
