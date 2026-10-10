@@ -12,35 +12,47 @@ import {
   Bag,
   COLS,
   GARBAGE,
+  POWER,
+  POWERS,
+  POWER_LABEL,
+  POWER_TIME,
   ROTATIONS,
   ROWS,
   addGarbage,
+  attackFor,
   bestPlacement,
+  cellKind,
   clearLines,
   collides,
   dropY,
   emptyBoard,
-  garbageFor,
+  flipDir,
   lockPiece,
+  nextChain,
   pieceCells,
+  powerCellFor,
+  powersInFullRows,
+  rushGravity,
   spawnPiece,
   tryRotate,
   type Board,
   type Piece,
   type Placement,
+  type PowerKind,
 } from "./logic";
 
 export const blockBrawl: GameDefinition = {
   id: "block-brawl",
   name: "Block Brawl",
-  tagline: "Stack, clear, bury your rivals.",
+  tagline: "Chain clears. Pop power cells. Bury everyone.",
   description:
-    "Everyone drops the same falling blocks into their own well at once. " +
-    "Clear 2, 3 or 4 lines to send 1, 2 or 4 garbage lines to a random rival. " +
-    "Stack to the top and you're out. Last one standing wins; after 3 minutes, most lines wins. " +
-    "Blocks fall faster as time goes on.",
+    "Everyone drops the same blocks into their own well at once. Clear 2+ lines to dump garbage on a rival. " +
+    "Clear on back-to-back drops to build a CHAIN: every 2 links adds +1 garbage. " +
+    "Some blocks carry a glowing power cell. Clear its row to hit every rival with INK (blind), " +
+    "RUSH (turbo gravity) or FLIP (controls reversed). Top out and you're out. Last one standing wins; " +
+    "after 3 minutes, most lines wins.",
   durationMs: 0,
-  controls: "In your lane: tap = rotate, drag left/right = move, swipe down = drop",
+  controls: "In your lane: tap = rotate, drag = move, swipe down = drop. Clear glowing cells to fire powers.",
   create: (ctx) => new BlockBrawl(ctx),
 };
 
@@ -49,6 +61,7 @@ const TIME_LIMIT = 180;
 const GRAVITY_START = 0.8;
 const GRAVITY_MIN = 0.1;
 const BOT_STEP = 0.14;
+const POWER_COLOR: Record<PowerKind, string> = { ink: "#9AA3FF", rush: "#FF9A3E", flip: "#FF4DE1" };
 const COLORS = ["#3EE0FF", "#FFD23E", "#B05CFF", "#4CE36B", "#FF4D5E", "#3E7BFF", "#FF9A3E", "#5A6378"];
 
 interface Drag {
@@ -80,6 +93,15 @@ interface Well {
   drag: Drag | null;
   botTarget: Placement | null;
   botTimer: number;
+  /** Pieces dealt so far (index into the shared sequence). */
+  dealt: number;
+  /** Glowing cell index of the current piece, or -1. */
+  power: number;
+  chain: number;
+  bestChain: number;
+  powersFired: number;
+  effects: Record<PowerKind, number>;
+  inkBlots: { x: number; y: number; r: number }[];
 }
 
 class BlockBrawl implements GameInstance {
@@ -87,6 +109,8 @@ class BlockBrawl implements GameInstance {
   private readonly juice: Juice;
   private readonly callouts = new Callouts();
   private time = 0;
+  private clock = 0;
+  private readonly seed: number;
   private finished = false;
   private finishTimer = 0;
 
@@ -96,6 +120,7 @@ class BlockBrawl implements GameInstance {
     const laneW = ctx.width / n;
     const cell = Math.floor(Math.min((ctx.height - HEADER - 8) / ROWS, (laneW - 16) / COLS));
     const seed = ctx.rng.int(1, 0x7fffffff);
+    this.seed = seed;
 
     this.wells = ctx.players.map((player, i) => {
       const laneX = i * laneW;
@@ -118,6 +143,13 @@ class BlockBrawl implements GameInstance {
         drag: null,
         botTarget: null,
         botTimer: 0,
+        dealt: 0,
+        power: -1,
+        chain: 0,
+        bestChain: 0,
+        powersFired: 0,
+        effects: { ink: 0, rush: 0, flip: 0 },
+        inkBlots: [],
       };
       return well;
     });
@@ -131,13 +163,15 @@ class BlockBrawl implements GameInstance {
     c.addEventListener("pointercancel", this.onCancel);
   }
 
-  private gravity(): number {
-    return Math.max(GRAVITY_MIN, GRAVITY_START - this.time / 240);
+  private gravity(w: Well): number {
+    const base = Math.max(GRAVITY_MIN, GRAVITY_START - this.time / 240);
+    return w.effects.rush > 0 ? rushGravity(base) : base;
   }
 
   update(realDt: number): void {
     this.callouts.update(realDt);
     const dt = this.juice.update(realDt);
+    this.clock += realDt;
 
     if (this.finished) {
       this.finishTimer -= realDt;
@@ -146,6 +180,7 @@ class BlockBrawl implements GameInstance {
     this.time += dt;
 
     for (const w of this.wells) {
+      for (const k of POWERS) w.effects[k] = Math.max(0, w.effects[k] - dt);
       if (!w.alive || !w.piece) continue;
       if (w.player.kind === "bot") this.botTick(w, dt);
       else this.keyboard(w);
@@ -153,7 +188,7 @@ class BlockBrawl implements GameInstance {
 
       const softDrop = w.player.kind === "human" && this.ctx.input.isDown(bindDown(w.player.slot));
       w.fallTimer += softDrop ? dt * 8 : dt;
-      const interval = this.gravity();
+      const interval = this.gravity(w);
       while (w.fallTimer >= interval && w.piece) {
         w.fallTimer -= interval;
         const down: Piece = { ...w.piece, y: w.piece.y + 1 };
@@ -208,6 +243,7 @@ class BlockBrawl implements GameInstance {
       }
     }
     const p = spawnPiece(w.bag.next());
+    w.power = powerCellFor(this.seed, w.dealt++);
     w.fallTimer = 0;
     w.botTarget = null;
     if (collides(w.board, p)) {
@@ -236,8 +272,15 @@ class BlockBrawl implements GameInstance {
 
   private lock(w: Well): void {
     if (!w.piece) return;
-    lockPiece(w.board, w.piece);
+    lockPiece(w.board, w.piece, w.power);
+    const powers = powersInFullRows(w.board);
     const cleared = clearLines(w.board);
+    const prevChain = w.chain;
+    w.chain = nextChain(w.chain, cleared);
+    w.bestChain = Math.max(w.bestChain, w.chain);
+    if (cleared === 0 && prevChain >= 3) {
+      this.callouts.show(`${w.player.name} CHAIN BROKE`, "rgba(244,247,251,0.7)", { size: 26, life: 0.7, y: 0.8 });
+    }
     if (cleared > 0) {
       w.lines += cleared;
       this.juice.burst(w.wellX + (w.cell * COLS) / 2, w.wellY + w.cell * (ROWS - 2), [w.player.color, "#ffffff"], {
@@ -247,9 +290,21 @@ class BlockBrawl implements GameInstance {
         life: 0.5,
       });
       if (cleared >= 4) this.ctx.sfx.streak(3);
+      else if (w.chain >= 2) this.ctx.sfx.streak(Math.min(3, w.chain - 1));
       else this.ctx.sfx.collect();
-      const send = garbageFor(cleared);
+      if (w.chain >= 2) {
+        const c = w.chain;
+        this.juice.shake(Math.min(0.5, 0.08 * c));
+        this.juice.burst(w.wellX + (w.cell * COLS) / 2, w.wellY + w.cell * 6, [w.player.color, "#FFD23E", "#ffffff"], {
+          count: Math.min(60, 8 * c),
+          speed: 220 + 40 * c,
+          gravity: 300,
+          life: 0.6,
+        });
+      }
+      const send = attackFor(cleared, w.chain);
       if (send > 0) this.sendGarbage(w, send, cleared);
+      for (let i = 0; i < powers; i++) this.firePower(w);
     }
     w.piece = null;
     this.spawn(w);
@@ -261,8 +316,36 @@ class BlockBrawl implements GameInstance {
     const target = this.ctx.rng.pick(targets);
     target.pendingGarbage += count;
     from.sent += count;
-    const label = cleared >= 4 ? "BLOCK BUSTER!" : `${cleared} LINES!`;
-    this.callouts.show(`${label} +${count} → ${target.player.name}`, from.player.color, { size: 36, life: 0.9 });
+    const label = from.chain >= 2 ? `CHAIN x${from.chain}!` : cleared >= 4 ? "BLOCK BUSTER!" : `${cleared} LINES!`;
+    const size = Math.min(64, 36 + Math.max(0, from.chain - 1) * 6);
+    this.callouts.show(`${label} +${count} → ${target.player.name}`, from.player.color, { size, life: 0.9 });
+  }
+
+  /** A cleared power cell hits every living rival with a random power. */
+  private firePower(from: Well): void {
+    const targets = this.wells.filter((t) => t !== from && t.alive);
+    if (targets.length === 0) return;
+    const kind = this.ctx.rng.pick(POWERS);
+    from.powersFired++;
+    for (const t of targets) {
+      t.effects[kind] = POWER_TIME[kind];
+      if (kind === "ink") {
+        t.inkBlots = Array.from({ length: 5 }, () => ({
+          x: this.ctx.rng.float(1, COLS - 1),
+          y: this.ctx.rng.float(6, ROWS - 2),
+          r: this.ctx.rng.float(1.6, 2.8),
+        }));
+      }
+      this.juice.burst(t.wellX + (t.cell * COLS) / 2, t.wellY + t.cell * 4, [POWER_COLOR[kind], "#ffffff"], {
+        count: 24,
+        speed: 300,
+        gravity: 200,
+        life: 0.6,
+      });
+    }
+    this.juice.shake(0.3);
+    this.ctx.sfx.whoosh();
+    this.callouts.show(`${from.player.name}: ${POWER_LABEL[kind]}`, POWER_COLOR[kind], { size: 72, life: 1.1, y: 0.5 });
   }
 
   // ---- moves ----
@@ -275,9 +358,9 @@ class BlockBrawl implements GameInstance {
     return true;
   }
 
-  private rotate(w: Well): boolean {
+  private rotate(w: Well, dir = 1): boolean {
     if (!w.piece) return false;
-    const r = tryRotate(w.board, w.piece);
+    const r = tryRotate(w.board, w.piece, dir);
     if (!r) return false;
     w.piece = r;
     this.ctx.sfx.tick();
@@ -295,20 +378,23 @@ class BlockBrawl implements GameInstance {
     const input = this.ctx.input;
     const slot = w.player.slot;
     const b = BINDS[slot]!;
-    if (input.justPressed(b.left)) this.move(w, -1);
-    if (input.justPressed(b.right)) this.move(w, 1);
-    if (input.justPressed(b.up)) this.rotate(w);
+    const flipped = w.effects.flip > 0;
+    if (input.justPressed(b.left)) this.move(w, flipDir(-1, flipped));
+    if (input.justPressed(b.right)) this.move(w, flipDir(1, flipped));
+    if (input.justPressed(b.up)) this.rotate(w, flipDir(1, flipped));
     if (input.actionPressed(slot)) this.hardDrop(w);
   }
 
   private botTick(w: Well, dt: number): void {
     if (!w.piece) return;
     if (!w.botTarget) {
-      w.botTarget = bestPlacement(w.board, w.piece.type) ?? { rot: 0, x: w.piece.x, score: 0 };
+      w.botTarget = bestPlacement(w.board, w.piece.type, w.power) ?? { rot: 0, x: w.piece.x, score: 0 };
       w.botTimer = -0.2;
     }
     w.botTimer += dt;
-    if (w.botTimer < BOT_STEP) return;
+    // Bots fumble under powers too: slower hands while blinded or flipped.
+    const step = w.effects.ink > 0 || w.effects.flip > 0 ? BOT_STEP * 1.8 : BOT_STEP;
+    if (w.botTimer < step) return;
     w.botTimer = this.ctx.rng.float(-0.04, 0.03);
     const t = w.botTarget;
     if (w.piece.rot !== t.rot) {
@@ -367,15 +453,16 @@ class BlockBrawl implements GameInstance {
     if (d.dropped) return;
     const p = this.toLogical(e);
     const step = Math.max(w.cell, 24);
+    const flipped = w.effects.flip > 0;
     while (p.x - d.anchorX >= step) {
       d.anchorX += step;
       d.moved = true;
-      this.move(w, 1);
+      this.move(w, flipDir(1, flipped));
     }
     while (d.anchorX - p.x >= step) {
       d.anchorX -= step;
       d.moved = true;
-      this.move(w, -1);
+      this.move(w, flipDir(-1, flipped));
     }
     const dy = p.y - d.startY;
     const dx = Math.abs(p.x - d.startX);
@@ -393,7 +480,7 @@ class BlockBrawl implements GameInstance {
     if (!w.alive || d.dropped || d.moved) return;
     const p = this.toLogical(e);
     const dist = Math.hypot(p.x - d.startX, p.y - d.startY);
-    if (dist < 20 && performance.now() - d.startT < 400) this.rotate(w);
+    if (dist < 20 && performance.now() - d.startT < 400) this.rotate(w, flipDir(1, w.effects.flip > 0));
   };
 
   private readonly onCancel = (e: PointerEvent): void => {
@@ -453,8 +540,10 @@ class BlockBrawl implements GameInstance {
       for (let x = 0; x < COLS; x++) {
         const v = w.board[y]![x]!;
         if (v === 0) continue;
-        const color = w.alive ? COLORS[v - 1]! : "#3a3f4e";
-        this.drawCell(g, wellX + x * cell, wellY + y * cell, cell, v === GARBAGE ? COLORS[7]! : color);
+        const kind = cellKind(v);
+        const color = w.alive ? COLORS[kind - 1]! : "#3a3f4e";
+        this.drawCell(g, wellX + x * cell, wellY + y * cell, cell, kind === GARBAGE ? COLORS[7]! : color);
+        if (w.alive && (v & POWER) !== 0) this.drawPowerGlow(g, wellX + x * cell, wellY + y * cell, cell);
       }
     }
 
@@ -463,9 +552,56 @@ class BlockBrawl implements GameInstance {
       for (const [x, y] of pieceCells(ghost)) {
         if (y >= 0) this.drawCell(g, wellX + x * cell, wellY + y * cell, cell, COLORS[w.piece.type]!, 0.2);
       }
-      for (const [x, y] of pieceCells(w.piece)) {
-        if (y >= 0) this.drawCell(g, wellX + x * cell, wellY + y * cell, cell, COLORS[w.piece.type]!);
+      pieceCells(w.piece).forEach(([x, y], i) => {
+        if (y < 0) return;
+        this.drawCell(g, wellX + x * cell, wellY + y * cell, cell, COLORS[w.piece!.type]!);
+        if (i === w.power) this.drawPowerGlow(g, wellX + x * cell, wellY + y * cell, cell);
+      });
+    }
+
+    // ink blots
+    if (w.alive && w.effects.ink > 0) {
+      g.globalAlpha = Math.min(1, w.effects.ink / 0.6) * 0.94;
+      g.fillStyle = "#0A0C18";
+      for (const b of w.inkBlots) {
+        g.beginPath();
+        g.arc(wellX + b.x * cell, wellY + b.y * cell, b.r * cell, 0, Math.PI * 2);
+        g.fill();
       }
+      g.globalAlpha = 1;
+    }
+
+    // active power effects: tinted border + label
+    if (w.alive) {
+      let row = 0;
+      for (const k of POWERS) {
+        const left = w.effects[k];
+        if (left <= 0) continue;
+        g.strokeStyle = POWER_COLOR[k];
+        g.globalAlpha = 0.5 + 0.5 * Math.abs(Math.sin(this.clock * 8));
+        g.lineWidth = 3;
+        g.strokeRect(wellX - 3 - row * 3, wellY - 3 - row * 3, ww + 6 + row * 6, wh + 6 + row * 6);
+        g.globalAlpha = 1;
+        g.fillStyle = POWER_COLOR[k];
+        g.font = "700 20px Bebas Neue, Impact, sans-serif";
+        g.textAlign = "center";
+        g.textBaseline = "top";
+        g.fillText(`${k.toUpperCase()} ${left.toFixed(1)}`, wellX + ww / 2, wellY + 4 + row * 22);
+        row++;
+      }
+    }
+
+    // chain counter
+    if (w.alive && w.chain >= 2) {
+      const pulse = 1 + 0.08 * Math.sin(this.clock * 10);
+      const size = Math.min(cell * 3, (22 + w.chain * 6) * pulse);
+      g.globalAlpha = 0.85;
+      g.fillStyle = w.chain >= 4 ? "#FFD23E" : player.color;
+      g.font = `700 ${Math.round(size)}px Bebas Neue, Impact, sans-serif`;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(`CHAIN x${w.chain}`, wellX + ww / 2, wellY + wh * 0.3);
+      g.globalAlpha = 1;
     }
 
     // incoming garbage meter
@@ -485,17 +621,28 @@ class BlockBrawl implements GameInstance {
     g.font = "700 18px Bebas Neue, Impact, sans-serif";
     g.fillText(`LINES ${w.lines}`, wellX, 30);
 
-    // next block preview
+    // next block preview (hidden while inked)
     if (w.alive) {
-      const next = w.bag.peek();
       const mini = Math.min(11, Math.floor(cell * 0.4));
-      const cells = ROTATIONS[next]![0]!;
       const px = wellX + ww - mini * 4;
       g.fillStyle = "rgba(244,247,251,0.5)";
       g.font = "700 12px Bebas Neue, Impact, sans-serif";
       g.textAlign = "right";
       g.fillText("NEXT", px - 4, 10);
-      for (const [cx, cy] of cells) this.drawCell(g, px + cx * mini, 8 + cy * mini, mini, COLORS[next]!);
+      if (w.effects.ink > 0) {
+        g.fillStyle = "#0A0C18";
+        g.fillRect(px, 8, mini * 4, mini * 4);
+        g.fillStyle = POWER_COLOR.ink;
+        g.textAlign = "center";
+        g.fillText("?", px + mini * 2, 8 + mini);
+      } else {
+        const next = w.bag.peek();
+        const nextPower = powerCellFor(this.seed, w.dealt);
+        ROTATIONS[next]![0]!.forEach(([cx, cy], i) => {
+          this.drawCell(g, px + cx * mini, 8 + cy * mini, mini, COLORS[next]!);
+          if (i === nextPower) this.drawPowerGlow(g, px + cx * mini, 8 + cy * mini, mini);
+        });
+      }
     }
 
     if (!w.alive) {
@@ -505,6 +652,20 @@ class BlockBrawl implements GameInstance {
       g.textBaseline = "middle";
       g.fillText("OUT", wellX + ww / 2, wellY + wh / 2);
     }
+  }
+
+  private drawPowerGlow(g: CanvasRenderingContext2D, x: number, y: number, size: number): void {
+    const t = 0.5 + 0.5 * Math.sin(this.clock * 9);
+    g.save();
+    g.shadowColor = "#ffffff";
+    g.shadowBlur = 6 + 8 * t;
+    g.fillStyle = `rgba(255,255,255,${0.55 + 0.35 * t})`;
+    const inset = size * 0.28;
+    g.fillRect(x + inset, y + inset, size - inset * 2, size - inset * 2);
+    g.restore();
+    g.strokeStyle = `rgba(255,255,255,${0.6 + 0.4 * t})`;
+    g.lineWidth = 2;
+    g.strokeRect(x + 2, y + 2, size - 4, size - 4);
   }
 
   isFinished(): boolean {
@@ -526,6 +687,8 @@ class BlockBrawl implements GameInstance {
     for (const w of this.wells) {
       out.push({ playerId: w.player.id, label: "Lines", value: String(w.lines) });
       out.push({ playerId: w.player.id, label: "Garbage sent", value: String(w.sent) });
+      out.push({ playerId: w.player.id, label: "Best chain", value: String(w.bestChain) });
+      out.push({ playerId: w.player.id, label: "Powers fired", value: String(w.powersFired) });
     }
     return out;
   }
