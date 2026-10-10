@@ -8,16 +8,21 @@ import {
   applyEat,
   chompExtension,
   CHOMP_TIME,
+  GOLD_MIN_SPEED,
   marblesInMouth,
   mouthCenter,
+  nextStreak,
+  rollKind,
+  spawnMarble,
   stepMarbles,
+  streakMultiplier,
   zoneFor,
   type Marble,
 } from "./logic";
 
-describe("hungry hoppers logic", () => {
-  it("scores normal 1, gold 3, bomb -2 with a floor of 0", () => {
-    expect(applyEat(0, ["normal", "gold"]).score).toBe(4);
+describe("chomp logic", () => {
+  it("scores normal 1, gold 8, bomb -2 with a floor of 0", () => {
+    expect(applyEat(0, ["normal", "gold"]).score).toBe(9);
     const r = applyEat(1, ["bomb"]);
     expect(r).toMatchObject({ score: 0, stunned: true, bombs: 1 });
     expect(applyEat(5, ["bomb", "normal"]).score).toBe(4);
@@ -51,6 +56,29 @@ describe("hungry hoppers logic", () => {
     expect(marblesInMouth(marbles, m.x, m.y)).toEqual([0]);
   });
 
+  it("multiplies food by the streak but never bombs", () => {
+    expect(applyEat(0, ["normal", "normal"], 3).score).toBe(6);
+    expect(applyEat(10, ["bomb"], 4).score).toBe(8);
+  });
+
+  it("builds a streak on food and resets on whiffs and bombs", () => {
+    expect(streakMultiplier(0)).toBe(1);
+    expect(streakMultiplier(3)).toBe(2);
+    expect(streakMultiplier(99)).toBe(4);
+    expect(nextStreak(4, true, false)).toBe(5);
+    expect(nextStreak(4, false, false)).toBe(0);
+    expect(nextStreak(4, true, true)).toBe(0);
+  });
+
+  it("makes gold rare and keeps it fast", () => {
+    expect(rollKind(0.01)).toBe("gold");
+    expect(rollKind(0.1)).toBe("bomb");
+    expect(rollKind(0.5)).toBe("normal");
+    const gold = [spawnMarble(() => 0.5, "gold")];
+    for (let i = 0; i < 600; i++) stepMarbles(gold, 1 / 60);
+    expect(Math.hypot(gold[0]!.vx, gold[0]!.vy)).toBeGreaterThanOrEqual(GOLD_MIN_SPEED - 1);
+  });
+
   it("keeps marbles inside the arena", () => {
     const marbles: Marble[] = [{ x: ARENA_X, y: ARENA_Y, vx: 900, vy: 300, kind: "normal" }];
     for (let i = 0; i < 600; i++) stepMarbles(marbles, 1 / 60);
@@ -60,7 +88,7 @@ describe("hungry hoppers logic", () => {
   });
 });
 
-describe("hungry hoppers game", () => {
+describe("chomp game", () => {
   it("bots eat marbles over a full round", () => {
     const ctx = {
       width: 1280, height: 720, rng: new Rng(3), minTap: 44,
@@ -72,7 +100,14 @@ describe("hungry hoppers game", () => {
     const game = hungryHoppers.create(ctx);
     for (let f = 0; f < 60 * 45; f++) game.update(1 / 60);
     expect(game.getScores().some((s) => s.score > 0)).toBe(true);
-    expect(game.getStats?.().length).toBe(12);
+    expect(game.getStats?.().length).toBe(16);
     game.destroy();
+  });
+});
+
+describe("chomp definition", () => {
+  it("is called Chomp", () => {
+    expect(hungryHoppers.name).toBe("Chomp");
+    expect(hungryHoppers.id).toBe("hungry-hoppers");
   });
 });

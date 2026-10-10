@@ -6,7 +6,13 @@ export const COLS = 10;
 export const ROWS = 20;
 export const GARBAGE = 8;
 
-/** 0 = empty, 1..7 = piece type + 1, 8 = garbage. Indexed board[row][col], row 0 at top. */
+/** Bit set on a board cell that holds a power cell. */
+export const POWER = 16;
+
+/**
+ * 0 = empty, 1..7 = piece type + 1, 8 = garbage, optionally | POWER for a power cell.
+ * Indexed board[row][col], row 0 at top.
+ */
 export type Board = number[][];
 
 export const PIECE_NAMES = ["I", "O", "T", "S", "Z", "J", "L"] as const;
@@ -76,11 +82,25 @@ export function dropY(board: Board, p: Piece): number {
   return y;
 }
 
-/** Write the piece into the board (mutates). */
-export function lockPiece(board: Board, p: Piece): void {
-  for (const [x, y] of pieceCells(p)) {
-    if (y >= 0 && y < ROWS) board[y]![x] = p.type + 1;
+/** Write the piece into the board (mutates). `power` = index of the glowing cell, or -1. */
+export function lockPiece(board: Board, p: Piece, power = -1): void {
+  pieceCells(p).forEach(([x, y], i) => {
+    if (y >= 0 && y < ROWS) board[y]![x] = (p.type + 1) | (i === power ? POWER : 0);
+  });
+}
+
+/** Colour index of a cell value (strips the power bit). */
+export function cellKind(v: number): number {
+  return v & ~POWER;
+}
+
+/** Power cells sitting in rows that are full right now (call before clearLines). */
+export function powersInFullRows(board: Board): number {
+  let n = 0;
+  for (const row of board) {
+    if (row.every((c) => c !== 0)) n += row.filter((c) => (c & POWER) !== 0).length;
   }
+  return n;
 }
 
 /** Remove full rows (mutates). Returns the number of cleared rows. */
@@ -102,6 +122,60 @@ export function garbageFor(lines: number): number {
   if (lines === 3) return 2;
   if (lines === 2) return 1;
   return 0;
+}
+
+/** Chain = consecutive locks that cleared at least one line. */
+export function nextChain(chain: number, cleared: number): number {
+  return cleared > 0 ? chain + 1 : 0;
+}
+
+/** Extra garbage for a chain: x2 +1, x4 +2, x6+ +3. */
+export function chainBonus(chain: number): number {
+  return chain >= 2 ? Math.min(3, Math.floor(chain / 2)) : 0;
+}
+
+/** Garbage sent by a clear while on `chain` (chain already includes this clear). */
+export function attackFor(lines: number, chain: number): number {
+  return lines > 0 ? garbageFor(lines) + chainBonus(chain) : 0;
+}
+
+// ---- powers ----
+
+export const POWERS = ["ink", "rush", "flip"] as const;
+export type PowerKind = (typeof POWERS)[number];
+
+/** Seconds each power lasts on the victim. */
+export const POWER_TIME: Record<PowerKind, number> = { ink: 5, rush: 3.5, flip: 5 };
+
+export const POWER_LABEL: Record<PowerKind, string> = {
+  ink: "INK!",
+  rush: "RUSH!",
+  flip: "FLIP!",
+};
+
+/** About 1 in 6 pieces carries a power cell. */
+export const POWER_ODDS = 6;
+
+/**
+ * Which cell (0..3) of the n-th piece glows, or -1. Pure hash of seed + index, so
+ * every player gets the same power pieces at the same point in the shared sequence.
+ */
+export function powerCellFor(seed: number, n: number): number {
+  let h = Math.imul((seed ^ 0x9e3779b9) + n * 0x85ebca6b, 0xc2b2ae35) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x27d4eb2f) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0;
+  if (n < 3 || h % POWER_ODDS !== 0) return -1;
+  return (h >>> 8) & 3;
+}
+
+/** Gravity interval while rushed: much faster, never below 0.04s. */
+export function rushGravity(interval: number): number {
+  return Math.max(0.04, interval * 0.2);
+}
+
+/** Flip swaps left/right and the rotation direction. */
+export function flipDir(dir: number, flipped: boolean): number {
+  return flipped ? -dir : dir;
 }
 
 /**
@@ -161,7 +235,7 @@ export class Bag {
   }
 }
 
-export function evaluateBoard(board: Board, lines: number): number {
+export function evaluateBoard(board: Board, lines: number, powers = 0): number {
   const heights: number[] = [];
   let holes = 0;
   for (let x = 0; x < COLS; x++) {
@@ -185,7 +259,7 @@ export function evaluateBoard(board: Board, lines: number): number {
     agg += heights[x]!;
     if (x > 0) bump += Math.abs(heights[x]! - heights[x - 1]!);
   }
-  return -0.51 * agg + 0.76 * lines - 0.36 * holes - 0.18 * bump;
+  return -0.51 * agg + 0.76 * lines - 0.36 * holes - 0.18 * bump + 0.9 * powers;
 }
 
 export interface Placement {
@@ -194,8 +268,11 @@ export interface Placement {
   score: number;
 }
 
-/** Try every rotation x column, hard-dropped from the spawn row. */
-export function bestPlacement(board: Board, type: number): Placement | null {
+/**
+ * Try every rotation x column, hard-dropped from the spawn row. Bots like
+ * clearing rows that hold power cells (including the piece's own, `power`).
+ */
+export function bestPlacement(board: Board, type: number, power = -1): Placement | null {
   let best: Placement | null = null;
   const spawn = spawnPiece(type);
   for (let rot = 0; rot < 4; rot++) {
@@ -204,9 +281,10 @@ export function bestPlacement(board: Board, type: number): Placement | null {
       if (collides(board, p)) continue;
       const landed = { ...p, y: dropY(board, p) };
       const copy = board.map((row) => row.slice());
-      lockPiece(copy, landed);
+      lockPiece(copy, landed, power);
+      const powers = powersInFullRows(copy);
       const lines = clearLines(copy);
-      const score = evaluateBoard(copy, lines);
+      const score = evaluateBoard(copy, lines, powers);
       if (!best || score > best.score) best = { rot, x, score };
     }
   }
