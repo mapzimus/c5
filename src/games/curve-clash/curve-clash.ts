@@ -7,19 +7,33 @@ import type {
   GameStat,
   Player,
 } from "../../core/types";
-import { TrailGrid, botSteer, matchWinner, pickSpawns } from "./curve-clash-logic";
+import {
+  PICKUPS,
+  PICKUP_KINDS,
+  TrailGrid,
+  arenaInset,
+  botSteer,
+  findPickupSpot,
+  matchWinner,
+  pickSpawns,
+  skimDistance,
+  skimPoints,
+  wrapPoint,
+  type Pickup,
+} from "./curve-clash-logic";
 
 export const curveClash: GameDefinition = {
   id: "curve-clash",
   name: "Curve Clash",
-  tagline: "Never stop. Never cross a line.",
+  tagline: "Draw the line. Don't touch one.",
   description:
-    "Every player is a line that never stops moving and leaves a permanent trail. " +
-    "Hold your turn buttons to steer. Hit a wall or any trail and you're out. " +
-    "Small gaps open in every trail now and then, so you can slip through. " +
-    "Last line alive wins the round. First to 3 rounds (2 with 3+ players) wins.",
+    "You're a line that never stops. Steer. Hit a wall or any line and you're out. " +
+    "Grab power-ups: WIPE clears every line, PORTAL turns the walls into wraparounds, " +
+    "GHOST lets you pass through lines. Skim past a line without touching it for bonus points. " +
+    "Late in each round the walls close in. Last line alive takes the round. " +
+    "First to 3 rounds (2 with 3+ players) wins.",
   durationMs: 0,
-  controls: "Hold ◀ / ▶ in your corner to turn (keys: your left/right)",
+  controls: "Hold ◀ / ▶ in your corner to turn. Keys: your left/right. Drive over power-ups to grab them.",
   create: (ctx) => new CurveClash(ctx),
 };
 
@@ -35,6 +49,25 @@ const GAP_LEN_PX = 26;
 const COUNTDOWN = 2.4;
 const ROUND_OVER = 1.8;
 const BOT_THINK = 0.08;
+const BOT_PICKUP_RANGE = 420;
+const PICKUP_R = 16;
+const PICKUP_FIRST = 3.5;
+const PICKUP_EVERY_MIN = 4.5;
+const PICKUP_EVERY_MAX = 7;
+const PICKUP_MAX = 2;
+const WRAP_SECS = 5;
+const GHOST_SECS = 3;
+const SKIM_CONFIRM = 0.25; // must survive this long after a skim to bank it
+const SKIM_COOLDOWN = 0.6;
+const OUTLAST_PTS = 10;
+
+interface Floater {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  life: number;
+}
 
 type Phase = "countdown" | "play" | "roundOver" | "matchOver";
 
@@ -60,6 +93,16 @@ interface Snake {
   roundWins: number;
   outlasted: number;
   pads: Pad[];
+  /** Seconds of ghost left: no trail, passes through lines. */
+  ghost: number;
+  skimming: boolean;
+  skimCool: number;
+  /** A skim waiting to be banked (cancelled if the line dies first). */
+  skimPending: number;
+  skimTimer: number;
+  skimPts: number;
+  skims: number;
+  grabs: number;
 }
 
 class CurveClash implements GameInstance {
@@ -77,6 +120,12 @@ class CurveClash implements GameInstance {
   private roundTime = 0;
   private round = 0;
   private finished = false;
+  private pickups: Pickup[] = [];
+  private pickupIn = PICKUP_FIRST;
+  /** Seconds left of portal walls (shared by everyone). */
+  private wrap = 0;
+  private shrinkWarned = false;
+  private readonly floaters: Floater[] = [];
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice(() => ctx.rng.next());
@@ -101,6 +150,14 @@ class CurveClash implements GameInstance {
       roundWins: 0,
       outlasted: 0,
       pads: player.kind === "human" ? this.makePads(idx) : [],
+      ghost: 0,
+      skimming: false,
+      skimCool: 0,
+      skimPending: 0,
+      skimTimer: 0,
+      skimPts: 0,
+      skims: 0,
+      grabs: 0,
     }));
 
     this.startRound();
@@ -132,6 +189,11 @@ class CurveClash implements GameInstance {
   private startRound(): void {
     this.round++;
     this.grid.clear();
+    this.grid.inset = 0;
+    this.pickups = [];
+    this.pickupIn = PICKUP_FIRST;
+    this.wrap = 0;
+    this.shrinkWarned = false;
     this.trailG?.clearRect(0, 0, this.ctx.width, this.ctx.height);
     const spawns = pickSpawns(this.snakes.length, this.ctx.width, this.ctx.height, () =>
       this.ctx.rng.next(),
@@ -145,6 +207,10 @@ class CurveClash implements GameInstance {
       s.gapIn = this.ctx.rng.float(GAP_EVERY_MIN, GAP_EVERY_MAX);
       s.gapLeft = 0;
       s.steer = 0;
+      s.ghost = 0;
+      s.skimming = false;
+      s.skimCool = 0;
+      s.skimPending = 0;
     });
     this.phase = "countdown";
     this.phaseTime = COUNTDOWN;
@@ -154,6 +220,13 @@ class CurveClash implements GameInstance {
 
   update(realDt: number): void {
     this.callouts.update(realDt);
+    for (const f of this.floaters) {
+      f.life -= realDt;
+      f.y -= 40 * realDt;
+    }
+    for (let i = this.floaters.length - 1; i >= 0; i--) {
+      if (this.floaters[i]!.life <= 0) this.floaters.splice(i, 1);
+    }
     const dt = this.juice.update(realDt);
     if (this.finished) return;
 
@@ -189,6 +262,37 @@ class CurveClash implements GameInstance {
     const speed = SPEED * (1 + Math.min(SPEED_RAMP_MAX, this.roundTime * SPEED_RAMP));
     const ignore = SELF_IGNORE_PX / speed;
     const t = this.roundTime;
+    const { width, height } = this.ctx;
+
+    // Shrinking arena.
+    const inset = arenaInset(t, width, height);
+    if (inset > 0 && !this.shrinkWarned) {
+      this.shrinkWarned = true;
+      this.callouts.show("WALLS CLOSING IN!", "#FF3D7A", { size: 56, life: 1.4 });
+      this.ctx.sfx.countdown();
+      this.juice.shake(0.2);
+    }
+    this.grid.inset = inset;
+    this.pickups = this.pickups.filter(
+      (p) => p.x - PICKUP_R > inset && p.y - PICKUP_R > inset &&
+        p.x + PICKUP_R < width - inset && p.y + PICKUP_R < height - inset,
+    );
+    if (this.wrap > 0) this.wrap = Math.max(0, this.wrap - dt);
+
+    // Pickup spawns.
+    this.pickupIn -= dt;
+    if (this.pickupIn <= 0) {
+      this.pickupIn = this.ctx.rng.float(PICKUP_EVERY_MIN, PICKUP_EVERY_MAX);
+      if (this.pickups.length < PICKUP_MAX) {
+        const spot = findPickupSpot(
+          this.grid,
+          () => this.ctx.rng.next(),
+          this.snakes.filter((s) => s.alive),
+          this.pickups,
+        );
+        if (spot) this.pickups.push({ kind: this.ctx.rng.pick(PICKUP_KINDS), ...spot });
+      }
+    }
 
     for (const s of this.snakes) {
       if (!s.alive) continue;
@@ -196,7 +300,7 @@ class CurveClash implements GameInstance {
         s.botTimer -= dt;
         if (s.botTimer <= 0) {
           s.botTimer = BOT_THINK;
-          s.steer = botSteer(this.grid, s.x, s.y, s.angle, s.idx, t, ignore);
+          s.steer = botSteer(this.grid, s.x, s.y, s.angle, s.idx, t, ignore, 170, this.botTarget(s));
         }
       } else {
         s.steer = this.humanSteer(s);
@@ -212,11 +316,18 @@ class CurveClash implements GameInstance {
     for (let k = 0; k < subs; k++) {
       for (const s of this.snakes) {
         if (!s.alive || dying.includes(s)) continue;
-        const px = s.x;
-        const py = s.y;
+        let px = s.x;
+        let py = s.y;
         s.angle += s.steer * TURN_RATE * sdt;
         s.x += Math.cos(s.angle) * speed * sdt;
         s.y += Math.sin(s.angle) * speed * sdt;
+        if (this.wrap > 0 && !this.grid.inBounds(s.x, s.y)) {
+          const w = wrapPoint(s.x, s.y, width, height, inset);
+          s.x = w.x;
+          s.y = w.y;
+          px = s.x;
+          py = s.y;
+        }
 
         // Gap timer.
         if (s.gapLeft > 0) {
@@ -229,14 +340,24 @@ class CurveClash implements GameInstance {
           }
         }
 
-        const probeX = s.x + Math.cos(s.angle) * (LINE_W / 2 + 1);
-        const probeY = s.y + Math.sin(s.angle) * (LINE_W / 2 + 1);
-        if (this.grid.blocked(probeX, probeY, s.idx, t, ignore)) {
+        let probeX = s.x + Math.cos(s.angle) * (LINE_W / 2 + 1);
+        let probeY = s.y + Math.sin(s.angle) * (LINE_W / 2 + 1);
+        if (this.wrap > 0) ({ x: probeX, y: probeY } = wrapPoint(probeX, probeY, width, height, inset));
+        const hit = s.ghost > 0
+          ? !this.grid.inBounds(probeX, probeY)
+          : this.grid.blocked(probeX, probeY, s.idx, t, ignore);
+        if (hit) {
           dying.push(s);
           continue;
         }
 
-        if (s.gapLeft <= 0) {
+        this.grabPickups(s);
+
+        if (s.ghost > 0) {
+          s.ghost -= sdt;
+          // Never drop out of ghost while sitting on a line.
+          if (s.ghost <= 0 && this.grid.trailAt(s.x, s.y, s.idx, t, ignore)) s.ghost = 0.01;
+        } else if (s.gapLeft <= 0) {
           this.grid.paint(s.x, s.y, LINE_W / 2, s.idx, t);
           if (g) {
             g.strokeStyle = s.player.color;
@@ -251,10 +372,16 @@ class CurveClash implements GameInstance {
       }
     }
 
+    for (const s of this.snakes) {
+      if (!s.alive || dying.includes(s)) continue;
+      this.checkSkim(s, dt, t, ignore);
+    }
+
     if (dying.length > 0) {
       const survivors = this.snakes.filter((s) => s.alive && !dying.includes(s));
       for (const s of dying) {
         s.alive = false;
+        s.skimPending = 0;
         // Everyone already out is outlasted by this one.
         s.outlasted += this.snakes.length - 1 - survivors.length - (dying.length - 1);
         this.juice.burst(s.x, s.y, [s.player.color, "#ffffff"], {
@@ -268,6 +395,93 @@ class CurveClash implements GameInstance {
       this.ctx.sfx.hit();
       this.checkRoundEnd(survivors);
     }
+  }
+
+  /** Nearest pickup a bot should chase, or undefined. */
+  private botTarget(s: Snake): Pickup | undefined {
+    let best: Pickup | undefined;
+    let bestD = BOT_PICKUP_RANGE;
+    for (const p of this.pickups) {
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  private grabPickups(s: Snake): void {
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const p = this.pickups[i]!;
+      if (Math.hypot(p.x - s.x, p.y - s.y) > PICKUP_R + LINE_W) continue;
+      this.pickups.splice(i, 1);
+      s.grabs++;
+      const info = PICKUPS[p.kind];
+      this.callouts.show(info.shout, info.color, { size: 52, life: 1.1, y: 0.22 });
+      this.juice.burst(p.x, p.y, [info.color, s.player.color, "#ffffff"], {
+        count: 30,
+        speed: 300,
+        gravity: 0,
+        life: 0.55,
+      });
+      this.ctx.sfx.collect();
+      if (p.kind === "eraser") {
+        this.grid.clear();
+        this.trailG?.clearRect(0, 0, this.ctx.width, this.ctx.height);
+        this.juice.shake(0.35);
+        this.juice.hitStop(0.06);
+      } else if (p.kind === "wrap") {
+        this.wrap = WRAP_SECS;
+        this.juice.shake(0.15);
+      } else {
+        s.ghost = GHOST_SECS;
+        s.gapLeft = 0;
+      }
+    }
+  }
+
+  /** Near-miss bonus: edge-triggered when a line comes within a few px, banked if you live. */
+  private checkSkim(s: Snake, dt: number, t: number, ignore: number): void {
+    s.skimCool = Math.max(0, s.skimCool - dt);
+    if (s.skimPending > 0) {
+      s.skimTimer -= dt;
+      if (s.skimTimer <= 0) {
+        const pts = s.skimPending;
+        s.skimPending = 0;
+        s.skimPts += pts;
+        s.skims++;
+        const tight = pts >= 3;
+        this.floaters.push({
+          x: s.x,
+          y: s.y - 18,
+          text: tight ? `RAZOR! +${pts}` : `CLOSE +${pts}`,
+          color: tight ? "#FFE45C" : "#F4F7FB",
+          life: 0.9,
+        });
+        this.juice.burst(s.x, s.y, [s.player.color, "#FFE45C"], {
+          count: tight ? 14 : 8,
+          speed: 160,
+          gravity: 0,
+          life: 0.35,
+          size: 3,
+        });
+        if (tight) this.juice.shake(0.08);
+        this.ctx.sfx.collect();
+      }
+    }
+    if (s.ghost > 0) {
+      s.skimming = false;
+      return;
+    }
+    const d = skimDistance(this.grid, s.x, s.y, s.angle, s.idx, t, ignore);
+    const near = Number.isFinite(d);
+    if (near && !s.skimming && s.skimCool <= 0 && s.skimPending <= 0) {
+      s.skimPending = skimPoints(d);
+      s.skimTimer = SKIM_CONFIRM;
+      s.skimCool = SKIM_COOLDOWN;
+    }
+    s.skimming = near;
   }
 
   private checkRoundEnd(alive: Snake[]): void {
@@ -349,11 +563,9 @@ class CurveClash implements GameInstance {
     fillArena(g, width, height);
     this.juice.begin(g);
 
-    g.strokeStyle = "rgba(244,247,251,0.35)";
-    g.lineWidth = 4;
-    g.strokeRect(2, 2, width - 4, height - 4);
-
     g.drawImage(this.trail, 0, 0);
+    this.drawWalls(g);
+    this.drawPickups(g);
 
     for (const s of this.snakes) {
       if (!s.alive) continue;
@@ -361,6 +573,16 @@ class CurveClash implements GameInstance {
       g.shadowColor = s.player.color;
       g.shadowBlur = 12;
       g.fillStyle = s.gapLeft > 0 ? "#F4F7FB" : s.player.color;
+      if (s.ghost > 0) {
+        // Blink faster in the last second so you know it's ending.
+        const rate = s.ghost < 1 ? 14 : 5;
+        g.globalAlpha = 0.45 + 0.35 * Math.sin(this.roundTime * rate);
+        g.strokeStyle = PICKUPS.ghost.color;
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(s.x, s.y, LINE_W * 2.4, 0, Math.PI * 2);
+        g.stroke();
+      }
       g.beginPath();
       g.arc(s.x, s.y, LINE_W, 0, Math.PI * 2);
       g.fill();
@@ -384,6 +606,7 @@ class CurveClash implements GameInstance {
       }
     }
 
+    this.drawFloaters(g);
     this.juice.end(g);
 
     this.drawPads(g);
@@ -401,6 +624,81 @@ class CurveClash implements GameInstance {
     }
 
     this.callouts.draw(g, width, height);
+  }
+
+  private drawWalls(g: CanvasRenderingContext2D): void {
+    const { width, height } = this.ctx;
+    const m = this.grid.inset;
+    if (m > 0) {
+      // Dead zone outside the closing walls.
+      g.save();
+      g.fillStyle = "rgba(7,11,20,0.72)";
+      g.fillRect(0, 0, width, m);
+      g.fillRect(0, height - m, width, m);
+      g.fillRect(0, m, m, height - m * 2);
+      g.fillRect(width - m, m, m, height - m * 2);
+      g.restore();
+    }
+    g.save();
+    if (this.wrap > 0) {
+      g.strokeStyle = PICKUPS.wrap.color;
+      g.lineWidth = 4;
+      g.setLineDash([14, 10]);
+      g.lineDashOffset = -this.roundTime * 60;
+      g.globalAlpha = this.wrap < 1 ? 0.5 + 0.5 * Math.sin(this.roundTime * 16) : 1;
+    } else if (m > 0) {
+      g.strokeStyle = "#FF3D7A";
+      g.lineWidth = 5;
+      g.globalAlpha = 0.7 + 0.3 * Math.sin(this.roundTime * 8);
+    } else {
+      g.strokeStyle = "rgba(244,247,251,0.35)";
+      g.lineWidth = 4;
+    }
+    g.strokeRect(m + 2, m + 2, width - m * 2 - 4, height - m * 2 - 4);
+    g.restore();
+  }
+
+  private drawPickups(g: CanvasRenderingContext2D): void {
+    const pulse = 1 + 0.12 * Math.sin(this.roundTime * 6);
+    for (const p of this.pickups) {
+      const info = PICKUPS[p.kind];
+      g.save();
+      g.shadowColor = info.color;
+      g.shadowBlur = 16;
+      g.fillStyle = "rgba(7,11,20,0.85)";
+      g.beginPath();
+      g.arc(p.x, p.y, PICKUP_R * pulse, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = info.color;
+      g.lineWidth = 3;
+      g.stroke();
+      g.shadowBlur = 0;
+      g.fillStyle = info.color;
+      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(info.glyph, p.x, p.y + 1);
+      g.font = "700 15px Bebas Neue, Impact, sans-serif";
+      g.textBaseline = "top";
+      g.fillText(info.label, p.x, p.y + PICKUP_R + 4);
+      g.restore();
+    }
+  }
+
+  private drawFloaters(g: CanvasRenderingContext2D): void {
+    g.save();
+    g.font = "700 20px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "bottom";
+    g.lineWidth = 4;
+    g.strokeStyle = "rgba(7,11,20,0.8)";
+    for (const f of this.floaters) {
+      g.globalAlpha = Math.min(1, f.life / 0.4);
+      g.strokeText(f.text, f.x, f.y);
+      g.fillStyle = f.color;
+      g.fillText(f.text, f.x, f.y);
+    }
+    g.restore();
   }
 
   private drawPads(g: CanvasRenderingContext2D): void {
@@ -462,16 +760,16 @@ class CurveClash implements GameInstance {
   getScores(): { playerId: string; score: number }[] {
     return this.snakes.map((s) => ({
       playerId: s.player.id,
-      score: s.roundWins * 100 + s.outlasted,
+      score: s.roundWins * 100 + s.outlasted * OUTLAST_PTS + s.skimPts,
     }));
   }
 
   getStats(): GameStat[] {
-    return this.snakes.map((s) => ({
-      playerId: s.player.id,
-      label: "Rounds won",
-      value: String(s.roundWins),
-    }));
+    return this.snakes.flatMap((s) => [
+      { playerId: s.player.id, label: "Rounds won", value: String(s.roundWins) },
+      { playerId: s.player.id, label: "Near misses", value: String(s.skims) },
+      { playerId: s.player.id, label: "Power-ups", value: String(s.grabs) },
+    ]);
   }
 
   destroy(): void {
