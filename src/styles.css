@@ -243,29 +243,6 @@ input {
   font-size: 28px;
 }
 
-.standings {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.pick-next {
-  margin: 24px 0 16px;
-}
-
-.pick-next h3 {
-  margin: 0 0 12px;
-  font-size: 22px;
-}
-
-.chip {
-  border: 1px solid var(--line);
-  background: rgba(7, 11, 20, 0.55);
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 14px;
-}
-
 .title-screen {
   justify-content: flex-end;
   padding-bottom: 8vh;

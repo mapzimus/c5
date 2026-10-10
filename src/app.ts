@@ -2,7 +2,7 @@ import { Sfx } from "./core/audio";
 import { Engine } from "./core/engine";
 import { InputManager } from "./core/input";
 import { GameRegistry } from "./core/registry";
-import { Session } from "./core/session";
+import { rankResults } from "./core/session";
 import { PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
 import { Sky } from "./fx/sky";
 import { createRegistry } from "./games";
@@ -16,7 +16,6 @@ export class App {
   private readonly input = new InputManager();
   private readonly sfx = new Sfx();
   private readonly screens = new Map<ScreenName, HTMLElement>();
-  private session: Session;
   private players: Player[];
   private selected: GameDefinition | null = null;
   private engine: Engine | null = null;
@@ -26,7 +25,6 @@ export class App {
     this.root = root;
     this.registry = createRegistry();
     this.players = [makePlayer(0), makePlayer(1)];
-    this.session = new Session(this.players);
   }
 
   start(): void {
@@ -68,15 +66,7 @@ export class App {
     const head = el("header", { class: "menu-head" },
       el("h1", { class: "wordmark", text: "Category Five" }),
     );
-    const prompt = this.pickPrompt();
-    if (prompt) head.append(el("p", { class: "lede", text: prompt }));
     screen.append(head, this.matchup(), this.gameCards());
-  }
-
-  /** Who picks next, e.g. "Gale won, Gale picks next". Null before the first game. */
-  private pickPrompt(): string | null {
-    const picker = this.session.picker();
-    return picker ? `${picker.name} won. ${picker.name} picks the next game.` : null;
   }
 
   private rerenderMenu(): void {
@@ -125,7 +115,6 @@ export class App {
       const add = el("button", { class: "add-fighter", text: "+", "aria-label": "Add player", title: "Add player" });
       add.addEventListener("click", () => {
         this.players.push(makePlayer(this.players.length as 0 | 1 | 2 | 3));
-        this.resetSession();
         this.rerenderMenu();
       });
       row.append(add);
@@ -159,10 +148,6 @@ export class App {
     });
     const meta = el("div", { class: "fighter-meta" }, kind);
 
-    if (this.session.gamesPlayed > 0) {
-      const wins = this.session.standings.find((s) => s.playerId === player.id)?.wins ?? 0;
-      meta.append(el("span", { class: "fighter-pts", text: `${wins} ${wins === 1 ? "pt" : "pts"}` }));
-    }
     if (this.players.length > 2) {
       const remove = el("button", { class: "fighter-x", text: "Remove", "aria-label": `Remove ${player.name}` });
       remove.addEventListener("click", () => {
@@ -170,29 +155,12 @@ export class App {
         this.players.forEach((item, slot) => {
           item.slot = slot as 0 | 1 | 2 | 3;
         });
-        this.resetSession();
         this.rerenderMenu();
       });
       meta.append(remove);
     }
     box.append(name, meta);
     return box;
-  }
-
-  private standingRow(): HTMLElement {
-    const row = el("div", { class: "standings" });
-    for (const standing of this.session.standings) {
-      const player = this.players.find((item) => item.id === standing.playerId);
-      if (!player) continue;
-      row.append(
-        el("span", {
-          class: "chip",
-          text: `${player.name}  ${standing.wins} ${standing.wins === 1 ? "pt" : "pts"}`,
-          style: `border-color:${player.color}`,
-        }),
-      );
-    }
-    return row;
   }
 
   private launch(game: GameDefinition): void {
@@ -243,7 +211,8 @@ export class App {
   }
 
   private finishGame(scores: { playerId: string; score: number }[], stats: GameStat[] = []): void {
-    const ranked = this.session.applyResults(scores);
+    const game = this.selected;
+    const ranked = rankResults(scores);
     const screen = this.screens.get("results")!;
     clear(screen);
     const list = el("div", { class: "results" });
@@ -255,7 +224,6 @@ export class App {
         el("span", { class: "rank", text: `${result.rank}`, style: `color:${player.color}` }),
         el("strong", { text: player.name }),
         el("span", { text: `${result.score}` }),
-        el("span", { class: "hint", text: result.won ? "+1 pt" : "" }),
       );
       const playerStats = stats.filter((s) => s.playerId === result.playerId);
       if (playerStats.length > 0) {
@@ -264,42 +232,28 @@ export class App {
       }
       list.append(row);
     }
-    const picker = this.session.picker();
-    const next = el("div", { class: "pick-next" });
-    if (picker?.kind === "bot") {
-      // Bots don't tap screens: pick for them and let a human start it.
-      const games = this.registry.list();
-      const choice = games[Math.floor(Math.random() * games.length)];
-      if (choice) {
-        next.append(
-          el("h3", { text: `${picker.name} picks ${choice.name}`, style: `color:${picker.color}` }),
-          el("div", { class: "row" }, button(`Play ${choice.name}`, () => {
-            this.sfx.unlock();
-            this.launch(choice);
-          })),
-        );
-      }
-    } else if (picker) {
-      next.append(el("h3", { text: `${picker.name}, pick the next game`, style: `color:${picker.color}` }), this.gameCards());
+
+    const winners = ranked.filter((r) => r.won).map((r) => this.players.find((p) => p.id === r.playerId)).filter(Boolean) as Player[];
+    const top = winners.length === 1 ? winners[0]! : null;
+    const headline = top ? (top.name === "You" ? "You win" : `${top.name} wins`) : "Tie";
+    const actions = el("div", { class: "row" });
+    if (game) {
+      actions.append(button("Play again", () => {
+        this.sfx.unlock();
+        this.sfx.select();
+        this.startPlay(game);
+        this.show("play");
+      }));
     }
+    actions.append(ghost("Menu", () => this.rerenderMenu()));
+
     screen.append(
-      el("p", { class: "brand", text: this.selected?.name ?? "Results" }),
-      el("h2", { class: "display", text: "Results" }),
+      el("p", { class: "brand", text: game?.name ?? "Results" }),
+      el("h2", { class: "display", text: headline, style: top ? `color:${top.color}` : "" }),
       list,
-      this.standingRow(),
-      next,
-      el("div", { class: "row" },
-        ghost("Menu", () => {
-          this.renderMenu();
-          this.show("menu");
-        }),
-      ),
+      actions,
     );
     this.show("results");
-  }
-
-  private resetSession(): void {
-    this.session = new Session(this.players);
   }
 }
 
