@@ -12,7 +12,7 @@ export interface RankedResult {
   playerId: string;
   score: number;
   rank: number;
-  /** Rank 1 (ties included). Each win is worth 1 point. */
+  /** Rank 1 (ties included). */
   won: boolean;
 }
 
@@ -53,12 +53,6 @@ export interface GameDefinition {
   /** Match the phone viewport instead of letterboxing a 16:9 board. */
   fillsScreen?: boolean;
   create(ctx: GameContext): GameInstance;
-}
-
-export interface SessionStanding {
-  playerId: string;
-  /** Games won. This is the whole score: 1 point per win. */
-  wins: number;
 }
 
 export const PLAYER_COLORS = ["#3EE0FF", "#FF3D7A", "#FFB020", "#B8FF3D"] as const;
