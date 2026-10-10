@@ -39,6 +39,7 @@ Default table is two players (you + a bot). Add seats, rename, or flip Human/Bot
 | **Quick Draw** | Standoff. Tap your zone the instant DRAW! appears. Fake calls (DRUM!, a tumbleweed) catch anyone who fires early. First to 3 rounds. |
 | **Rope Skip** | One player spins a giant rope by dragging in circles, baiting jumps; everyone else taps to jump. Survivors and the spinner score per round, and everyone takes a turn spinning. |
 | **Hungry Hoppers** | 45 seconds of tapping to chomp marbles. Gold is worth 3, bombs stun you, and a FRENZY wave dumps 40 at once. Most points wins. |
+| **Block Brawl** | Falling-blocks versus, everyone at once in side-by-side wells with the same piece order. Tap to rotate, drag to move, swipe down to drop. Clearing 2/3/4 lines sends garbage to a rival. Last one standing wins. Inspired by [javascript-tetris](https://github.com/jakesgordon/javascript-tetris) (MIT). |
 
 **Lucky Drop** is also available from the main menu (Take Turns, or **Versus**: two boards at once, split screen, same drops): unlimited physics matching
 runs with 65/25/10 drop odds, chain multipliers, charged shakes and a 128 clear.
