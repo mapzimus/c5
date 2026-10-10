@@ -6,7 +6,14 @@ import { FLAGS, PAIR_COUNT } from "./flags";
 import { hitCard, layoutPairBoard, midpoint, PAIR_COLS, PAIR_ROWS, type BoardLayout } from "./pairs-layout";
 import {
   BOT_MEMORY_LIMIT,
+  GOLDEN_FACTOR,
+  SHAKE_COUNT,
   bestHumanScore,
+  forgetCards,
+  missesUntilShake,
+  pickShakeIndices,
+  shakeDue,
+  shakeUp,
   feverMultiplier,
   inFever,
   scoreMatch,
@@ -29,6 +36,7 @@ const FLIP_SECONDS = 0.22;
 const HOLD_SECONDS = 0.5;
 const MATCH_LOCK = 0.34;
 const MISS_LOCK = 0.24;
+const SHAKE_SECONDS = 0.7;
 
 type Phase = "peek" | "closing" | "play" | "done";
 
@@ -38,6 +46,9 @@ interface Visual {
   to: CardState;
   bounce: number;
   miss: number;
+  /** 1 → 0 while the card slides in from `slideFrom` during a shake-up. */
+  slide: number;
+  slideFrom: number;
 }
 
 interface Floater {
@@ -70,6 +81,9 @@ class PairsGame implements GameInstance {
   private readonly floaters: Floater[] = [];
   private turn = 0;
   private streak = 0;
+  private misses = 0;
+  private shakePending = false;
+  private shakeFlash = 0;
   private flipped: number[] = [];
   private lock = 0;
   private botWait = 0;
@@ -99,6 +113,8 @@ class PairsGame implements GameInstance {
       to: "up",
       bounce: 0,
       miss: 0,
+      slide: 0,
+      slideFrom: 0,
     }));
     this.loadFlags(new Set(faces));
     for (const index of glimpseIndices(this.cards.length, BOT_MEMORY_LIMIT, (max) => this.ctx.rng.int(0, max - 1))) {
@@ -152,6 +168,12 @@ class PairsGame implements GameInstance {
 
     if (this.flipped.length === 2) {
       this.resolvePair();
+      return;
+    }
+
+    if (this.shakePending) {
+      this.shakePending = false;
+      this.runShakeUp();
       return;
     }
 
@@ -282,17 +304,41 @@ class PairsGame implements GameInstance {
         this.juice.shake(0.12);
       }
       this.lock = MISS_LOCK;
+      this.misses += 1;
+      if (shakeDue(this.misses)) this.shakePending = true;
     }
     this.turn = nextTurnIndex(this.turn, this.ctx.players.length, matched);
     this.flipped = [];
     this.parkCursor();
   }
 
+  /** Rotate a few face-down tiles so nobody (bots included) can coast on old memories. */
+  private runShakeUp(): void {
+    const indices = pickShakeIndices(this.cards, SHAKE_COUNT, (max) => this.ctx.rng.int(0, max - 1));
+    const moves = shakeUp(this.cards, indices);
+    if (moves.length === 0) return;
+    forgetCards(this.memory, this.recency, indices);
+    for (const move of moves) {
+      const visual = this.visuals[move.to]!;
+      visual.slide = 1;
+      visual.slideFrom = move.from;
+      visual.miss = 0;
+      visual.bounce = 0;
+    }
+    this.shakeFlash = 1;
+    this.lock = SHAKE_SECONDS;
+    this.ctx.sfx.whoosh();
+    this.juice.shake(0.35);
+    this.callouts.show("SHAKE-UP!", "#3EE0FF", { size: 64, life: 1.1 });
+    this.parkCursor();
+  }
+
   private matchCallouts(golden: boolean): void {
     const mult = feverMultiplier(this.streak);
     if (golden) {
-      this.callouts.show(mult > 1 ? `GOLDEN PAIR  x${mult * 2}` : "GOLDEN PAIR  x2", "#FFD54A", { size: 72, life: 1.4 });
-      this.juice.hitStop(0.08);
+      this.callouts.show(`GOLDEN PAIR  x${mult * GOLDEN_FACTOR}`, "#FFD54A", { size: 76, life: 1.5 });
+      this.juice.hitStop(0.12);
+      this.ctx.sfx.win();
     } else if (this.streak === 3 || this.streak === 5) {
       this.callouts.show(`FEVER x${mult}`, mult >= 3 ? "#FF4FD8" : "#FFB020", { size: 68 });
     }
@@ -361,7 +407,10 @@ class PairsGame implements GameInstance {
       const cy = slot.y + this.layout.cardH / 2;
       this.juice.burst(cx, cy, color, { count: 14, speed: 220, gravity: 300 });
       if (fever) this.juice.burst(cx, cy, ["#FFB020", "#FF4FD8", "#F4F7FB"], { count: 12 + this.streak * 2, speed: 340, size: 5 });
-      if (golden) this.juice.burst(cx, cy, ["#FFD54A", "#FFF3B0", "#FFB020"], { count: 40, speed: 460, size: 6, life: 1 });
+      if (golden) {
+        this.juice.burst(cx, cy, ["#FFD54A", "#FFF3B0", "#FFB020"], { count: 48, speed: 480, size: 6, life: 1.1 });
+        this.juice.burst(cx, cy, ["#FFF3B0", "#F4F7FB"], { count: 18, speed: 160, size: 3, gravity: -60, life: 1.4 });
+      }
     }
     this.juice.shake(golden ? 0.45 : fever ? 0.22 : 0.12);
   }
@@ -382,7 +431,9 @@ class PairsGame implements GameInstance {
       }
       if (visual.bounce > 0) visual.bounce = Math.max(0, visual.bounce - dt * 2.6);
       if (visual.miss > 0) visual.miss = Math.max(0, visual.miss - dt * 2.4);
+      if (visual.slide > 0) visual.slide = Math.max(0, visual.slide - dt / SHAKE_SECONDS);
     }
+    if (this.shakeFlash > 0) this.shakeFlash = Math.max(0, this.shakeFlash - dt * 1.6);
   }
 
   private updateFx(dt: number): void {
@@ -422,7 +473,13 @@ class PairsGame implements GameInstance {
     g.textBaseline = "alphabetic";
     g.font = narrow ? "600 13px Outfit, sans-serif" : "600 15px Outfit, sans-serif";
     g.fillStyle = "#94a3b8";
-    g.fillText(this.phase === "peek" || this.phase === "closing" ? "Pairs  ·  memorize" : `Pairs  ·  ${left} left`, inset, narrow ? 122 : 26);
+    g.fillText(
+      this.phase === "peek" || this.phase === "closing"
+        ? "Flag Snap  ·  memorize"
+        : `Flag Snap  ·  ${left} left  ·  shake-up in ${missesUntilShake(this.misses)} ${missesUntilShake(this.misses) === 1 ? "miss" : "misses"}`,
+      inset,
+      narrow ? 122 : 26,
+    );
 
     g.font = narrow ? "700 26px Bebas Neue, sans-serif" : "700 30px Bebas Neue, sans-serif";
     if (this.phase === "peek" || this.phase === "closing") {
@@ -455,7 +512,7 @@ class PairsGame implements GameInstance {
     this.juice.begin(g);
     this.drawFeverGlow(g);
     this.cards.forEach((card, index) => {
-      const slot = this.layout.slots[index]!;
+      const slot = this.slidePos(index);
       const selected = humanTurn && this.useCursor && this.cursor === index && card.state === "down";
       const hovered = hoverIndex === index && card.state === "down" && this.phase === "play";
       this.drawCard(g, slot.x, slot.y, card, index, hovered || selected, selected);
@@ -464,6 +521,18 @@ class PairsGame implements GameInstance {
     this.juice.end(g);
     this.drawFloaters(g);
     this.callouts.draw(g, this.ctx.width, this.ctx.height);
+  }
+
+  /** Card position, eased along an arc from its old slot while a shake-up slide plays. */
+  private slidePos(index: number): { x: number; y: number } {
+    const slot = this.layout.slots[index]!;
+    const visual = this.visuals[index]!;
+    if (visual.slide <= 0) return slot;
+    const from = this.layout.slots[visual.slideFrom] ?? slot;
+    const t = 1 - visual.slide;
+    const ease = t * t * (3 - 2 * t);
+    const arc = Math.sin(t * Math.PI) * this.layout.cardH * 0.35;
+    return { x: from.x + (slot.x - from.x) * ease, y: from.y + (slot.y - from.y) * ease - arc };
   }
 
   private drawBest(g: CanvasRenderingContext2D): void {
@@ -538,7 +607,8 @@ class PairsGame implements GameInstance {
     const peeking = this.phase === "peek";
     const shown = peeking ? "up" : shownFace(visual, card.state);
     const flipScale = peeking ? 1 : flipScaleX(visual.flipT);
-    const bounce = 1 + visual.bounce * 0.16;
+    const lifted = visual.slide > 0 ? Math.sin(visual.slide * Math.PI) * 0.12 : 0;
+    const bounce = 1 + visual.bounce * 0.16 + lifted;
     const lift = hover && shown === "down" ? -3 : 0;
     const wobble = visual.miss > 0 ? Math.sin(visual.miss * 28) * 6 * visual.miss : 0;
     const cardW = this.layout.cardW;
@@ -554,9 +624,19 @@ class PairsGame implements GameInstance {
     if (shown === "down") {
       g.fillStyle = hover ? "#1d4e63" : "#122033";
       g.fill();
-      g.strokeStyle = selected ? (this.ctx.players[this.turn]?.color ?? "#3EE0FF") : hover ? "#3EE0FF" : "#234";
-      g.lineWidth = selected ? 3 : 2;
+      const sliding = visual.slide > 0;
+      if (sliding) {
+        g.shadowColor = "#3EE0FF";
+        g.shadowBlur = 22 * visual.slide;
+      }
+      g.strokeStyle = selected
+        ? (this.ctx.players[this.turn]?.color ?? "#3EE0FF")
+        : hover || sliding
+          ? "#3EE0FF"
+          : "#234";
+      g.lineWidth = selected || sliding ? 3 : 2;
       g.stroke();
+      g.shadowBlur = 0;
       g.fillStyle = "#3EE0FF";
       g.font = `700 ${Math.max(16, Math.round(cardW * 0.2))}px Bebas Neue, sans-serif`;
       g.textAlign = "center";
@@ -693,12 +773,12 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 
 export const pairs: GameDefinition = {
   id: "pairs",
-  name: "Pairs",
-  tagline: "Match flags. Stack a streak.",
+  name: "Flag Snap",
+  tagline: "Find the matching flags. Keep your streak alive.",
   description:
-    "A short peek (tap or Space to skip), then take turns flipping two cards. A match stays and you go again — streaks score bigger, 3 in a row starts FEVER (x2, then x3 at 5), one secret golden pair pays double, and the last pair is worth extra. A miss flips them back and play moves on.",
+    "Look at the flags for a few seconds, then they flip over. On your turn, flip two cards. Match them and you go again. Three matches in a row starts Fever for double points. One pair is golden and worth triple. Every 4 misses, a few face-down cards swap places, so watch closely.",
   durationMs: 0,
-  controls: "Tap two face-down cards, or use WASD / arrows and Space / Enter.",
+  controls: "Tap two cards to flip them. Keyboard: arrows or WASD to move, Space or Enter to flip.",
   fillsScreen: true,
   create: (ctx) => new PairsGame(ctx),
 };

@@ -14,6 +14,13 @@ import {
   bestHumanScore,
   feverMultiplier,
   GOLDEN_FACTOR,
+  SHAKE_COUNT,
+  SHAKE_EVERY,
+  forgetCards,
+  missesUntilShake,
+  pickShakeIndices,
+  shakeDue,
+  shakeUp,
   inFever,
   scoreMatch,
   remainingPairs,
@@ -178,7 +185,7 @@ describe("fever and golden scoring", () => {
     expect(scoreMatch(3, 0, false)).toBe((3 + CLOSER_BONUS) * 2);
   });
 
-  it("doubles the golden pair on top of fever", () => {
+  it("triples the golden pair on top of fever", () => {
     expect(scoreMatch(1, 10, true)).toBe(GOLDEN_FACTOR);
     expect(scoreMatch(5, 6, true)).toBe(5 * 3 * GOLDEN_FACTOR);
   });
@@ -187,5 +194,67 @@ describe("fever and golden scoring", () => {
     const players = [{ kind: "human" }, { kind: "bot" }, { kind: "human" }];
     expect(bestHumanScore(players, [4, 99, 7])).toBe(7);
     expect(bestHumanScore([{ kind: "bot" }], [5])).toBeNull();
+  });
+});
+
+describe("shake-up", () => {
+  const first = (max: number) => max - 1; // identity shuffle
+
+  it("fires on every 4th miss", () => {
+    expect(SHAKE_EVERY).toBe(4);
+    expect([0, 1, 2, 3, 4, 5, 8, 12].map((n) => shakeDue(n))).toEqual([
+      false, false, false, false, true, false, true, true,
+    ]);
+    expect(missesUntilShake(0)).toBe(4);
+    expect(missesUntilShake(3)).toBe(1);
+    expect(missesUntilShake(4)).toBe(4);
+  });
+
+  it("only picks face-down tiles, at most SHAKE_COUNT", () => {
+    const cards = dealPairs(["a", "b", "c", "d"], first);
+    cards[0]!.state = "matched";
+    cards[1]!.state = "matched";
+    cards[2]!.state = "up";
+    const picked = pickShakeIndices(cards, SHAKE_COUNT, (max) => Math.floor(max / 2));
+    expect(picked).toHaveLength(SHAKE_COUNT);
+    expect(new Set(picked).size).toBe(SHAKE_COUNT);
+    for (const index of picked) expect(cards[index]!.state).toBe("down");
+  });
+
+  it("skips when fewer than two tiles are face down", () => {
+    const cards = dealPairs(["a", "b"], first);
+    cards.forEach((card) => (card.state = "matched"));
+    cards[3]!.state = "down";
+    expect(pickShakeIndices(cards, SHAKE_COUNT, first)).toEqual([]);
+    expect(shakeUp(cards, [3])).toEqual([]);
+  });
+
+  it("moves every chosen tile and keeps the deck intact", () => {
+    const cards = dealPairs(["a", "b", "c", "d"], first);
+    const before = cards.map((card) => card.id);
+    const indices = [1, 4, 6, 7];
+    const moves = shakeUp(cards, indices);
+    expect(moves).toEqual([
+      { from: 1, to: 4 },
+      { from: 4, to: 6 },
+      { from: 6, to: 7 },
+      { from: 7, to: 1 },
+    ]);
+    for (const move of moves) expect(cards[move.to]!.id).toBe(before[move.from]);
+    expect([...cards.map((card) => card.id)].sort()).toEqual([...before].sort());
+    // untouched slots stay put
+    for (const index of [0, 2, 3, 5]) expect(cards[index]!.id).toBe(before[index]);
+  });
+
+  it("makes the bot forget moved tiles", () => {
+    const memory = new Map<string, number[]>();
+    const recency: number[] = [];
+    rememberCard(memory, recency, 0, "a");
+    rememberCard(memory, recency, 1, "a");
+    rememberCard(memory, recency, 2, "b");
+    forgetCards(memory, recency, [1, 2]);
+    expect(memory.get("a")).toEqual([0]);
+    expect(memory.has("b")).toBe(false);
+    expect(recency).toEqual([0]);
   });
 });
