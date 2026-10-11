@@ -26,9 +26,10 @@ import { flagFlash } from "./flag-flash/flag-flash";
 import { sumoRings } from "./sumo-rings/sumo-rings";
 import { stampede } from "./stampede/stampede";
 import { hotTiles } from "./hot-tiles/hot-tiles";
+import { slotCars } from "./slot-cars/slot-cars";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash, bigBlast, hotPotato, flagFlash, sumoRings, stampede, hotTiles];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash, bigBlast, hotPotato, flagFlash, sumoRings, stampede, hotTiles, slotCars];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();
