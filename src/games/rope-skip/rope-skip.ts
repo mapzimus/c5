@@ -74,7 +74,7 @@ interface Jumper {
   jumps: number;
   streak: number;
   /** Ragdoll state after a knockout. */
-  rag: { x: number; y: number; vx: number; vy: number; rot: number; spin: number; bounces: number } | null;
+  rag: { x: number; y: number; vx: number; vy: number; rot: number; spin: number; bounces: number; resting: boolean } | null;
   /** Squash (<1) / stretch (>1) on the body, eases back to 1. */
   squash: number;
 }
@@ -235,7 +235,7 @@ class RopeSkip implements GameInstance {
 
   private stepRag(j: Jumper, dt: number): void {
     const r = j.rag;
-    if (!r) return;
+    if (!r || r.resting) return;
     r.vy += 1600 * dt;
     r.x += r.vx * dt;
     r.y += r.vy * dt;
@@ -256,6 +256,7 @@ class RopeSkip implements GameInstance {
         r.vy = 0;
         r.vx = 0;
         r.spin = 0;
+        r.resting = true;
       }
     }
     const edge = this.ctx.width - 30;
@@ -302,7 +303,7 @@ class RopeSkip implements GameInstance {
       j.jumpT = null;
       j.streak = 0;
       const v = knockVelocity(this.omega, this.rand);
-      j.rag = { x: j.x, y: GROUND_Y - 26, vx: v.vx, vy: v.vy, rot: 0, spin: v.spin, bounces: 0 };
+      j.rag = { x: j.x, y: GROUND_Y - 26, vx: v.vx, vy: v.vy, rot: 0, spin: v.spin, bounces: 0, resting: false };
       j.squash = 1.4;
       this.juice.hitStop(0.06);
       this.juice.shake(0.35 + 0.25 * (this.omega / MAX_OMEGA));

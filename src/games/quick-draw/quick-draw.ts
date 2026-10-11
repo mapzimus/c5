@@ -291,6 +291,7 @@ class QuickDraw implements GameInstance {
     }
     this.bullets = this.bullets.filter((b) => b.life > 0 && b.x > -100 && b.x < this.ctx.width + 100);
 
+    this.hats = this.hats.filter((h) => h.x > -HAT_W * 2 && h.x < this.ctx.width + HAT_W * 2);
     for (const h of this.hats) {
       h.vy += 1500 * dt;
       h.x += h.vx * dt;
@@ -311,8 +312,6 @@ class QuickDraw implements GameInstance {
           this.juice.burst(h.x, groundY, "#b8925a", { count: 5, speed: 80, gravity: 300, size: 3, life: 0.35, angle: -Math.PI / 2, spread: 2 });
         }
       }
-      if (h.x < -HAT_W) h.x = -HAT_W;
-      if (h.x > this.ctx.width + HAT_W) h.x = this.ctx.width + HAT_W;
     }
   }
 

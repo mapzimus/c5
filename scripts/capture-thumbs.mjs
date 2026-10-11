@@ -19,7 +19,8 @@ const DELAY = {
   "connect-four": 22,
   "curve-clash": 12,
   "tower-topple": 16,
-  "quick-draw": 9,
+  "quick-draw": 4.2,
+  "rope-skip": 6.5,
 };
 
 const browser = await chromium.launch();
