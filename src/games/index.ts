@@ -19,9 +19,10 @@ import { quickDraw } from "./quick-draw/quick-draw";
 import { ropeSkip } from "./rope-skip/rope-skip";
 import { hungryHoppers } from "./hungry-hoppers/hungry-hoppers";
 import { blockBrawl } from "./block-brawl/block-brawl";
+import { mashDash } from "./mash-dash/mash-dash";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();
