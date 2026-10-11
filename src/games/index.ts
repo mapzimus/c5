@@ -19,9 +19,17 @@ import { quickDraw } from "./quick-draw/quick-draw";
 import { ropeSkip } from "./rope-skip/rope-skip";
 import { hungryHoppers } from "./hungry-hoppers/hungry-hoppers";
 import { blockBrawl } from "./block-brawl/block-brawl";
+import { mashDash } from "./mash-dash/mash-dash";
+import { bigBlast } from "./big-blast/big-blast";
+import { hotPotato } from "./hot-potato/hot-potato";
+import { flagFlash } from "./flag-flash/flag-flash";
+import { sumoRings } from "./sumo-rings/sumo-rings";
+import { stampede } from "./stampede/stampede";
+import { hotTiles } from "./hot-tiles/hot-tiles";
+import { slotCars } from "./slot-cars/slot-cars";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash, bigBlast, hotPotato, flagFlash, sumoRings, stampede, hotTiles, slotCars];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();

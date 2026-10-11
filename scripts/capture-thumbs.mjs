@@ -21,6 +21,11 @@ const DELAY = {
   "tower-topple": 16,
   "quick-draw": 4.2,
   "rope-skip": 6.5,
+  "hot-tiles": 7,
+  "sumo-rings": 9,
+  "mash-dash": 8,
+  "stampede": 12,
+  "slot-cars": 10,
 };
 
 const browser = await chromium.launch();
