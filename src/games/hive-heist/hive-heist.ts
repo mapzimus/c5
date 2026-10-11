@@ -1,45 +1,58 @@
 import { drawTimerBar, fillArena } from "../../core/draw";
-import { Callouts, Juice } from "../../fx/juice";
+import { Callouts, Juice, saveBest } from "../../fx/juice";
 import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
 import {
-  botChoice, buildHive, HIVES, leaders, newHive, STING_PENALTY, take, TURN_MS, VISIBLE,
-  type HiveState, type Item,
+  bankOut, botChoice, BOUNTY, buildHive, cashOut, canRelease, cornered, hiddenRisk, HIVE_SPECS, HIVES, leaders,
+  newHive, releaseWasp, take, TURN_MS, underdog, UNDERDOG_BONUS, VISIBLE,
+  type Choice, type HiveState, type Item,
 } from "./logic";
 
 export const hiveHeist: GameDefinition = {
   id: "hive-heist",
   name: "Hive Heist",
-  tagline: "Count the combs. Dodge the wasps.",
+  tagline: "Bite, shove, bank. Spill nothing.",
   description:
-    "A honeycomb conveyor feeds one very hungry bear. On your turn take 1 or 2 items from the front: " +
-    "honey drops are worth 1-3 points, but angry wasps hide in the queue and only the next 3 items are " +
-    "visible. Grab a wasp and you're stung: lose 5 and you're out of that hive. Two hives, the second " +
-    "with 4 wasps. Most honey wins.",
+    "One hungry bear, one honeycomb conveyor, three hives of rising stakes. On your turn take 1 or 2 combs, " +
+    "or BANK your paws and leave. Honey stays in your paws until you bank it: get cornered by a wasp and you " +
+    "spill the lot. Count the combs to shove wasps onto the richest paws. Out of the hive? You join the swarm " +
+    "and release your own wasp into the hidden combs for a bounty. Most banked honey wins.",
   durationMs: 0,
-  controls: "On your turn tap TAKE 1 or TAKE 2",
+  controls: "On your turn tap TAKE 1, TAKE 2 or BANK. In the swarm, tap your card to release a wasp",
   create: (ctx) => new HiveHeist(ctx),
 };
 
+const BEST_KEY = "hive-heist";
+const BEST_VERSION = "v2";
 const FONT = "Bebas Neue, Impact, sans-serif";
-const INTRO_S = 1.6;
-const CHOMP_S = 0.75;
-const STING_S = 1.4;
-const HIVE_END_S = 2.2;
+const INTRO_S = 1.5;
+const CHOMP_S = 0.45;
+const STING_S = 1.3;
+const BANK_S = 0.7;
+const CORNERED_S = 1.0;
+const HIVE_END_S = 1.6;
 const FINAL_S = 2.4;
 const FLY_S = 0.4;
 const HONEY = "#FFB020";
 const HONEY_LIGHT = "#FFE08A";
 const WASP_YELLOW = "#F5D020";
 const DANGER = "#FF3D7A";
+const LIME = "#B8FF3D";
 const INK = "#070b14";
 const PALE = "#F4F7FB";
 
-type Phase = "intro" | "turn" | "chomp" | "hiveEnd" | "final";
+type Phase = "intro" | "turn" | "cornered" | "chomp" | "hiveEnd" | "final";
 
 interface Seat {
   player: Player;
-  honey: number;
+  banked: number;
+  bestHaul: number;
   stings: number;
+  /** Bot personality: < 1 banks early, > 1 pushes its luck. */
+  nerve: number;
+  /** Bot swarm member: seconds until it drops its wasp. */
+  releaseAt: number | null;
+  /** Card pop when the banked total changes. */
+  pop: number;
 }
 
 interface Flyer {
@@ -49,6 +62,8 @@ interface Flyer {
   x1: number;
   y1: number;
   t: number;
+  /** Released wasps fly into the fog rather than into the bear. */
+  release: boolean;
 }
 
 interface Floater {
@@ -57,10 +72,11 @@ interface Floater {
   y: number;
   color: string;
   life: number;
+  size: number;
 }
 
 interface Btn {
-  n: 1 | 2;
+  choice: Choice;
   x: number;
   y: number;
   w: number;
@@ -75,39 +91,48 @@ class HiveHeist implements GameInstance {
   private timer = INTRO_S;
   private hiveIndex = 0;
   private hive: HiveState;
-  /** Seat whose turn is being played or resolved (hive.turn moves on as soon as a take lands). */
+  /** Seat whose turn is being played or resolved (hive.turn moves on as soon as an action lands). */
   private active = 0;
+  private underdogSeat: number | null = null;
   private turnLeft = TURN_MS / 1000;
   private botAt: number | null = null;
   private slide = 0;
   private chomp = 0;
   private stingFlash = 0;
+  private bankFlash = 0;
   private time = 0;
   private flyers: Flyer[] = [];
   private floaters: Floater[] = [];
   private lastLine = "";
+  private lastColor = PALE;
+  private seenWasps = 0;
   private finished = false;
-  private readonly pressed = new Map<number, 1 | 2>();
+  private readonly pressed = new Map<number, Choice | `card${number}`>();
   private readonly buttons: Btn[];
   private readonly cell: number;
   private readonly queueX: number;
   private readonly laneY: number;
   private readonly bearX: number;
+  private readonly cardH: number;
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice(() => ctx.rng.next());
-    this.seats = ctx.players.map((player) => ({ player, honey: 0, stings: 0 }));
+    this.seats = ctx.players.map((player) => ({
+      player, banked: 0, bestHaul: 0, stings: 0, nerve: ctx.rng.float(0.5, 1.2), releaseAt: null, pop: 0,
+    }));
     const { width: w, height: h } = ctx;
-    this.cell = Math.min(w * 0.075, 96);
-    this.bearX = w * 0.12;
-    this.queueX = w * 0.27;
-    this.laneY = h * 0.43;
-    const bw = w * 0.4;
+    this.cell = Math.min(w * 0.072, 92);
+    this.bearX = w * 0.11;
+    this.queueX = w * 0.26;
+    this.laneY = h * 0.41;
+    this.cardH = Math.max(88, ctx.minTap);
     const bh = Math.max(ctx.minTap * 2, h * 0.24);
-    const by = h * 0.72;
+    const by = h * 0.70;
+    const bw = w * 0.29;
     this.buttons = [
-      { n: 1, x: w * 0.07, y: by, w: bw, h: bh },
-      { n: 2, x: w * 0.53, y: by, w: bw, h: bh },
+      { choice: "take1", x: w * 0.04, y: by, w: bw, h: bh },
+      { choice: "take2", x: w * 0.355, y: by, w: bw, h: bh },
+      { choice: "bank", x: w * 0.67, y: by, w: bw, h: bh },
     ];
     this.hive = this.startHive();
     const c = ctx.canvas;
@@ -118,20 +143,45 @@ class HiveHeist implements GameInstance {
   }
 
   private startHive(): HiveState {
-    const queue = buildHive(this.hiveIndex, this.ctx.rng);
-    const wasps = queue.filter((it) => it.kind === "wasp").length;
+    const spec = HIVE_SPECS[this.hiveIndex]!;
+    const queue = buildHive(this.hiveIndex, this.ctx.rng, this.seats.length);
     this.slide = 0;
     this.flyers = [];
     this.botAt = null;
     this.lastLine = "";
     this.phase = "intro";
     this.timer = INTRO_S;
-    this.callouts.show(`HIVE ${this.hiveIndex + 1}`, HONEY, { size: 88, life: INTRO_S, y: 0.3 });
-    this.callouts.show(`${wasps} WASPS HIDDEN`, DANGER, { size: 46, life: INTRO_S, y: 0.43 });
+    for (const s of this.seats) s.releaseAt = null;
+    const last = this.hiveIndex === HIVES - 1;
+    this.callouts.show(last ? `FINAL: ${spec.name}` : spec.name, last ? DANGER : HONEY, {
+      size: 84, life: INTRO_S, y: 0.3,
+    });
+    const line = spec.crown > 0 ? `${spec.wasps} WASPS HIDDEN · CROWN WORTH ${spec.crown}` : `${spec.wasps} WASPS HIDDEN`;
+    this.callouts.show(line, PALE, { size: 42, life: INTRO_S, y: 0.43 });
+    this.underdogSeat = this.hiveIndex === 0 ? null : underdog(this.seats.map((s) => s.banked));
+    if (this.underdogSeat !== null) {
+      const seat = this.seats[this.underdogSeat]!;
+      this.callouts.show(`${seat.player.name} IS THE UNDERDOG: SEES ${VISIBLE + UNDERDOG_BONUS}`, seat.player.color, {
+        size: 36, life: INTRO_S, y: 0.56,
+      });
+    }
     this.ctx.sfx.countdown();
     const hive = newHive(queue, this.seats.length, this.hiveIndex);
     this.active = hive.turn;
+    this.seenWasps = this.visibleWasps(hive, VISIBLE);
     return hive;
+  }
+
+  private windowFor(seat: number): number {
+    return VISIBLE + (seat === this.underdogSeat ? UNDERDOG_BONUS : 0);
+  }
+
+  private visibleWasps(hive: HiveState, window: number): number {
+    return hive.queue.slice(0, window).filter((it) => it.kind === "wasp").length;
+  }
+
+  private hiveLive(): boolean {
+    return (this.phase === "turn" || this.phase === "cornered" || this.phase === "chomp") && !this.hive.done;
   }
 
   update(realDt: number): void {
@@ -140,6 +190,7 @@ class HiveHeist implements GameInstance {
     this.time += realDt;
     this.stepFx(realDt);
     if (this.finished) return;
+    if (this.hiveLive()) this.stepSwarm(dt);
 
     switch (this.phase) {
       case "intro":
@@ -152,12 +203,19 @@ class HiveHeist implements GameInstance {
           this.botAt -= dt;
           if (this.botAt <= 0) {
             this.botAt = null;
-            this.act(botChoice(this.hive.queue, this.ctx.rng));
+            const seat = this.seats[this.active]!;
+            this.act(botChoice(this.hive, this.active, this.ctx.rng, {
+              nerve: seat.nerve, window: this.windowFor(this.active),
+            }));
             return;
           }
         }
         // Dithering costs you: the bear eats one anyway.
-        if (this.turnLeft <= 0) this.act(1);
+        if (this.turnLeft <= 0) this.act("take1");
+        return;
+      case "cornered":
+        this.timer -= dt;
+        if (this.timer <= 0) this.resolve("take1");
         return;
       case "chomp":
         this.timer -= dt;
@@ -180,60 +238,183 @@ class HiveHeist implements GameInstance {
   }
 
   private beginTurn(): void {
-    this.phase = "turn";
     this.active = this.hive.turn;
-    this.turnLeft = TURN_MS / 1000;
     const seat = this.seats[this.active]!;
-    this.botAt = seat.player.kind === "bot" ? this.ctx.rng.float(0.7, 1.8) : null;
+    if (cornered(this.hive)) {
+      this.phase = "cornered";
+      this.timer = CORNERED_S;
+      this.botAt = null;
+      this.callouts.show(`${seat.player.name} CORNERED!`, DANGER, { size: 72, life: CORNERED_S + 0.3, y: 0.56 });
+      this.lastLine = "";
+      this.juice.shake(0.2);
+      this.ctx.sfx.miss();
+      return;
+    }
+    this.phase = "turn";
+    this.turnLeft = TURN_MS / 1000;
+    if (seat.player.kind === "bot") {
+      const waspInView = this.visibleWasps(this.hive, this.windowFor(this.active)) > 0;
+      const hesitate = waspInView && this.ctx.rng.next() < 0.3;
+      this.botAt = hesitate ? this.ctx.rng.float(1.0, 1.8) : this.ctx.rng.float(0.4, 1.1);
+    } else this.botAt = null;
     this.ctx.sfx.select();
   }
 
-  private act(n: 1 | 2): void {
+  /** Player or bot action during their turn. */
+  private act(choice: Choice): void {
     if (this.phase !== "turn") return;
+    if (choice === "take2" && this.hive.queue.length < 2) choice = "take1";
+    if (choice === "bank" && (this.hive.paws[this.active] ?? 0) <= 0) return;
+    this.resolve(choice);
+  }
+
+  private resolve(choice: Choice): void {
     const seatIndex = this.hive.turn;
     const seat = this.seats[seatIndex]!;
-    const res = take(this.hive, n);
-    const mouth = this.bearMouth();
     const card = this.cardCenter(seatIndex);
+    const name = seat.player.name;
+    this.botAt = null;
+    this.lastColor = seat.player.color;
+
+    if (choice === "bank") {
+      const waspInView = this.visibleWasps(this.hive, this.windowFor(seatIndex)) > 0;
+      const { banked } = bankOut(this.hive);
+      this.credit(seatIndex, banked);
+      this.floaters.push({ text: `BANKED +${banked}`, x: card.x, y: card.y + 50, color: LIME, life: 1.2, size: 36 });
+      this.lastLine = `${name} banks ${banked} and joins the swarm`;
+      if (waspInView) this.callouts.show("CLEAN GETAWAY!", LIME, { size: 56, life: 1.0, y: 0.56 });
+      this.bankFlash = 1;
+      this.juice.burst(card.x, card.y, [HONEY, HONEY_LIGHT, LIME], { count: 26, speed: 260, gravity: 380, size: 5 });
+      this.ctx.sfx.whoosh();
+      this.joinSwarm(seatIndex);
+      this.timer = BANK_S;
+      this.phase = "chomp";
+      return;
+    }
+
+    const n = choice === "take2" ? 2 : 1;
+    const mouth = this.bearMouth();
+    const res = take(this.hive, n);
     res.taken.forEach((item, i) => {
       const wasp = item.kind === "wasp";
       this.flyers.push({
         item, x0: this.queueX + i * this.cell, y0: this.laneY,
-        x1: wasp ? card.x : mouth.x, y1: wasp ? card.y : mouth.y, t: 0,
+        x1: wasp ? card.x : mouth.x, y1: wasp ? card.y : mouth.y, t: 0, release: false,
       });
     });
     this.slide = res.taken.length * this.cell;
-    this.botAt = null;
-    seat.honey += res.honey;
-    if (res.honey > 0) {
-      this.floaters.push({ text: `+${res.honey}`, x: card.x, y: card.y + 34, color: HONEY, life: 1.1 });
-      this.chomp = 1;
-      this.ctx.sfx.collect();
-    }
+    const crown = res.taken.some((it) => it.kind === "honey" && it.crown);
     if (res.stung) {
-      seat.honey -= STING_PENALTY;
       seat.stings += 1;
-      this.floaters.push({ text: `-${STING_PENALTY}`, x: card.x, y: card.y + 64, color: DANGER, life: 1.3 });
-      this.callouts.show(`${seat.player.name} STUNG!`, DANGER, { size: 76, life: STING_S, y: 0.58 });
-      this.lastLine = `${seat.player.name} is out of this hive`;
-      this.juice.hitStop(0.1);
-      this.juice.shake(0.6);
+      if (res.spilled > 0) {
+        this.floaters.push({ text: `SPILLED -${res.spilled}`, x: card.x, y: card.y + 54, color: DANGER, life: 1.4, size: 40 });
+        this.juice.burst(card.x, card.y + 20, [HONEY, HONEY_LIGHT], { count: 30, speed: 300, gravity: 520, size: 5 });
+      }
+      this.callouts.show(`${name} STUNG!`, DANGER, { size: 76, life: STING_S, y: 0.56 });
+      this.lastLine = res.spilled > 0 ? `${name} spills ${res.spilled} honey!` : `${name} is stung with empty paws`;
+      if (res.bounty !== null) {
+        const owner = this.seats[res.bounty]!;
+        this.credit(res.bounty, BOUNTY);
+        const oc = this.cardCenter(res.bounty);
+        this.floaters.push({ text: `BOUNTY +${BOUNTY}`, x: oc.x, y: oc.y + 50, color: LIME, life: 1.4, size: 34 });
+        this.lastLine = `${owner.player.name}'s wasp got ${name}!`;
+        this.lastColor = owner.player.color;
+      }
+      this.juice.hitStop(0.12);
+      this.juice.shake(0.7);
       this.stingFlash = 1;
       this.ctx.sfx.miss();
+      this.joinSwarm(seatIndex);
       this.timer = STING_S;
     } else {
-      this.lastLine = res.honey > 0 ? `${seat.player.name} grabs ${res.honey} honey` : "";
+      const paws = this.hive.paws[seatIndex] ?? 0;
+      this.floaters.push({ text: `+${res.honey}`, x: card.x, y: card.y + 50, color: HONEY, life: 1.0, size: 40 });
+      this.chomp = 1;
+      if (crown) {
+        this.callouts.show(`${name} TAKES THE CROWN!`, HONEY_LIGHT, { size: 64, life: 1.2, y: 0.56 });
+        this.juice.burst(mouth.x, mouth.y, [HONEY_LIGHT, PALE, HONEY], { count: 40, speed: 380, gravity: 300, size: 6 });
+        this.juice.shake(0.35);
+        this.ctx.sfx.streak(6);
+      } else if (paws >= 3) this.ctx.sfx.streak(Math.min(6, Math.floor(paws / 3)));
+      else this.ctx.sfx.collect();
+      const next = this.hive.done ? null : this.hive.turn;
+      if (next !== null && cornered(this.hive)) {
+        const victim = this.seats[next]!;
+        this.lastLine = `${name} shoves the wasp onto ${victim.player.name}!`;
+      } else this.lastLine = `${name} grabs ${res.honey} · ${paws} in paws`;
       this.juice.shake(0.12);
       this.timer = CHOMP_S;
     }
+    this.buzzCheck();
+    if (this.hive.done && this.hive.queue.length === 0) this.timer = Math.max(this.timer, CHOMP_S);
     this.phase = "chomp";
+  }
+
+  private credit(seatIndex: number, amount: number): void {
+    const seat = this.seats[seatIndex]!;
+    seat.banked += amount;
+    seat.bestHaul = Math.max(seat.bestHaul, amount);
+    seat.pop = 1;
+  }
+
+  private joinSwarm(seatIndex: number): void {
+    const seat = this.seats[seatIndex]!;
+    if (seat.player.kind === "bot") seat.releaseAt = this.ctx.rng.float(1.5, 7);
+  }
+
+  /** A wasp coming into view gets a buzz so the table looks up. */
+  private buzzCheck(): void {
+    const now = this.visibleWasps(this.hive, VISIBLE);
+    if (now > this.seenWasps) {
+      const idx = this.hive.queue.findIndex((it, i) => i < VISIBLE && it.kind === "wasp");
+      if (idx >= 0) {
+        this.floaters.push({
+          text: "BZZZ", x: this.queueX + idx * this.cell, y: this.laneY - this.cell * 0.8, color: WASP_YELLOW, life: 0.8, size: 28,
+        });
+      }
+      this.ctx.sfx.tick();
+    }
+    this.seenWasps = now;
+  }
+
+  private stepSwarm(dt: number): void {
+    for (let i = 0; i < this.seats.length; i++) {
+      const seat = this.seats[i]!;
+      if (seat.releaseAt === null) continue;
+      seat.releaseAt -= dt;
+      if (seat.releaseAt > 0) continue;
+      if (canRelease(this.hive, i) && this.hive.queue.length >= 2) {
+        seat.releaseAt = null;
+        this.release(i);
+      } else seat.releaseAt = canRelease(this.hive, i) ? 0.8 : null;
+    }
+  }
+
+  private release(seatIndex: number): void {
+    const idx = releaseWasp(this.hive, seatIndex, this.ctx.rng);
+    if (idx === null) return;
+    const seat = this.seats[seatIndex]!;
+    const card = this.cardCenter(seatIndex);
+    const x1 = Math.min(this.ctx.width - this.cell, this.queueX + idx * this.cell);
+    this.flyers.push({ item: { kind: "wasp", owner: seatIndex }, x0: card.x, y0: card.y, x1, y1: this.laneY, t: 0, release: true });
+    this.callouts.show(`${seat.player.name} RELEASES A WASP!`, WASP_YELLOW, { size: 52, life: 1.1, y: 0.56 });
+    this.juice.shake(0.15);
+    this.ctx.sfx.hit();
+    this.buzzCheck();
   }
 
   private endHive(): void {
     this.phase = "hiveEnd";
     this.timer = HIVE_END_S;
     const empty = this.hive.queue.length === 0;
-    this.callouts.show(empty ? "HIVE EMPTY!" : "EVERYONE STUNG!", empty ? HONEY : DANGER, {
+    const payouts = cashOut(this.hive);
+    for (const p of payouts) {
+      this.credit(p.seat, p.banked);
+      const c = this.cardCenter(p.seat);
+      this.floaters.push({ text: `BANKED +${p.banked}`, x: c.x, y: c.y + 50, color: LIME, life: 1.4, size: 36 });
+      this.juice.burst(c.x, c.y, [HONEY, LIME], { count: 18, speed: 220, gravity: 380, size: 4 });
+    }
+    this.callouts.show(empty ? "HIVE EMPTY!" : "EVERYONE OUT!", empty ? HONEY : DANGER, {
       size: 78, life: HIVE_END_S, y: 0.43,
     });
     this.lastLine = "";
@@ -243,16 +424,25 @@ class HiveHeist implements GameInstance {
   private finish(): void {
     this.phase = "final";
     this.timer = FINAL_S;
-    const lead = leaders(this.seats.map((s) => s.honey));
+    const lead = leaders(this.seats.map((s) => s.banked));
     const names = lead.map((i) => this.seats[i]!.player.name).join(" & ");
     const color = lead.length === 1 ? this.seats[lead[0]!]!.player.color : PALE;
     this.callouts.show(`${names} WINS!`, color, { size: 84, life: FINAL_S, y: 0.43 });
+    for (const s of this.seats) {
+      if (s.player.kind !== "human" || s.banked <= 0) continue;
+      if (saveBest(BEST_KEY, s.banked, BEST_VERSION)) {
+        this.callouts.show(`${s.player.name} NEW RECORD ${s.banked}`, LIME, { size: 50, life: FINAL_S, y: 0.58 });
+        break;
+      }
+    }
     this.ctx.sfx.win();
   }
 
   private stepFx(dt: number): void {
     this.chomp = Math.max(0, this.chomp - dt * 2.2);
     this.stingFlash = Math.max(0, this.stingFlash - dt * 2.5);
+    this.bankFlash = Math.max(0, this.bankFlash - dt * 2.5);
+    for (const s of this.seats) s.pop = Math.max(0, s.pop - dt * 3);
     this.slide *= Math.pow(0.002, dt / 0.4);
     if (this.slide < 0.5) this.slide = 0;
 
@@ -261,8 +451,9 @@ class HiveHeist implements GameInstance {
     this.flyers = this.flyers.filter((f) => f.t < 1);
     for (const f of landed) {
       if (f.item.kind === "wasp") {
-        this.juice.burst(f.x1, f.y1, [DANGER, WASP_YELLOW, "#15120a"], { count: 24, speed: 340, gravity: 300, size: 5 });
-        this.ctx.sfx.hit();
+        const colors = f.release ? [WASP_YELLOW, "#15120a", PALE] : [DANGER, WASP_YELLOW, "#15120a"];
+        this.juice.burst(f.x1, f.y1, colors, { count: f.release ? 16 : 24, speed: 320, gravity: 300, size: 5 });
+        if (!f.release) this.ctx.sfx.hit();
       } else {
         this.juice.burst(f.x1, f.y1, [HONEY, HONEY_LIGHT], { count: 10, speed: 170, gravity: 420, size: 4, life: 0.5 });
       }
@@ -289,15 +480,34 @@ class HiveHeist implements GameInstance {
     return this.buttons.find((b) => p.x >= b.x && p.x < b.x + b.w && p.y >= b.y && p.y < b.y + b.h) ?? null;
   }
 
+  private hitCard(p: { x: number; y: number }): number | null {
+    for (let i = 0; i < this.seats.length; i++) {
+      const c = this.cardRect(i);
+      if (p.x >= c.x && p.x < c.x + c.w && p.y >= c.y && p.y < c.y + c.h) return i;
+    }
+    return null;
+  }
+
   private readonly onDown = (e: PointerEvent): void => {
-    const b = this.hitButton(this.toLogical(e));
-    if (!b) return;
+    const p = this.toLogical(e);
+    const b = this.hitButton(p);
+    if (b) {
+      e.preventDefault();
+      this.pressed.set(e.pointerId, b.choice);
+      if (this.phase !== "turn") return;
+      if (this.seats[this.active]!.player.kind !== "human") return;
+      if (b.choice === "take2" && this.hive.queue.length < 2) return;
+      this.act(b.choice);
+      return;
+    }
+    const card = this.hitCard(p);
+    if (card === null) return;
     e.preventDefault();
-    this.pressed.set(e.pointerId, b.n);
-    if (this.phase !== "turn") return;
-    if (this.seats[this.active]!.player.kind !== "human") return;
-    if (b.n === 2 && this.hive.queue.length < 2) return;
-    this.act(b.n);
+    this.pressed.set(e.pointerId, `card${card}`);
+    const seat = this.seats[card]!;
+    if (seat.player.kind !== "human" || !this.hiveLive() || !canRelease(this.hive, card)) return;
+    if (this.hive.queue.length < 2) return;
+    this.release(card);
   };
 
   private readonly onUp = (e: PointerEvent): void => {
@@ -307,7 +517,9 @@ class HiveHeist implements GameInstance {
   // ---- render ----
 
   private activeSeat(): Seat | null {
-    return this.phase === "turn" || this.phase === "chomp" ? this.seats[this.active] ?? null : null;
+    return this.phase === "turn" || this.phase === "chomp" || this.phase === "cornered"
+      ? this.seats[this.active] ?? null
+      : null;
   }
 
   render(g: CanvasRenderingContext2D): void {
@@ -330,6 +542,10 @@ class HiveHeist implements GameInstance {
       g.fillStyle = `rgba(255,61,122,${this.stingFlash * 0.35})`;
       g.fillRect(0, 0, w, h);
     }
+    if (this.bankFlash > 0) {
+      g.fillStyle = `rgba(184,255,61,${this.bankFlash * 0.18})`;
+      g.fillRect(0, 0, w, h);
+    }
     this.drawScoreboard(g);
     this.drawButtons(g);
     this.drawPrompt(g);
@@ -338,7 +554,7 @@ class HiveHeist implements GameInstance {
     this.callouts.draw(g, w, h);
   }
 
-  private drawHex(g: CanvasRenderingContext2D, x: number, y: number, r: number, fill: string, stroke: string): void {
+  private drawHex(g: CanvasRenderingContext2D, x: number, y: number, r: number, fill: string, stroke: string, lw = 3): void {
     g.beginPath();
     for (let k = 0; k < 6; k++) {
       const a = Math.PI / 6 + (k * Math.PI) / 3;
@@ -351,7 +567,24 @@ class HiveHeist implements GameInstance {
     g.fillStyle = fill;
     g.fill();
     g.strokeStyle = stroke;
-    g.lineWidth = 3;
+    g.lineWidth = lw;
+    g.stroke();
+  }
+
+  private drawCrown(g: CanvasRenderingContext2D, x: number, y: number, r: number): void {
+    g.beginPath();
+    g.moveTo(x - r, y + r * 0.6);
+    g.lineTo(x - r, y - r * 0.4);
+    g.lineTo(x - r * 0.5, y + r * 0.05);
+    g.lineTo(x, y - r * 0.8);
+    g.lineTo(x + r * 0.5, y + r * 0.05);
+    g.lineTo(x + r, y - r * 0.4);
+    g.lineTo(x + r, y + r * 0.6);
+    g.closePath();
+    g.fillStyle = HONEY_LIGHT;
+    g.fill();
+    g.strokeStyle = "#8a5200";
+    g.lineWidth = 2;
     g.stroke();
   }
 
@@ -361,25 +594,51 @@ class HiveHeist implements GameInstance {
     const cell = this.cell;
     const r = cell * 0.5;
     const q = this.hive.queue;
+    const live = this.phase === "turn" || this.phase === "cornered" || this.phase === "chomp";
+    const window = live ? this.windowFor(this.active) : VISIBLE;
+    const activeColor = this.activeSeat()?.player.color ?? PALE;
     g.save();
     // Belt.
     g.fillStyle = "rgba(255,176,32,0.07)";
     g.fillRect(this.queueX - cell, y - r * 1.3, w, r * 2.6);
     g.fillStyle = "rgba(255,176,32,0.18)";
     g.fillRect(this.queueX - cell, y + r * 1.3, w, 4);
-    // Comb cells, front first. Hidden ones are dark with a "?".
+    // Comb cells, front first. Hidden ones are dark with a "?", except the crown which is always marked.
     for (let i = 0; i < q.length; i++) {
       const x = this.queueX + i * cell + this.slide;
       if (x > w + cell) break;
       const item = q[i]!;
-      const revealed = i < VISIBLE;
+      const revealed = i < window;
+      const nose = revealed && i >= VISIBLE;
+      const crownHidden = !revealed && item.kind === "honey" && item.crown === true;
+      if (crownHidden) {
+        const glow = 0.6 + Math.sin(this.time * 5) * 0.4;
+        this.drawHex(g, x, y, r * 1.08, `rgba(255,224,138,${0.12 * glow})`, `rgba(255,224,138,${0.35 * glow})`, 2);
+        this.drawHex(g, x, y, r * 0.96, "rgba(255,224,138,0.18)", HONEY_LIGHT, 3);
+        this.drawCrown(g, x, y - r * 0.15, r * 0.42);
+        g.fillStyle = HONEY_LIGHT;
+        g.font = `700 ${Math.round(r * 0.6)}px ${FONT}`;
+        g.textAlign = "center";
+        g.textBaseline = "middle";
+        g.fillText(String(item.value), x, y + r * 0.55);
+        continue;
+      }
       this.drawHex(
         g, x, y, r * 0.96,
-        revealed ? "rgba(255,176,32,0.2)" : "rgba(244,247,251,0.05)",
-        revealed ? HONEY : "rgba(244,247,251,0.2)",
+        revealed ? (nose ? "rgba(244,247,251,0.12)" : "rgba(255,176,32,0.2)") : "rgba(244,247,251,0.05)",
+        revealed ? (nose ? activeColor : HONEY) : "rgba(244,247,251,0.2)",
+        nose ? 4 : 3,
       );
-      if (revealed) this.drawItem(g, item, x, y, r * 0.6);
-      else {
+      if (revealed) {
+        this.drawItem(g, item, x, y, r * 0.6);
+        if (nose) {
+          g.fillStyle = activeColor;
+          g.font = `700 16px ${FONT}`;
+          g.textAlign = "center";
+          g.textBaseline = "middle";
+          g.fillText("NOSE", x, y - r * 1.05);
+        }
+      } else {
         g.fillStyle = "rgba(244,247,251,0.4)";
         g.font = `700 ${Math.round(r * 1.1)}px ${FONT}`;
         g.textAlign = "center";
@@ -388,23 +647,43 @@ class HiveHeist implements GameInstance {
       }
     }
     // Fog over the unknown.
-    const fog = g.createLinearGradient(this.queueX + cell * (VISIBLE - 0.5), 0, this.queueX + cell * (VISIBLE + 1.5), 0);
+    const fogX = this.queueX + cell * (window - 0.5);
+    const fog = g.createLinearGradient(fogX, 0, fogX + cell * 2, 0);
     fog.addColorStop(0, "rgba(12,22,40,0)");
     fog.addColorStop(1, "rgba(12,22,40,0.45)");
     g.fillStyle = fog;
-    g.fillRect(this.queueX + cell * (VISIBLE - 0.5), y - r * 1.3, w, r * 2.6);
+    g.fillRect(fogX, y - r * 1.3, w, r * 2.6);
 
-    g.fillStyle = "rgba(244,247,251,0.55)";
-    g.font = `700 26px ${FONT}`;
-    g.textAlign = "right";
+    // Count on the left, risk meter on the right.
+    const top = y - r * 1.45;
     g.textBaseline = "bottom";
-    g.fillText(`${q.length} IN THE HIVE`, w - 40, y - r * 1.4);
+    g.textAlign = "left";
+    g.fillStyle = "rgba(244,247,251,0.55)";
+    g.font = `700 24px ${FONT}`;
+    const spec = HIVE_SPECS[this.hiveIndex] ?? HIVE_SPECS[HIVES - 1]!;
+    g.fillText(`${spec.name} ${this.hiveIndex + 1}/${HIVES} · ${q.length} IN THE HIVE`, this.queueX - r, top);
+    const { wasps, hidden, risk } = hiddenRisk(q, window);
+    const meterW = 220;
+    const mx = w - 40 - meterW;
+    const label = hidden === 0 ? "NOTHING HIDDEN" : `${wasps} WASP${wasps === 1 ? "" : "S"} IN ${hidden} HIDDEN`;
+    g.textAlign = "right";
+    g.fillStyle = risk >= 0.34 ? DANGER : risk > 0 ? WASP_YELLOW : "rgba(244,247,251,0.55)";
+    g.font = `700 24px ${FONT}`;
+    g.fillText(label, w - 40, top - 12);
+    g.fillStyle = "rgba(7,11,20,0.55)";
+    g.fillRect(mx, top - 8, meterW, 6);
+    const pulse = risk >= 0.34 ? 0.8 + Math.sin(this.time * 10) * 0.2 : 1;
+    g.globalAlpha = pulse;
+    g.fillStyle = risk >= 0.34 ? DANGER : risk >= 0.18 ? WASP_YELLOW : LIME;
+    g.fillRect(mx, top - 8, meterW * Math.min(1, risk * 2), 6);
     g.restore();
   }
 
   private drawItem(g: CanvasRenderingContext2D, item: Item, x: number, y: number, r: number): void {
-    if (item.kind === "honey") this.drawHoney(g, x, y, r, item.value);
-    else this.drawWasp(g, x, y, r);
+    if (item.kind === "honey") {
+      this.drawHoney(g, x, y, r, item.value);
+      if (item.crown) this.drawCrown(g, x, y - r * 1.35, r * 0.5);
+    } else this.drawWasp(g, x, y, r);
   }
 
   private drawHoney(g: CanvasRenderingContext2D, x: number, y: number, r: number, value: number): void {
@@ -489,9 +768,11 @@ class HiveHeist implements GameInstance {
   private drawBear(g: CanvasRenderingContext2D): void {
     const s = this.bearScale();
     const open = this.chomp;
+    const worried = this.phase === "cornered" || this.stingFlash > 0.4;
     g.save();
     g.translate(this.bearX, this.laneY - open * 6 * s);
-    g.scale(s, s);
+    // Squash on the chomp.
+    g.scale(s * (1 + open * 0.08), s * (1 - open * 0.08));
     const fur = "#7a4a22";
     const muzzle = "#c9955a";
     // Body.
@@ -524,10 +805,11 @@ class HiveHeist implements GameInstance {
     g.beginPath();
     g.ellipse(22, 16, 38, 30, 0, 0, Math.PI * 2);
     g.fill();
-    // Mouth opens on a chomp.
+    // Mouth opens on a chomp, puckers when worried.
     g.fillStyle = "#2a0e0e";
     g.beginPath();
-    g.ellipse(30, 28, 16 + open * 8, 4 + open * 18, 0, 0, Math.PI * 2);
+    if (worried) g.ellipse(30, 30, 8, 9, 0, 0, Math.PI * 2);
+    else g.ellipse(30, 28, 16 + open * 8, 4 + open * 18, 0, 0, Math.PI * 2);
     g.fill();
     if (open > 0.3) {
       g.fillStyle = PALE;
@@ -539,15 +821,15 @@ class HiveHeist implements GameInstance {
     g.beginPath();
     g.ellipse(40, 2, 12, 8, 0, 0, Math.PI * 2);
     g.fill();
-    // Eyes.
+    // Eyes (wide when worried).
     for (const ex of [-14, 24]) {
       g.fillStyle = "#1a0d08";
       g.beginPath();
-      g.arc(ex, -26, 6.5, 0, Math.PI * 2);
+      g.arc(ex, -26, worried ? 8.5 : 6.5, 0, Math.PI * 2);
       g.fill();
       g.fillStyle = PALE;
       g.beginPath();
-      g.arc(ex + 2, -28, 2, 0, Math.PI * 2);
+      g.arc(ex + 2, -28, worried ? 3 : 2, 0, Math.PI * 2);
       g.fill();
     }
     g.restore();
@@ -559,7 +841,7 @@ class HiveHeist implements GameInstance {
       const e = 1 - (1 - t) * (1 - t);
       const x = f.x0 + (f.x1 - f.x0) * e;
       const y = f.y0 + (f.y1 - f.y0) * e - Math.sin(t * Math.PI) * 90;
-      const r = this.cell * 0.3 * (1 - t * 0.5);
+      const r = this.cell * 0.3 * (f.release ? 1 : 1 - t * 0.5);
       this.drawItem(g, f.item, x, y, r);
     }
   }
@@ -568,7 +850,7 @@ class HiveHeist implements GameInstance {
     const n = this.seats.length;
     const gap = 12;
     const cw = (this.ctx.width - 80 - (n - 1) * gap) / n;
-    return { x: 40 + i * (cw + gap), y: 38, w: cw, h: 72 };
+    return { x: 40 + i * (cw + gap), y: 36, w: cw, h: this.cardH };
   }
 
   private cardCenter(i: number): { x: number; y: number } {
@@ -577,13 +859,22 @@ class HiveHeist implements GameInstance {
   }
 
   private drawScoreboard(g: CanvasRenderingContext2D): void {
+    const four = this.seats.length >= 4;
     g.save();
     for (let i = 0; i < this.seats.length; i++) {
       const s = this.seats[i]!;
       const c = this.cardRect(i);
       const isActive = this.activeSeat() === s;
-      const out = this.hive.out[i] ?? false;
-      g.globalAlpha = out && !isActive ? 0.5 : 1;
+      const status = this.hive.status[i] ?? "in";
+      const paws = this.hive.paws[i] ?? 0;
+      const ready = this.hiveLive() && canRelease(this.hive, i);
+      const held = [...this.pressed.values()].includes(`card${i}`);
+      const pop = 1 + s.pop * 0.06 - (held ? 0.03 : 0);
+      g.save();
+      g.translate(c.x + c.w / 2, c.y + c.h / 2);
+      g.scale(pop, pop);
+      g.translate(-(c.x + c.w / 2), -(c.y + c.h / 2));
+      g.globalAlpha = status !== "in" && !ready ? 0.6 : 1;
       g.fillStyle = "rgba(7,11,20,0.6)";
       this.roundRect(g, c.x, c.y, c.w, c.h, 14);
       g.fill();
@@ -592,19 +883,59 @@ class HiveHeist implements GameInstance {
         g.lineWidth = 4 + Math.sin(this.time * 8) * 1.5;
         this.roundRect(g, c.x, c.y, c.w, c.h, 14);
         g.stroke();
+      } else if (ready) {
+        g.strokeStyle = WASP_YELLOW;
+        g.lineWidth = 3 + Math.sin(this.time * 6) * 1;
+        this.roundRect(g, c.x, c.y, c.w, c.h, 14);
+        g.stroke();
       }
       g.textBaseline = "middle";
       g.textAlign = "left";
       g.fillStyle = s.player.color;
-      g.font = `700 28px ${FONT}`;
-      g.fillText(s.player.name, c.x + 16, c.y + 24);
-      g.fillStyle = "rgba(244,247,251,0.6)";
-      g.font = `700 18px ${FONT}`;
-      g.fillText(out ? "OUT OF THIS HIVE" : s.stings > 0 ? `STINGS ${s.stings}` : "", c.x + 16, c.y + 52);
+      g.font = `700 ${four ? 24 : 28}px ${FONT}`;
+      g.fillText(s.player.name, c.x + 14, c.y + 22);
+      if (i === this.underdogSeat && this.phase !== "hiveEnd") {
+        const nx = c.x + 14 + g.measureText(s.player.name).width + 10;
+        g.fillStyle = "rgba(244,247,251,0.75)";
+        g.font = `700 14px ${FONT}`;
+        g.fillText("UNDERDOG", nx, c.y + 23);
+      }
+      // Second line: paws in the hive, or the swarm state.
+      const ly = c.y + c.h - 24;
+      g.font = `700 ${four ? 17 : 19}px ${FONT}`;
+      if (status === "in") {
+        if (paws > 0) {
+          const hot = paws >= 8;
+          const scale = hot ? 1 + Math.sin(this.time * 9) * 0.05 : 1;
+          const text = `${paws} IN PAWS`;
+          const tw = g.measureText(text).width + 20;
+          g.save();
+          g.translate(c.x + 14 + tw / 2, ly);
+          g.scale(scale, scale);
+          g.fillStyle = hot ? DANGER : HONEY;
+          this.roundRect(g, -tw / 2, -13, tw, 26, 13);
+          g.fill();
+          g.fillStyle = INK;
+          g.textAlign = "center";
+          g.fillText(text, 0, 1);
+          g.restore();
+        } else {
+          g.fillStyle = "rgba(244,247,251,0.5)";
+          g.fillText("EMPTY PAWS", c.x + 14, ly);
+        }
+      } else if (ready) {
+        this.drawWasp(g, c.x + 26, ly, 9);
+        g.fillStyle = WASP_YELLOW;
+        g.fillText(s.player.kind === "human" ? "TAP: RELEASE WASP" : "WASP READY", c.x + 46, ly);
+      } else {
+        g.fillStyle = status === "stung" ? DANGER : LIME;
+        g.fillText(status === "stung" ? "STUNG · IN THE SWARM" : "BANKED · IN THE SWARM", c.x + 14, ly);
+      }
       g.textAlign = "right";
-      g.fillStyle = s.honey < 0 ? DANGER : HONEY;
-      g.font = `700 44px ${FONT}`;
-      g.fillText(String(s.honey), c.x + c.w - 16, c.y + c.h / 2 + 2);
+      g.fillStyle = HONEY;
+      g.font = `700 ${four ? 40 : 44}px ${FONT}`;
+      g.fillText(String(s.banked), c.x + c.w - 14, c.y + c.h / 2 + 2);
+      g.restore();
     }
     g.restore();
   }
@@ -626,26 +957,42 @@ class HiveHeist implements GameInstance {
   private drawButtons(g: CanvasRenderingContext2D): void {
     const active = this.activeSeat();
     const live = this.phase === "turn" && active !== null && active.player.kind === "human";
+    const paws = this.hive.paws[this.active] ?? 0;
     g.save();
     for (const b of this.buttons) {
-      const can = b.n === 1 || this.hive.queue.length >= 2;
-      const held = [...this.pressed.values()].includes(b.n);
+      const can = b.choice === "take1" || (b.choice === "take2" ? this.hive.queue.length >= 2 : paws > 0);
+      const held = [...this.pressed.values()].includes(b.choice);
       const sc = held ? 0.96 : 1;
+      const bank = b.choice === "bank";
       g.save();
       g.translate(b.x + b.w / 2, b.y + b.h / 2);
       g.scale(sc, sc);
       g.globalAlpha = live && can ? 1 : 0.28;
-      g.fillStyle = active ? active.player.color : "rgba(244,247,251,0.3)";
-      this.roundRect(g, -b.w / 2, -b.h / 2, b.w, b.h, 22);
-      g.fill();
-      g.fillStyle = INK;
+      const color = active ? active.player.color : "rgba(244,247,251,0.3)";
+      if (bank) {
+        g.fillStyle = "rgba(7,11,20,0.55)";
+        this.roundRect(g, -b.w / 2, -b.h / 2, b.w, b.h, 22);
+        g.fill();
+        g.strokeStyle = HONEY;
+        g.lineWidth = 5;
+        this.roundRect(g, -b.w / 2 + 3, -b.h / 2 + 3, b.w - 6, b.h - 6, 20);
+        g.stroke();
+        g.fillStyle = HONEY;
+      } else {
+        g.fillStyle = color;
+        this.roundRect(g, -b.w / 2, -b.h / 2, b.w, b.h, 22);
+        g.fill();
+        g.fillStyle = INK;
+      }
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.font = `700 ${Math.round(b.h * 0.46)}px ${FONT}`;
-      g.fillText(`TAKE ${b.n}`, 0, -b.h * 0.08);
-      g.font = `700 ${Math.round(b.h * 0.16)}px ${FONT}`;
-      g.globalAlpha *= 0.7;
-      g.fillText(b.n === 1 ? "THE NEXT ONE" : "THE NEXT TWO", 0, b.h * 0.26);
+      g.font = `700 ${Math.round(b.h * 0.44)}px ${FONT}`;
+      const title = b.choice === "take1" ? "TAKE 1" : b.choice === "take2" ? "TAKE 2" : `BANK ${paws}`;
+      g.fillText(title, 0, -b.h * 0.08);
+      g.font = `700 ${Math.round(b.h * 0.15)}px ${FONT}`;
+      g.globalAlpha *= 0.75;
+      const sub = b.choice === "take1" ? "THE NEXT ONE" : b.choice === "take2" ? "THE NEXT TWO" : "LEAVE WITH YOUR PAWS";
+      g.fillText(sub, 0, b.h * 0.26);
       g.restore();
     }
     g.restore();
@@ -657,31 +1004,34 @@ class HiveHeist implements GameInstance {
     let text = "";
     let color = PALE;
     if (this.phase === "turn" && active) {
-      text = active.player.kind === "human" ? `${active.player.name}: TAKE 1 OR 2?` : `${active.player.name} IS COUNTING...`;
+      text = active.player.kind === "human" ? `${active.player.name}: BITE OR BANK?` : `${active.player.name} IS COUNTING...`;
       color = active.player.color;
+    } else if (this.phase === "cornered" && active) {
+      text = "A WASP IN FRONT: NO WAY OUT";
+      color = DANGER;
     } else if (this.phase === "chomp") {
       text = this.lastLine;
-      color = active ? active.player.color : PALE;
+      color = this.lastColor;
     }
     if (!text) return;
     g.save();
-    g.font = `700 40px ${FONT}`;
+    g.font = `700 38px ${FONT}`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.lineWidth = 8;
     g.strokeStyle = "rgba(7,11,20,0.8)";
-    g.strokeText(text, w / 2, h * 0.63);
+    g.strokeText(text, w / 2, h * 0.635);
     g.fillStyle = color;
-    g.fillText(text, w / 2, h * 0.63);
+    g.fillText(text, w / 2, h * 0.635);
     g.restore();
   }
 
   private drawFloaters(g: CanvasRenderingContext2D): void {
     g.save();
-    g.font = `700 40px ${FONT}`;
     g.textAlign = "center";
     g.textBaseline = "middle";
     for (const fl of this.floaters) {
+      g.font = `700 ${fl.size}px ${FONT}`;
       g.globalAlpha = Math.min(1, fl.life / 0.4);
       g.lineWidth = 6;
       g.strokeStyle = "rgba(7,11,20,0.8)";
@@ -697,11 +1047,11 @@ class HiveHeist implements GameInstance {
   }
 
   getScores(): { playerId: string; score: number }[] {
-    return this.seats.map((s) => ({ playerId: s.player.id, score: s.honey }));
+    return this.seats.map((s) => ({ playerId: s.player.id, score: s.banked }));
   }
 
   getStats(): GameStat[] {
-    return this.seats.map((s) => ({ playerId: s.player.id, label: "Stings", value: String(s.stings) }));
+    return this.seats.map((s) => ({ playerId: s.player.id, label: "Best haul", value: String(s.bestHaul) }));
   }
 
   destroy(): void {
