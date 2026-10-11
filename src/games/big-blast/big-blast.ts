@@ -1,45 +1,65 @@
 import { fillArena } from "../../core/draw";
-import { Callouts, Juice } from "../../fx/juice";
+import { Callouts, Juice, saveBest } from "../../fx/juice";
 import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
 import {
-  blowUp, FUSE_MS, matchOver, newMatch, planBotPress, press, PLUNGERS, randomPlunger, scores,
-  survivors, tension, TURN_MS, unpressed, type BotPlan, type MatchState,
+  AGAIN_MS, blowUp, BOMBS, botJinxChance, bounty, canJinx, FUSE_MS, isFinalBomb, matchOver, newMatch,
+  planBotAgain, planBotPress, press, PLUNGERS, randomPlunger, scores, stop, SURVIVE_BONUS, tension, TURN_MS,
+  underdogs, unpressed, useJinx, FINAL_MULT, type BotPlan, type MatchState,
 } from "./logic";
 
 export const bigBlast: GameDefinition = {
   id: "big-blast",
   name: "Big Blast",
-  tagline: "Five plungers. One goes KABOOM.",
+  tagline: "Press again, bank it, or get JINXED.",
   description:
-    "A giant bomb, five detonator plungers, one of them live. Take turns pressing a plunger: a dud " +
-    "clicks and passes the turn, the live one blows you up and out. Survivors get a fresh bomb. " +
-    "Last one standing wins. Pure luck, pure sweat.",
+    "A giant bomb, five plungers, one of them live. Every dud you press pays a bounty that climbs " +
+    "with the danger, but it only counts once the bomb goes off: get toasted and your stake burns. " +
+    "After each dud choose: press AGAIN for more, or STOP and hand the hot seat on. Whoever got " +
+    "toasted last holds a JINX that cancels one STOP. Four bombs, the last pays double. Most coins wins.",
   durationMs: 0,
-  controls: "On your turn, tap any un-pressed plunger. 4s or it's picked for you.",
+  controls: "On your turn tap a plunger. After a dud: tap another, or STOP. Hold the JINX? Tap it when someone stops.",
   create: (ctx) => new BigBlast(ctx),
 };
 
 const FONT = "Bebas Neue, Impact, sans-serif";
-const INTRO_S = 1.3;
-const PHEW_S = 0.75;
-const RESULT_S = 2.2;
-const FINAL_S = 2.2;
+const INTRO_S = 1.4;
+const STOP_S = 1.0;
+const RESULT_S = 2.0;
+const FINAL_S = 2.4;
+const BEST_VERSION = "v2";
+const GOLD = "#FFD84D";
+const JINX = "#C084FC";
+const DANGER = "#FF3D7A";
 const BOOM_COLORS = ["#FFE14D", "#FFB020", "#FF5A1F", "#ffffff"] as const;
+const GUTS_TAUNTS = ["GUTS!", "NO FEAR", "WATCH THIS", "EASY MONEY", "ONE MORE"] as const;
+const STOP_TAUNTS = ["YOUR PROBLEM NOW", "I'M GOOD", "ENJOY!", "NOPE"] as const;
 
-type Phase = "intro" | "turn" | "phew" | "fuse" | "boom" | "final";
+type Phase = "intro" | "turn" | "stopping" | "fuse" | "boom" | "final";
 
 interface Seat {
   player: Player;
   index: number;
+  /** Bot greed, 0 timid .. 1 reckless. */
+  nerve: number;
 }
 
 interface Plunger {
   x: number;
   y: number;
-  /** 0 = up, 1 = fully sunk. */
-  sink: number;
   wobble: number;
 }
+
+interface Floater {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  life: number;
+  maxLife: number;
+  size: number;
+}
+
+interface Box { x: number; y: number; w: number; h: number }
 
 class BigBlast implements GameInstance {
   private readonly seats: Seat[];
@@ -52,7 +72,11 @@ class BigBlast implements GameInstance {
   private time = 0;
   private finished = false;
   private plungers: Plunger[] = [];
+  private floaters: Floater[] = [];
   private botPlan: BotPlan | null = null;
+  private botStopAt: number | null = null;
+  private botTauntAt: number | null = null;
+  private botJinxAt: number | null = null;
   private hoverDone = 0;
   private cursor = { x: 0, y: 0, tx: 0, ty: 0, press: 0, shown: false };
   private flash = 0;
@@ -63,29 +87,40 @@ class BigBlast implements GameInstance {
   private sparkT = 0;
   private exploded = false;
   private victim: number | null = null;
-  /** Seat shown as "current" during the phew beat (the turn has already passed on). */
-  private presser = 0;
+  private stopper = 0;
+  /** Jinxed: the current seat must press again and cannot stop. */
+  private mustPress = false;
+  private jinxFlash = 0;
+  private taunt: { text: string; color: string; life: number } | null = null;
+  private newBest = new Set<number>();
   private readonly s: number;
   private readonly bombX: number;
   private readonly bombY: number;
   private readonly bombR: number;
   private readonly slotW: number;
   private readonly rowY: number;
+  private readonly stopBox: Box;
+  private readonly jinxBox: Box;
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice(() => ctx.rng.next());
-    this.seats = ctx.players.map((player, index) => ({ player, index }));
+    this.seats = ctx.players.map((player, index) => ({ player, index, nerve: ctx.rng.float(0.15, 0.95) }));
     this.match = newMatch(this.seats.length, ctx.rng);
     this.s = Math.min(1, ctx.height / 720);
+    const s = this.s;
     this.bombX = ctx.width / 2;
-    this.bombY = ctx.height * 0.4;
-    this.bombR = 125 * this.s;
-    this.slotW = Math.min(210 * this.s, ctx.width / 5.4);
+    this.bombY = ctx.height * 0.37;
+    this.bombR = 108 * s;
+    this.slotW = Math.min(210 * s, ctx.width / 5.4);
     this.rowY = ctx.height * 0.82;
+    const bw = Math.max(ctx.minTap * 3, 230 * s);
+    const bh = Math.max(ctx.minTap * 1.5, 84 * s);
+    this.stopBox = { x: ctx.width * 0.81 - bw / 2, y: this.bombY + 30 * s, w: bw, h: bh };
+    this.jinxBox = { x: ctx.width * 0.81 - bw / 2, y: this.bombY + 30 * s, w: bw, h: bh };
     this.buildPlungers();
     this.cursor.x = this.cursor.tx = this.bombX;
-    this.cursor.y = this.cursor.ty = this.rowY - 160 * this.s;
-    this.callouts.show(`BOMB ${this.match.round}`, "#F4F7FB", { size: 80, life: INTRO_S, y: 0.3 });
+    this.cursor.y = this.cursor.ty = this.rowY - 160 * s;
+    this.showIntro();
     const c = ctx.canvas;
     c.style.touchAction = "none";
     c.addEventListener("pointerdown", this.onDown);
@@ -94,7 +129,7 @@ class BigBlast implements GameInstance {
   private buildPlungers(): void {
     this.plungers = [];
     for (let i = 0; i < PLUNGERS; i++) {
-      this.plungers.push({ x: this.bombX + (i - (PLUNGERS - 1) / 2) * this.slotW, y: this.rowY, sink: 0, wobble: 0 });
+      this.plungers.push({ x: this.bombX + (i - (PLUNGERS - 1) / 2) * this.slotW, y: this.rowY, wobble: 0 });
     }
   }
 
@@ -102,19 +137,44 @@ class BigBlast implements GameInstance {
     return this.seats[this.match.turn]!;
   }
 
-  /** Seat the screen is framed for: the presser while a dud or boom plays out, else whose turn it is. */
+  /** Seat the screen is framed for. */
   private get shown(): Seat {
-    const i = this.phase === "phew" ? this.presser : this.phase === "boom" || this.phase === "fuse" ? (this.victim ?? this.presser) : this.match.turn;
+    const i = this.phase === "stopping" ? this.stopper
+      : this.phase === "boom" || this.phase === "fuse" ? (this.victim ?? this.match.turn)
+      : this.match.turn;
     return this.seats[i]!;
   }
 
+  private get jinxHolder(): Seat | null {
+    const j = this.match.jinx;
+    return j === null ? null : (this.seats[j] ?? null);
+  }
+
   // ---- flow ----------------------------------------------------------------
+
+  private showIntro(): void {
+    const m = this.match;
+    if (isFinalBomb(m)) {
+      this.callouts.show("FINAL BOMB", DANGER, { size: 92, life: INTRO_S, y: 0.28 });
+      this.callouts.show("DOUBLE STAKES!", GOLD, { size: 50, life: INTRO_S, y: 0.42 });
+    } else {
+      this.callouts.show(`BOMB ${m.round} OF ${BOMBS}`, "#F4F7FB", { size: 84, life: INTRO_S, y: 0.3 });
+    }
+    const holder = this.jinxHolder;
+    if (holder) {
+      this.callouts.show(`${holder.player.name.toUpperCase()} HOLDS THE JINX`, JINX, { size: 36, life: INTRO_S, y: 0.56 });
+    }
+  }
 
   private startTurn(): void {
     this.phase = "turn";
     this.turnT = 0;
     this.hoverDone = 0;
     this.botPlan = null;
+    this.botStopAt = null;
+    this.botTauntAt = null;
+    this.mustPress = false;
+    this.taunt = null;
     this.cursor.shown = false;
     this.cursor.press = 0;
     const seat = this.active;
@@ -124,34 +184,44 @@ class BigBlast implements GameInstance {
       this.cursor.x = this.cursor.tx = this.bombX + (this.ctx.rng.next() - 0.5) * 200 * this.s;
       this.cursor.y = this.cursor.ty = this.rowY - 220 * this.s;
     }
+    if (unpressed(this.match.bomb).length === 1) {
+      this.callouts.show("NO ESCAPE!", DANGER, { size: 64, life: 1.1, y: 0.56 });
+    }
     this.ctx.sfx.select();
   }
 
   private pressPlunger(plunger: number, forced = false): void {
     if (this.phase !== "turn") return;
     const seat = this.active;
+    const open = unpressed(this.match.bomb).length;
+    const pay = bounty(this.match, seat.index);
     const res = press(this.match, seat.index, plunger);
     if (res === "ignored") return;
-    this.presser = seat.index;
     const p = this.plungers[plunger]!;
-    p.sink = 1;
     this.cursor.press = 1;
     this.cursor.tx = p.x;
     this.cursor.ty = p.y - 110 * this.s;
-    this.ctx.sfx.select();
     this.juice.burst(p.x, p.y - 70 * this.s, [seat.player.color, "#F4F7FB"], {
       count: 8, speed: 160, gravity: 500, size: 4, life: 0.4, angle: -Math.PI / 2, spread: 1.6,
     });
-    if (forced) this.callouts.show("TIME'S UP!", "#FF3D7A", { size: 48, life: 0.9, y: 0.55 });
+    if (forced) this.callouts.show("TIME'S UP!", DANGER, { size: 48, life: 0.9, y: 0.56 });
 
     if (res === "dud") {
-      this.phase = "phew";
-      this.timer = PHEW_S;
-      this.juice.shake(0.12);
-      this.ctx.sfx.tick();
-      // Fuse crackle.
+      const chain = this.match.chain;
+      this.juice.shake(0.1 + Math.min(0.2, chain * 0.05));
+      this.ctx.sfx.streak(chain);
       this.sparkBurst(14, 260);
-      this.callouts.show("phew...", seat.player.color, { size: 40, life: PHEW_S, y: 0.6 });
+      this.floaters.push({
+        x: p.x, y: p.y - 150 * this.s, text: `+${pay.total}`, color: GOLD, life: 1.1, maxLife: 1.1, size: 44 * this.s,
+      });
+      if (open === 2) this.callouts.show("SO CLOSE!", GOLD, { size: 60, life: 0.9, y: 0.56 });
+      else if (chain >= 2) this.callouts.show(`CHAIN x${chain}`, seat.player.color, { size: 48, life: 0.8, y: 0.56 });
+      this.turnT = 0;
+      this.mustPress = false;
+      this.botPlan = null;
+      this.hoverDone = 0;
+      if (seat.player.kind === "bot") this.planBotAfterDud(seat);
+      else if (unpressed(this.match.bomb).length === 1) this.autoStop();
     } else {
       this.phase = "fuse";
       this.timer = FUSE_MS / 1000;
@@ -162,8 +232,83 @@ class BigBlast implements GameInstance {
     }
   }
 
+  /** A human who leaves exactly one plunger has nothing to decide: bank at once. */
+  private autoStop(): void {
+    this.doStop();
+  }
+
+  private planBotAfterDud(seat: Seat): void {
+    const open = unpressed(this.match.bomb).length;
+    const decide = planBotAgain(this.match, seat.index, seat.nerve, this.ctx.rng);
+    if (decide.again) {
+      const plan = planBotPress(this.match.bomb, this.ctx.rng, 0.35);
+      plan.atMs += decide.atMs;
+      for (const h of plan.hovers) h.atMs += decide.atMs;
+      this.botPlan = plan;
+      if (open <= 3) this.botTauntAt = decide.atMs;
+    } else {
+      this.botStopAt = decide.atMs;
+      if (open <= 2) this.botTauntAt = decide.atMs - 150;
+    }
+  }
+
+  private doStop(): void {
+    if (this.phase !== "turn" || this.match.chain === 0 || this.mustPress) return;
+    const seat = this.active;
+    this.stopper = seat.index;
+    this.phase = "stopping";
+    this.timer = STOP_S;
+    this.botJinxAt = null;
+    this.cursor.shown = false;
+    this.ctx.sfx.collect();
+    this.callouts.show(`${seat.player.name.toUpperCase()} STOPS`, seat.player.color, { size: 50, life: STOP_S, y: 0.56 });
+    const holder = this.jinxHolder;
+    if (holder && holder.player.kind === "bot" && canJinx(this.match, holder.index, seat.index)) {
+      if (this.ctx.rng.next() < botJinxChance(this.match, seat.index)) {
+        this.botJinxAt = this.ctx.rng.float(0.25, 0.65);
+      }
+    }
+  }
+
+  private finishStop(): void {
+    stop(this.match, this.stopper);
+    this.startTurn();
+  }
+
+  private castJinx(holder: Seat): void {
+    if (this.phase !== "stopping") return;
+    if (!useJinx(this.match, holder.index, this.stopper)) return;
+    const seat = this.seats[this.stopper]!;
+    this.phase = "turn";
+    this.turnT = 0;
+    this.mustPress = true;
+    this.botPlan = null;
+    this.botStopAt = null;
+    this.botTauntAt = null;
+    this.hoverDone = 0;
+    this.jinxFlash = 1;
+    this.juice.shake(0.35);
+    this.juice.hitStop(0.08);
+    this.ctx.sfx.miss();
+    this.ctx.sfx.whoosh();
+    this.juice.burst(this.bombX, this.bombY, [JINX, "#ffffff"], { count: 40, speed: 500, gravity: 200, size: 7, life: 0.8 });
+    this.callouts.show("JINXED!", JINX, { size: 110, life: 1.0, y: 0.36 });
+    this.callouts.show(`${holder.player.name.toUpperCase()}: PRESS AGAIN, ${seat.player.name.toUpperCase()}!`, JINX, {
+      size: 40, life: 1.3, y: 0.56,
+    });
+    if (seat.player.kind === "bot") {
+      const plan = planBotPress(this.match.bomb, this.ctx.rng, 0.3);
+      plan.atMs += 700;
+      for (const h of plan.hovers) h.atMs += 700;
+      this.botPlan = plan;
+      this.cursor.shown = true;
+    }
+  }
+
   private detonate(): void {
     const seat = this.seats[this.victim ?? this.match.turn]!;
+    const m = this.match;
+    const burned = m.stake[seat.index] ?? 0;
     this.phase = "boom";
     this.timer = RESULT_S;
     this.exploded = true;
@@ -178,20 +323,41 @@ class BigBlast implements GameInstance {
     this.ctx.sfx.hit();
     this.ctx.sfx.whoosh();
     this.ctx.sfx.hit();
-    this.callouts.show("KABOOM!", "#FFB020", { size: 150, life: 1.1, y: 0.4 });
-    this.callouts.show(`${seat.player.name} IS TOAST!`, seat.player.color, { size: 60, life: RESULT_S, y: 0.62 });
-    blowUp(this.match, seat.index, this.ctx.rng);
+    this.callouts.show("KABOOM!", "#FFB020", { size: 150, life: 1.1, y: 0.38 });
+    this.callouts.show(`${seat.player.name.toUpperCase()} IS TOAST!`, seat.player.color, { size: 60, life: RESULT_S, y: 0.58 });
+    if (burned > 0) {
+      this.callouts.show(`STAKE BURNED  -${burned}`, DANGER, { size: 40, life: RESULT_S, y: 0.68 });
+    }
+    const bonus = SURVIVE_BONUS * (isFinalBomb(m) ? FINAL_MULT : 1);
+    for (const other of this.seats) {
+      if (other.index === seat.index) continue;
+      const gain = (m.stake[other.index] ?? 0) + bonus;
+      const pos = this.orbPos(other.index);
+      this.floaters.push({ x: pos.x, y: pos.y + 40 * this.s, text: `+${gain}`, color: GOLD, life: 1.6, maxLife: 1.6, size: 34 * this.s });
+    }
+    blowUp(m, seat.index, this.ctx.rng);
   }
 
   private afterBoom(): void {
     if (matchOver(this.match)) {
       this.phase = "final";
       this.timer = FINAL_S + RESULT_S;
-      const left = survivors(this.match);
-      const winner = left.length === 1 ? this.seats[left[0]!] : null;
-      this.callouts.show(winner ? `${winner.player.name} WINS!` : "NOBODY WINS", winner?.player.color ?? "#F4F7FB", {
+      const sc = scores(this.match);
+      const top = Math.max(...sc);
+      const winners = this.seats.filter((seat) => sc[seat.index] === top);
+      const winner = winners.length === 1 ? winners[0]! : null;
+      this.callouts.show(winner ? `${winner.player.name.toUpperCase()} WINS!` : "IT'S A TIE!", winner?.player.color ?? "#F4F7FB", {
         size: 84, life: FINAL_S + RESULT_S, y: 0.3,
       });
+      this.callouts.show(`${top} COINS`, GOLD, { size: 48, life: FINAL_S + RESULT_S, y: 0.44 });
+      for (const seat of this.seats) {
+        if (seat.player.kind !== "human") continue;
+        const coins = sc[seat.index] ?? 0;
+        if (coins > 0 && saveBest(bigBlast.id, coins, BEST_VERSION)) {
+          this.newBest.add(seat.index);
+          this.callouts.show(`NEW RECORD ${seat.player.name.toUpperCase()}: ${coins}`, "#B8FF3D", { size: 40, life: FINAL_S + RESULT_S, y: 0.58 });
+        }
+      }
       this.ctx.sfx.win();
       return;
     }
@@ -200,7 +366,7 @@ class BigBlast implements GameInstance {
     this.buildPlungers();
     this.phase = "intro";
     this.timer = INTRO_S;
-    this.callouts.show(`BOMB ${this.match.round}`, "#F4F7FB", { size: 80, life: INTRO_S, y: 0.3 });
+    this.showIntro();
     this.ctx.sfx.countdown();
   }
 
@@ -221,9 +387,15 @@ class BigBlast implements GameInstance {
       case "turn":
         this.stepTurn(dt);
         return;
-      case "phew":
+      case "stopping":
         this.timer -= dt;
-        if (this.timer <= 0) this.startTurn();
+        if (this.botJinxAt !== null && STOP_S - this.timer >= this.botJinxAt) {
+          this.botJinxAt = null;
+          const holder = this.jinxHolder;
+          if (holder) this.castJinx(holder);
+          return;
+        }
+        if (this.timer <= 0) this.finishStop();
         return;
       case "fuse":
         this.timer -= dt;
@@ -248,10 +420,26 @@ class BigBlast implements GameInstance {
     }
   }
 
+  private get turnLimit(): number {
+    return this.match.chain > 0 && !this.mustPress ? AGAIN_MS : TURN_MS;
+  }
+
   private stepTurn(dt: number): void {
     this.turnT += dt * 1000;
+    const seat = this.active;
+    if (this.botTauntAt !== null && this.turnT >= this.botTauntAt) {
+      this.botTauntAt = null;
+      const pool = this.botStopAt !== null ? STOP_TAUNTS : GUTS_TAUNTS;
+      this.taunt = { text: `"${this.ctx.rng.pick(pool)}"`, color: seat.player.color, life: 1.6 };
+    }
+    if (this.botStopAt !== null && this.turnT >= this.botStopAt) {
+      this.botStopAt = null;
+      this.doStop();
+      return;
+    }
     const plan = this.botPlan;
     if (plan) {
+      this.cursor.shown = true;
       while (this.hoverDone < plan.hovers.length && this.turnT >= plan.hovers[this.hoverDone]!.atMs) {
         const h = plan.hovers[this.hoverDone]!;
         this.hoverDone += 1;
@@ -271,22 +459,29 @@ class BigBlast implements GameInstance {
         this.cursor.ty = p.y - 130 * this.s;
       }
     }
-    if (this.turnT >= TURN_MS) this.pressPlunger(randomPlunger(this.match.bomb, this.ctx.rng), true);
+    if (this.turnT >= this.turnLimit) {
+      if (this.match.chain > 0 && !this.mustPress) this.doStop();
+      else this.pressPlunger(randomPlunger(this.match.bomb, this.ctx.rng), true);
+    }
   }
 
   private stepProps(dt: number): void {
     this.flash = Math.max(0, this.flash - dt * 2.2);
+    this.jinxFlash = Math.max(0, this.jinxFlash - dt * 1.6);
     const c = this.cursor;
     const k = Math.min(1, dt * 9);
     c.x += (c.tx - c.x) * k;
     c.y += (c.ty - c.y) * k;
     c.press = Math.max(0, c.press - dt * 3);
     for (const p of this.plungers) p.wobble = Math.max(0, p.wobble - dt * 2.5);
+    for (const f of this.floaters) { f.life -= dt; f.y -= 40 * this.s * dt; }
+    if (this.taunt) { this.taunt.life -= dt; if (this.taunt.life <= 0) this.taunt = null; }
+    this.floaters = this.floaters.filter((f) => f.life > 0);
 
     // Nervous bomb: twitches and sparks more the fewer plungers remain.
     const t = this.exploded ? 0 : tension(this.match.bomb);
     this.twitch = Math.max(0, this.twitch - dt * 6);
-    if (!this.exploded && (this.phase === "turn" || this.phase === "phew")) {
+    if (!this.exploded && (this.phase === "turn" || this.phase === "stopping")) {
       this.twitchT += dt;
       if (this.twitchT >= 1.4 - t * 1.0) {
         this.twitchT = 0;
@@ -325,8 +520,21 @@ class BigBlast implements GameInstance {
   }
 
   private readonly onDown = (e: PointerEvent): void => {
-    if (this.phase !== "turn" || this.active.player.kind !== "human") return;
     const p = this.toLogical(e);
+    if (this.phase === "stopping") {
+      const holder = this.jinxHolder;
+      if (holder && holder.player.kind === "human" && canJinx(this.match, holder.index, this.stopper) && inBox(p, this.jinxBox, this.ctx.minTap)) {
+        e.preventDefault();
+        this.castJinx(holder);
+      }
+      return;
+    }
+    if (this.phase !== "turn" || this.active.player.kind !== "human") return;
+    if (this.match.chain > 0 && !this.mustPress && inBox(p, this.stopBox, this.ctx.minTap)) {
+      e.preventDefault();
+      this.doStop();
+      return;
+    }
     const halfW = Math.max(this.ctx.minTap, this.slotW) / 2;
     const top = this.rowY - Math.max(this.ctx.minTap, 150 * this.s);
     const bottom = this.rowY + 60 * this.s;
@@ -354,8 +562,14 @@ class BigBlast implements GameInstance {
     this.juice.end(g);
     this.drawFrame(g);
     this.drawHud(g);
+    this.drawPanels(g);
+    this.drawFloaters(g);
     if (this.flash > 0) {
       g.fillStyle = `rgba(255,240,200,${Math.min(1, this.flash) * 0.85})`;
+      g.fillRect(0, 0, width, height);
+    }
+    if (this.jinxFlash > 0) {
+      g.fillStyle = `rgba(192,132,252,${Math.min(1, this.jinxFlash) * 0.35})`;
       g.fillRect(0, 0, width, height);
     }
     this.callouts.draw(g, width, height);
@@ -372,6 +586,7 @@ class BigBlast implements GameInstance {
   private drawBomb(g: CanvasRenderingContext2D): void {
     const s = this.s;
     const t = tension(this.match.bomb);
+    const final = isFinalBomb(this.match);
     const scale = 1 + this.swell * 0.35 + (this.phase === "fuse" ? Math.sin(this.time * 60) * 0.03 : 0);
     const jx = this.twitch * (this.ctx.rng.next() - 0.5) * 16 * s;
     const jy = this.twitch * (this.ctx.rng.next() - 0.5) * 10 * s;
@@ -381,17 +596,18 @@ class BigBlast implements GameInstance {
     g.scale(scale, scale);
     const r = this.bombR;
 
-    // Glow builds with tension; red-hot during the fuse.
+    // Glow builds with tension; red-hot during the fuse; angry red on the final bomb.
     const glowA = 0.15 + t * 0.35 + this.swell * 0.5;
-    g.shadowColor = this.phase === "fuse" ? "#FF5A1F" : "#FFB020";
+    const glow = this.phase === "fuse" ? "#FF5A1F" : final ? DANGER : "#FFB020";
+    g.shadowColor = glow;
     g.shadowBlur = (20 + t * 30 + this.swell * 60) * s;
-    g.fillStyle = this.phase === "fuse" ? `rgb(${40 + this.swell * 160},${20 + this.swell * 30},${30})` : "#161a24";
+    g.fillStyle = this.phase === "fuse" ? `rgb(${40 + this.swell * 160},${20 + this.swell * 30},${30})` : final ? "#241018" : "#161a24";
     g.beginPath();
     g.arc(0, 0, r, 0, Math.PI * 2);
     g.fill();
     g.shadowBlur = 0;
     g.globalAlpha = glowA * 0.5;
-    g.fillStyle = "#FFB020";
+    g.fillStyle = glow;
     g.beginPath();
     g.arc(0, 0, r, 0, Math.PI * 2);
     g.fill();
@@ -422,7 +638,8 @@ class BigBlast implements GameInstance {
     g.fill();
     g.shadowBlur = 0;
 
-    // A worried face. Eyes widen as tension climbs.
+    // A worried face. Eyes widen as tension climbs; a wicked grin when jinxing.
+    const grin = this.jinxFlash > 0;
     const ey = -r * 0.1;
     const er = r * (0.09 + t * 0.06);
     g.fillStyle = "#F4F7FB";
@@ -442,6 +659,9 @@ class BigBlast implements GameInstance {
     g.beginPath();
     if (this.phase === "fuse") {
       g.ellipse(0, r * 0.32, r * 0.16, r * (0.1 + this.swell * 0.15), 0, 0, Math.PI * 2);
+    } else if (grin) {
+      g.moveTo(-r * 0.3, r * 0.25);
+      g.quadraticCurveTo(0, r * 0.6, r * 0.3, r * 0.25);
     } else {
       g.moveTo(-r * 0.2, r * 0.35 + t * r * 0.05);
       g.quadraticCurveTo(0, r * (0.2 + t * 0.3), r * 0.2, r * 0.35 + t * r * 0.05);
@@ -470,8 +690,8 @@ class BigBlast implements GameInstance {
     const active = this.active;
     const myTurn = this.phase === "turn";
     const boxW = this.slotW * 0.62;
-    const boxH = 56 * s;
-    const rod = 70 * s;
+    const boxH = 54 * s;
+    const rod = 62 * s;
     for (let i = 0; i < this.plungers.length; i++) {
       const p = this.plungers[i]!;
       const pressed = bomb.pressed[i] ?? false;
@@ -497,7 +717,7 @@ class BigBlast implements GameInstance {
       const rodH = rod * (1 - sink * 0.85);
       g.fillStyle = "#b9bec9";
       g.fillRect(-7 * s, -boxH - rodH, 14 * s, rodH);
-      g.fillStyle = pressed ? "#5a2a2a" : "#c0392b";
+      g.fillStyle = pressed ? "#5a2a2a" : this.mustPress && myTurn ? JINX : "#c0392b";
       const hy = -boxH - rodH - 16 * s;
       g.beginPath();
       g.roundRect(-boxW * 0.42, hy, boxW * 0.84, 18 * s, 8 * s);
@@ -508,7 +728,7 @@ class BigBlast implements GameInstance {
       if (open && myTurn) {
         // Pulsing ring so the live tap targets are obvious.
         const pulse = 0.4 + 0.3 * Math.sin(this.time * 6 + i);
-        g.strokeStyle = active.player.color;
+        g.strokeStyle = this.mustPress ? JINX : active.player.color;
         g.globalAlpha = pulse;
         g.lineWidth = 4 * s;
         g.beginPath();
@@ -559,33 +779,41 @@ class BigBlast implements GameInstance {
     const { width, height } = this.ctx;
     if (this.phase === "intro" || this.phase === "final") return;
     const seat = this.shown;
+    const color = this.mustPress && this.phase === "turn" ? JINX : seat.player.color;
     const pulse = 0.65 + 0.35 * Math.sin(this.time * (this.phase === "fuse" ? 30 : 5));
     g.save();
     g.lineWidth = 22 * this.s;
-    g.strokeStyle = seat.player.color;
-    g.shadowColor = seat.player.color;
+    g.strokeStyle = color;
+    g.shadowColor = color;
     g.shadowBlur = 30 * this.s;
     g.globalAlpha = 0.55 + 0.45 * pulse;
     g.strokeRect(0, 0, width, height);
     g.restore();
     const grad = g.createRadialGradient(width / 2, height / 2, height * 0.3, width / 2, height / 2, height * 0.95);
     grad.addColorStop(0, "rgba(0,0,0,0)");
-    grad.addColorStop(1, hexAlpha(seat.player.color, 0.22 * pulse));
+    grad.addColorStop(1, hexAlpha(color, 0.22 * pulse));
     g.fillStyle = grad;
     g.fillRect(0, 0, width, height);
   }
 
-  private drawHud(g: CanvasRenderingContext2D): void {
-    const { width } = this.ctx;
+  private orbPos(index: number): { x: number; y: number } {
     const s = this.s;
-    // Roster: living players in colour, blown-up ones blackened.
-    const orbR = 26 * s;
+    const orbR = 24 * s;
+    return { x: 30 * s + orbR + index * (orbR * 2 + 54 * s), y: 30 * s + orbR };
+  }
+
+  private drawHud(g: CanvasRenderingContext2D): void {
+    const { width, height } = this.ctx;
+    const s = this.s;
+    const m = this.match;
+    const dogs = underdogs(m);
+    const orbR = 24 * s;
+    const inPlay = this.phase === "turn" || this.phase === "stopping" || this.phase === "fuse";
+    // Roster: orb, banked coins under it, live stake beside it.
     for (const seat of this.seats) {
-      const x = 34 * s + orbR + seat.index * (orbR * 2 + 18 * s);
-      const y = 34 * s + orbR;
-      const alive = this.match.alive[seat.index] ?? false;
+      const { x, y } = this.orbPos(seat.index);
       g.save();
-      if (alive && (this.phase === "turn" || this.phase === "phew" || this.phase === "fuse") && seat.index === this.shown.index) {
+      if (inPlay && seat.index === this.shown.index) {
         g.strokeStyle = "#F4F7FB";
         g.lineWidth = 4 * s;
         g.beginPath();
@@ -594,34 +822,61 @@ class BigBlast implements GameInstance {
       }
       g.beginPath();
       g.arc(x, y, orbR, 0, Math.PI * 2);
-      g.fillStyle = alive ? seat.player.color : "#15161a";
+      g.fillStyle = seat.player.color;
       g.fill();
-      if (!alive) {
-        g.strokeStyle = "#3a3d47";
-        g.lineWidth = 3 * s;
-        g.stroke();
-        g.strokeStyle = "#8a8f9a";
-        g.lineWidth = 4 * s;
-        for (const dx of [-0.4, 0.4]) {
-          g.beginPath();
-          g.moveTo(x + (dx - 0.18) * orbR, y - orbR * 0.4);
-          g.lineTo(x + (dx + 0.18) * orbR, y);
-          g.moveTo(x + (dx + 0.18) * orbR, y - orbR * 0.4);
-          g.lineTo(x + (dx - 0.18) * orbR, y);
-          g.stroke();
-        }
-      } else {
+      g.fillStyle = "#070b14";
+      g.font = `700 ${Math.round(orbR)}px ${FONT}`;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(seat.player.name[0] ?? "?", x, y + 1);
+      // Jinx badge.
+      if (m.jinx === seat.index) {
+        g.fillStyle = JINX;
+        g.beginPath();
+        g.arc(x + orbR * 0.75, y - orbR * 0.75, 11 * s, 0, Math.PI * 2);
+        g.fill();
         g.fillStyle = "#070b14";
-        g.font = `700 ${Math.round(orbR)}px ${FONT}`;
-        g.textAlign = "center";
+        g.font = `700 ${Math.round(14 * s)}px ${FONT}`;
+        g.fillText("J", x + orbR * 0.75, y - orbR * 0.75 + 1);
+      }
+      // Underdog badge.
+      if (dogs.includes(seat.index)) {
+        g.fillStyle = GOLD;
+        g.beginPath();
+        g.arc(x - orbR * 0.75, y - orbR * 0.75, 11 * s, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = "#070b14";
+        g.font = `700 ${Math.round(13 * s)}px ${FONT}`;
+        g.fillText("x2", x - orbR * 0.75, y - orbR * 0.75 + 1);
+      }
+      // Coins and stake.
+      g.font = `700 ${Math.round(24 * s)}px ${FONT}`;
+      g.fillStyle = "#F4F7FB";
+      g.textBaseline = "top";
+      g.fillText(String(m.coins[seat.index] ?? 0), x, y + orbR + 4 * s);
+      const stake = m.stake[seat.index] ?? 0;
+      if (stake > 0) {
+        g.fillStyle = GOLD;
+        g.font = `700 ${Math.round(20 * s)}px ${FONT}`;
+        g.textAlign = "left";
         g.textBaseline = "middle";
-        g.fillText(seat.player.name[0] ?? "?", x, y + 1);
+        g.fillText(`+${stake}`, x + orbR + 6 * s, y);
       }
       g.restore();
     }
 
+    // Bomb counter, bottom right.
+    g.save();
+    g.textAlign = "right";
+    g.textBaseline = "bottom";
+    g.font = `700 ${Math.round(30 * s)}px ${FONT}`;
+    const final = isFinalBomb(m);
+    g.fillStyle = final ? DANGER : "rgba(244,247,251,0.6)";
+    g.fillText(final ? "FINAL BOMB  x2" : `BOMB ${Math.min(m.round, BOMBS)} / ${BOMBS}`, width - 28 * s, height - 18 * s);
+    g.restore();
+
     // Whose turn, and the turn clock.
-    if (this.phase === "turn" || this.phase === "phew" || this.phase === "fuse") {
+    if (inPlay) {
       const seat = this.shown;
       g.save();
       g.textAlign = "center";
@@ -629,32 +884,143 @@ class BigBlast implements GameInstance {
       g.font = `700 ${Math.round(54 * s)}px ${FONT}`;
       g.lineWidth = 8 * s;
       g.strokeStyle = "rgba(7,11,20,0.85)";
-      const label = this.phase === "fuse" ? "UH OH..." : `${seat.player.name.toUpperCase()}'S TURN`;
+      const label = this.phase === "fuse" ? "UH OH..."
+        : this.phase === "stopping" ? `${seat.player.name.toUpperCase()} BANKS`
+        : this.mustPress ? `${seat.player.name.toUpperCase()} IS JINXED`
+        : m.chain > 0 ? `${seat.player.name.toUpperCase()}: AGAIN OR STOP?`
+        : `${possessive(seat.player.name)} TURN`;
       g.strokeText(label, width / 2, 22 * s);
-      g.fillStyle = seat.player.color;
+      g.fillStyle = this.mustPress && this.phase === "turn" ? JINX : seat.player.color;
       g.fillText(label, width / 2, 22 * s);
       if (this.phase === "turn") {
-        const left = Math.max(0, TURN_MS - this.turnT) / TURN_MS;
+        const left = Math.max(0, this.turnLimit - this.turnT) / this.turnLimit;
         const bw = 320 * s;
         const by = 88 * s;
         g.fillStyle = "rgba(7,11,20,0.55)";
         g.fillRect(width / 2 - bw / 2, by, bw, 12 * s);
-        g.fillStyle = left < 0.25 ? "#FF3D7A" : seat.player.color;
+        g.fillStyle = left < 0.25 ? DANGER : seat.player.color;
         g.fillRect(width / 2 - bw / 2, by, bw * left, 12 * s);
         if (seat.player.kind === "human") {
-          g.font = `700 ${Math.round(26 * s)}px ${FONT}`;
-          g.fillStyle = "rgba(244,247,251,0.6)";
-          g.fillText("TAP A PLUNGER", width / 2, by + 20 * s);
+          g.font = `700 ${Math.round(24 * s)}px ${FONT}`;
+          g.fillStyle = "rgba(244,247,251,0.65)";
+          const hint = this.mustPress ? "YOU MUST PRESS A PLUNGER" : m.chain > 0 ? "TAP A PLUNGER, OR STOP TO BANK" : "TAP A PLUNGER";
+          g.fillText(hint, width / 2, by + 20 * s);
         }
       }
-      // Odds readout under the bomb.
-      const open = unpressed(this.match.bomb).length;
-      g.font = `700 ${Math.round(28 * s)}px ${FONT}`;
-      g.fillStyle = open <= 2 ? "#FF3D7A" : "rgba(244,247,251,0.55)";
-      g.textBaseline = "middle";
-      g.fillText(`1 IN ${open} GOES BOOM`, width / 2, this.bombY + this.bombR + 42 * s);
       g.restore();
     }
+  }
+
+  /** Left: what the next dud pays. Right: the current stake plus the STOP / JINX button. */
+  private drawPanels(g: CanvasRenderingContext2D): void {
+    const { width } = this.ctx;
+    const s = this.s;
+    const m = this.match;
+    if (this.phase !== "turn" && this.phase !== "stopping") return;
+    const seat = this.phase === "stopping" ? this.seats[this.stopper]! : this.active;
+    const open = unpressed(m.bomb).length;
+    const pay = bounty(m, seat.index);
+    const lx = width * 0.19;
+    const ly = this.bombY;
+    g.save();
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.lineWidth = 6 * s;
+    g.strokeStyle = "rgba(7,11,20,0.85)";
+    // Left panel.
+    g.font = `700 ${Math.round(26 * s)}px ${FONT}`;
+    g.fillStyle = "rgba(244,247,251,0.6)";
+    g.fillText("NEXT DUD PAYS", lx, ly - 54 * s);
+    g.font = `700 ${Math.round(76 * s)}px ${FONT}`;
+    const payText = open <= 1 ? "BOOM" : `+${pay.total}`;
+    g.strokeText(payText, lx, ly);
+    g.fillStyle = open <= 1 ? DANGER : GOLD;
+    g.fillText(payText, lx, ly);
+    g.font = `700 ${Math.round(28 * s)}px ${FONT}`;
+    g.fillStyle = open <= 2 ? DANGER : "rgba(244,247,251,0.6)";
+    g.fillText(open === 1 ? "NEXT PRESS GOES BOOM" : `1 IN ${open} GOES BOOM`, lx, ly + 54 * s);
+    if (pay.mult > 1 && open > 1) {
+      g.font = `700 ${Math.round(24 * s)}px ${FONT}`;
+      const tags: string[] = [];
+      if (isFinalBomb(m)) tags.push("FINAL x2");
+      if (underdogs(m).includes(seat.index)) tags.push("UNDERDOG x2");
+      g.fillStyle = isFinalBomb(m) ? DANGER : GOLD;
+      g.fillText(tags.join("  "), lx, ly + 88 * s);
+    }
+
+    // Right panel: stake.
+    const rx = width * 0.81;
+    const stake = m.stake[seat.index] ?? 0;
+    g.font = `700 ${Math.round(26 * s)}px ${FONT}`;
+    g.fillStyle = "rgba(244,247,251,0.6)";
+    g.fillText(`${possessive(seat.player.name)} STAKE`, rx, ly - 54 * s);
+    g.font = `700 ${Math.round(56 * s)}px ${FONT}`;
+    g.strokeText(String(stake), rx, ly - 10 * s);
+    g.fillStyle = stake > 0 ? GOLD : "rgba(244,247,251,0.5)";
+    g.fillText(String(stake), rx, ly - 10 * s);
+
+    const holder = this.jinxHolder;
+    if (this.phase === "turn" && m.chain > 0 && !this.mustPress && seat.player.kind === "human") {
+      this.drawButton(g, this.stopBox, seat.player.color, "STOP", `bank +${stake}`, "#070b14");
+    } else if (this.taunt && seat.player.kind === "bot") {
+      g.font = `700 ${Math.round(34 * s)}px ${FONT}`;
+      g.globalAlpha = Math.min(1, this.taunt.life * 2);
+      g.strokeText(this.taunt.text, rx, this.stopBox.y + this.stopBox.h / 2);
+      g.fillStyle = this.taunt.color;
+      g.fillText(this.taunt.text, rx, this.stopBox.y + this.stopBox.h / 2);
+      g.globalAlpha = 1;
+    } else if (this.phase === "turn" && m.chain > 0 && !this.mustPress && seat.player.kind === "bot") {
+      g.font = `700 ${Math.round(24 * s)}px ${FONT}`;
+      g.fillStyle = "rgba(244,247,251,0.5)";
+      g.fillText("THINKING...", rx, this.stopBox.y + this.stopBox.h / 2);
+    } else if (this.phase === "stopping" && holder && canJinx(m, holder.index, this.stopper)) {
+      const human = holder.player.kind === "human";
+      this.drawButton(g, this.jinxBox, JINX, "JINX!", human ? `${holder.player.name}: cancel the stop` : `${holder.player.name} may jinx...`, "#070b14", human);
+    }
+    g.restore();
+  }
+
+  private drawButton(g: CanvasRenderingContext2D, b: Box, color: string, title: string, sub: string, ink: string, pulse = true): void {
+    const s = this.s;
+    const k = pulse ? 1 + 0.03 * Math.sin(this.time * 7) : 1;
+    g.save();
+    g.translate(b.x + b.w / 2, b.y + b.h / 2);
+    g.scale(k, k);
+    g.shadowColor = color;
+    g.shadowBlur = 24 * s;
+    g.fillStyle = color;
+    g.beginPath();
+    g.roundRect(-b.w / 2, -b.h / 2, b.w, b.h, 18 * s);
+    g.fill();
+    g.shadowBlur = 0;
+    g.strokeStyle = "rgba(7,11,20,0.8)";
+    g.lineWidth = 4 * s;
+    g.stroke();
+    g.fillStyle = ink;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.font = `700 ${Math.round(44 * s)}px ${FONT}`;
+    g.fillText(title, 0, -10 * s);
+    g.font = `700 ${Math.round(18 * s)}px ${FONT}`;
+    g.fillText(sub.toUpperCase(), 0, 22 * s);
+    g.restore();
+  }
+
+  private drawFloaters(g: CanvasRenderingContext2D): void {
+    g.save();
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    for (const f of this.floaters) {
+      const t = f.life / f.maxLife;
+      g.globalAlpha = Math.min(1, t * 2);
+      g.font = `700 ${Math.round(f.size)}px ${FONT}`;
+      g.lineWidth = 6 * this.s;
+      g.strokeStyle = "rgba(7,11,20,0.85)";
+      g.strokeText(f.text, f.x, f.y);
+      g.fillStyle = f.color;
+      g.fillText(f.text, f.x, f.y);
+    }
+    g.restore();
   }
 
   // ---- lifecycle -----------------------------------------------------------
@@ -669,16 +1035,29 @@ class BigBlast implements GameInstance {
   }
 
   getStats(): GameStat[] {
-    return this.seats.map((seat) => ({
-      playerId: seat.player.id,
-      label: "Survived blasts",
-      value: String(this.match.survived[seat.index] ?? 0),
-    }));
+    const out: GameStat[] = [];
+    for (const seat of this.seats) {
+      out.push({ playerId: seat.player.id, label: "Longest chain", value: String(this.match.bestChain[seat.index] ?? 0) });
+      out.push({ playerId: seat.player.id, label: "Toasted", value: String(this.match.toasted[seat.index] ?? 0) });
+      if (this.newBest.has(seat.index)) out.push({ playerId: seat.player.id, label: "Record", value: "NEW BEST" });
+    }
+    return out;
   }
 
   destroy(): void {
     this.ctx.canvas.removeEventListener("pointerdown", this.onDown);
   }
+}
+
+function inBox(p: { x: number; y: number }, b: Box, minTap: number): boolean {
+  const padX = Math.max(0, (minTap - b.w) / 2);
+  const padY = Math.max(0, (minTap - b.h) / 2);
+  return p.x >= b.x - padX && p.x <= b.x + b.w + padX && p.y >= b.y - padY && p.y <= b.y + b.h + padY;
+}
+
+/** "BOT 2'S", or "YOUR" for the default human name. */
+function possessive(name: string): string {
+  return name.trim().toLowerCase() === "you" ? "YOUR" : `${name.toUpperCase()}'S`;
 }
 
 /** "#RRGGBB" to "rgba(r,g,b,a)". Non-hex colours pass through unchanged. */
