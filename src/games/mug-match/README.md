@@ -1,0 +1,20 @@
+# Mug Shots (id `mug-match`)
+
+A 2–4 player face-pulling photo booth on one screen. A ridiculous target mug sits in a panel at the top centre; every player gets the same blank mug in their own column underneath, a SNAP button under it, and a tomato.
+
+## Rules
+
+- Each mug has 7 draggable handles: both eyes, both eyebrow ends, both mouth corners and the nose tip. Drag them and the face stretches live, with rubbery lag so the skin wobbles after the handles. Raising the brows makes the eyes bulge; pulling the mouth corners up or down makes a grin or a frown; the head bulges wherever a handle is pushed past the rim.
+- The target is built from 7 parameters (eye spacing, eye height, eye size, mouth width, mouth curve, nose length, eyebrow tilt), randomised each round. No ghost overlay for most players: look at the target panel and eyeball it.
+- **SNAP (the signature twist).** You do not get scored at the buzzer; you get scored when you press SNAP. The **flash bonus** starts at ×2.00 the moment the round opens and drains to ×1.00 at the buzzer (shown live in the top panel and on your button). Round points = match % × flash bonus. A 60% mug snapped with three quarters of the clock left (×1.75 → 105) beats a 95% mug snapped at the buzzer (95). Once you snap, your mug is frozen in a photo frame with its score, and you cannot touch it again. Anyone who has not snapped when the clock hits zero is snapped automatically at ×1.00 ("BUZZER!"). The round ends early as soon as everyone has snapped.
+- **Tomatoes (snapped players stay in the fight).** Snapping frees your hands: you get one tomato per round and a row of opponent chips appears under your photo. Tap a chip and the tomato flies at that face and yanks one of their handles (never one they are holding) in a random direction, with a splat decal; they lose match % until they fix it. A hit on a mug that is still sculpting is worth +10 to the thrower, and gives the victim 2.2 s of immunity (a dashed red ring; their chip greys out) so a four-player table cannot pile onto the last sculptor: a second tomato in that window just bounces off. A hit on an already-snapped mug is just a splat ("TOO LATE"). Bots throw at whoever is still sculpting and looks most dangerous, and fumble about 15% of their throws.
+- **Underdog guide (comeback).** From round 2, whoever is on the lowest total sees faint dotted markers on their own mug showing exactly where the target's handles are. A bot underdog gets the same help as a sharper idea of the target.
+- **Escalation.** Four rounds: ODD (11 s), WEIRD (10 s), ABSURD (9 s) and FINAL (9 s, **double points**). Later rounds push every parameter further from neutral, so the mugs get uglier as the clock gets shorter.
+- Feedback: PERFECT MUG! (≥90% at snap) gets a callout and a bigger shake; 85–89% gets "SO CLOSE!"; bots shout taunts when they snap or throw. Human seats keep a personal best for a single snap ("Best shot", stored under the `v2-shot` key) and get a NEW RECORD callout when they beat it.
+- Highest total wins. Stats: "Best shot" (points from one snap), "Splats" (tomato hits that counted) and the match % of every round.
+- Multi-touch: every handle is tracked by pointer id, so two hands (or two players) can drag at once. Humans only control their own column; tomatoes are thrown from your own column's chips so touch ownership is never ambiguous.
+- Bots drag one handle at a time toward a noisy copy of the target (per-bot error 5–25%), go back to repair anything a tomato knocked, eyeball their own mug with ±8% noise, and press SNAP once it looks good enough for the time left (a per-bot greed setting makes some trigger happy), after a short hesitation. In the last 10% of the clock they can panic-snap.
+
+## Inspired by
+
+The face-pulling idea is inspired by the Face Lift minigame in Nintendo's *Mario Party*. The snap-early flash bonus, the tomatoes for players who have already snapped, the underdog guide and the double-points final are our own; no names, art, code or audio were copied.

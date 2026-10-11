@@ -21,11 +21,19 @@ const DELAY = {
   "tower-topple": 16,
   "quick-draw": 4.2,
   "rope-skip": 6.5,
-  "hot-tiles": 7,
-  "sumo-rings": 9,
-  "mash-dash": 8,
+  "hot-tiles": 9,
+  "sumo-rings": 12,
+  "big-blast": 8,
+  "flag-flash": 8,
+  "hot-potato": 8,
+  "mash-dash": 10,
   "stampede": 12,
-  "slot-cars": 10,
+  "slot-cars": 12,
+  "scribble-race": 9,
+  "mug-match": 8,
+  "ice-luge": 14,
+  "hive-heist": 10,
+  "micro-mayhem": 9,
 };
 
 const browser = await chromium.launch();

@@ -27,9 +27,14 @@ import { sumoRings } from "./sumo-rings/sumo-rings";
 import { stampede } from "./stampede/stampede";
 import { hotTiles } from "./hot-tiles/hot-tiles";
 import { slotCars } from "./slot-cars/slot-cars";
+import { scribbleRace } from "./scribble-race/scribble-race";
+import { mugMatch } from "./mug-match/mug-match";
+import { iceLuge } from "./ice-luge/ice-luge";
+import { hiveHeist } from "./hive-heist/hive-heist";
+import { microMayhem } from "./micro-mayhem/micro-mayhem";
 
 /** Playable games. Add an export here and a card appears on the main menu. */
-export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash, bigBlast, hotPotato, flagFlash, sumoRings, stampede, hotTiles, slotCars];
+export const allGames: GameDefinition[] = [pairs, parrotFlip, castleSiege, luckyDrop, eyeOfTheStorm, bootyHaul, chaosDerby, bugWars, kaboomIsle, fling, whack, flappyRace, connectFour, curveClash, towerTopple, quickDraw, ropeSkip, hungryHoppers, blockBrawl, mashDash, bigBlast, hotPotato, flagFlash, sumoRings, stampede, hotTiles, slotCars, scribbleRace, mugMatch, iceLuge, hiveHeist, microMayhem];
 
 export function createRegistry(): GameRegistry {
   const registry = new GameRegistry();

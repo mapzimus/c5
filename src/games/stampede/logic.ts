@@ -1,17 +1,30 @@
 import type { Rng } from "../../core/rng";
 
-/** Pure rules for Stampede. No canvas, no DOM. Times are seconds from round start. */
+/** Pure rules for Thin Ice Stampede. No canvas, no DOM. Times are seconds from round start. */
 
 export const LANES = 5;
-export const ROUND_S = 45;
-export const WINS_NEEDED = 2;
-export const MAX_ROUNDS = 5;
+export const ROUND_S = 20;
+export const ROUNDS = 3;
 export const HOP_S = 0.15;
 /** Two-lane critters start showing up after this many seconds. */
-export const BIG_AFTER_S = 20;
+export const BIG_AFTER_S = 6;
 /** Stampede walls (one safe lane) start after this many seconds, then repeat every STAMPEDE_GAP_S. */
-export const STAMPEDE_AFTER_S = 30;
-export const STAMPEDE_GAP_S = 7;
+export const STAMPEDE_AFTER_S = 11;
+export const STAMPEDE_GAP_S = 4.5;
+/** The final round starts this far along the difficulty curve (OVERDRIVE). */
+export const OVERDRIVE_S = 6;
+/** Hopping out of a lane this close to impact is a CLOSE call. */
+export const NEAR_S = 0.24;
+export const NEAR_BONUS = 2;
+export const NEAR_STREAK_CAP = 5;
+export const LAST_STANDING_BONUS = 5;
+export const REVENGE_BONUS = 4;
+/** Seconds between a rider's launches. */
+export const RIDER_GAP_S = 4;
+/** Seconds after going out before a seat becomes a rider. */
+export const RIDER_DELAY_S = 1;
+/** Bots start looking for a way off cracking ice at this fraction of the crack limit. */
+export const BOT_CRACK_PANIC = 0.7;
 
 export interface WaveCritter {
   /** Top lane the critter covers. A big critter also covers lane + 1. */
@@ -37,10 +50,16 @@ export interface Difficulty {
 export function difficulty(t: number): Difficulty {
   const p = Math.max(0, Math.min(1, t / ROUND_S));
   return {
-    speed: 310 + 420 * p,
-    interval: 1.5 - 0.85 * p,
-    maxCount: Math.min(LANES - 1, 1 + Math.floor(Math.max(0, t) / 6)),
+    speed: 320 + 440 * p,
+    interval: 1.4 - 0.8 * p,
+    maxCount: Math.min(LANES - 1, 1 + Math.floor(Math.max(0, t) / 4)),
   };
+}
+
+/** Seconds you may stand in one lane before the ice under you gives way. Shrinks over the round. */
+export function crackLimit(t: number): number {
+  const p = Math.max(0, Math.min(1, t / ROUND_S));
+  return 3.2 - 1.2 * p;
 }
 
 export function occupiedLanes(c: WaveCritter): number[] {
@@ -112,10 +131,27 @@ export function arrivalTime(
   return best;
 }
 
+/** True when leaving `lane` right now counts as a CLOSE call: a critter was about to land on you. */
+export function isNearMiss(
+  obs: readonly Obstacle[],
+  lane: number,
+  px: number,
+  pr: number,
+  speed: number,
+): boolean {
+  return arrivalTime(obs, lane, px, pr, speed) < NEAR_S;
+}
+
+/** Points for the n-th close call in a row (streak starts at 1). */
+export function nearMissBonus(streak: number): number {
+  return NEAR_BONUS * Math.min(NEAR_STREAK_CAP, Math.max(1, streak));
+}
+
 /**
  * Bot brain. Looks at the nearest critter in its lane; if it arrives within `threshold`
  * seconds, returns the safest adjacent lane (or a random one `missChance` of the time).
- * Returns null to stay put.
+ * When the ice under it is about to give way (`crackFrac` >= BOT_CRACK_PANIC) it leaves
+ * for whichever neighbour is hit latest, however bad that is. Returns null to stay put.
  */
 export function botDecide(
   lane: number,
@@ -126,11 +162,24 @@ export function botDecide(
   threshold: number,
   rng: Rng,
   missChance = 0.1,
+  crackFrac = 0,
 ): number | null {
-  const here = arrivalTime(obs, lane, px, pr, speed);
-  if (here > threshold) return null;
   const options = [lane - 1, lane + 1].filter((l) => l >= 0 && l < LANES);
   if (options.length === 0) return null;
+  if (crackFrac >= BOT_CRACK_PANIC) {
+    let best = options[0] ?? lane;
+    let bestT = -1;
+    for (const l of options) {
+      const a = arrivalTime(obs, l, px, pr, speed);
+      if (a > bestT) {
+        bestT = a;
+        best = l;
+      }
+    }
+    return best;
+  }
+  const here = arrivalTime(obs, lane, px, pr, speed);
+  if (here > threshold) return null;
   if (rng.next() < missChance) return rng.pick(options);
   let best: number | null = null;
   let bestT = here;
@@ -144,37 +193,57 @@ export function botDecide(
   return best;
 }
 
-export interface SeatState {
-  alive: boolean;
-  /** Round time the player was flattened, or null while standing. */
-  fellAt: number | null;
-}
-
-export function roundOver(seats: readonly SeatState[], timedOut: boolean): boolean {
-  return timedOut || seats.filter((s) => s.alive).length <= 1;
+export interface RiderTarget {
+  lane: number;
+  score: number;
 }
 
 /**
- * Seat indexes that win the round: the last one standing, every survivor at the
- * time limit, or (if everyone fell) whoever fell last. Ties share.
+ * Rider bot brain: which lane to aim the next revenge critter at. Hunts the leader among the
+ * players still standing, with a `wildChance` of picking any of them. Null when nobody is standing.
  */
-export function roundWinners(seats: readonly SeatState[], timedOut: boolean): number[] {
-  const alive: number[] = [];
-  seats.forEach((s, i) => {
-    if (s.alive) alive.push(i);
-  });
-  if (alive.length === 1 || (timedOut && alive.length > 0)) return alive;
-  if (alive.length > 1) return [];
-  let last = -Infinity;
-  for (const s of seats) if (s.fellAt !== null && s.fellAt > last) last = s.fellAt;
+export function riderBotAim(targets: readonly RiderTarget[], rng: Rng, wildChance = 0.25): number | null {
+  const first = targets[0];
+  if (!first) return null;
+  if (rng.next() < wildChance) return rng.pick(targets).lane;
+  let best = first;
+  for (const t of targets) if (t.score > best.score) best = t;
+  return best.lane;
+}
+
+/** Seats that start the next round with an underdog shield: everyone sharing the lowest total, if they trail. */
+export function underdogs(scores: readonly number[]): number[] {
+  if (scores.length < 2) return [];
+  let min = Infinity;
+  let max = -Infinity;
+  for (const s of scores) {
+    min = Math.min(min, s);
+    max = Math.max(max, s);
+  }
+  if (max - min < 1) return [];
   const out: number[] = [];
-  seats.forEach((s, i) => {
-    if (s.fellAt === last) out.push(i);
+  scores.forEach((s, i) => {
+    if (s === min) out.push(i);
   });
   return out;
 }
 
-/** Match ends when someone has 2 round wins or 5 rounds were played. */
-export function matchOver(wins: readonly number[], roundsPlayed: number): boolean {
-  return wins.some((w) => w >= WINS_NEEDED) || roundsPlayed >= MAX_ROUNDS;
+export interface SeatState {
+  alive: boolean;
+}
+
+/** A round runs until the clock runs out or everyone is off the ice. Riders keep the last one busy. */
+export function roundOver(seats: readonly SeatState[], timedOut: boolean): boolean {
+  return timedOut || seats.every((s) => !s.alive);
+}
+
+/** Highest total takes the match; ties share. */
+export function matchWinners(scores: readonly number[]): number[] {
+  let top = -Infinity;
+  for (const s of scores) top = Math.max(top, s);
+  const out: number[] = [];
+  scores.forEach((s, i) => {
+    if (s === top) out.push(i);
+  });
+  return out;
 }
