@@ -1,12 +1,22 @@
 import type { Rng } from "../../core/rng";
 
 /**
- * Pure rules for Mug Match. No canvas, no DOM.
+ * Pure rules for Mug Shots (id "mug-match"). No canvas, no DOM.
  * Face space: head radius = 1, origin at the head centre, y grows downwards.
  */
 
-export const ROUNDS = 3;
+export const ROUNDS = 4;
+/** Seconds per round: the booth gets quicker as the mugs get uglier. */
+export const ROUND_SECONDS: readonly number[] = [11, 10, 9, 9];
+export const ROUND_NAMES: readonly string[] = ["ODD", "WEIRD", "ABSURD", "FINAL"];
+/** Kept for callers that only want a nominal round length. */
 export const ROUND_MS = 12_000;
+/** The last round pays double. */
+export const FINAL_STAKES = 2;
+/** Tomatoes each player may throw per round, unlocked once they have snapped. */
+export const TOMATOES_PER_ROUND = 1;
+/** Points for splatting a mug that is still being sculpted. */
+export const SPLAT_BONUS = 10;
 
 export interface Pt {
   x: number;
@@ -107,18 +117,22 @@ export function paramsFromHandles(h: Handles): Params {
   ];
 }
 
-/** 100 at a perfect match; a mean half-range miss across the params is 0. */
+/** 100 at a perfect match; a mean miss of 40% of a param's range is 0. Strict enough that a blank mug scores poorly. */
+export const MISS_FOR_ZERO = 0.4;
 export function matchPercent(a: Params, b: Params): number {
   let sum = 0;
   for (let i = 0; i < PARAM_COUNT; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
-  const dist = Math.min(1, sum / PARAM_COUNT / 0.5);
+  const dist = Math.min(1, sum / PARAM_COUNT / MISS_FOR_ZERO);
   return Math.max(0, Math.min(100, Math.round(100 * (1 - dist))));
 }
 
-/** A target face for round `round` (0-based). Later rounds push every param further from neutral. */
+/**
+ * A target face for round `round` (0-based). Every param is pushed well away from neutral so an untouched mug
+ * is never worth snapping; later rounds push further and spread wider.
+ */
 export function randomTarget(round: number, rng: Rng): Params {
-  const spread = Math.min(1, 0.55 + round * 0.225);
-  const push = Math.min(0.6, round * 0.3);
+  const spread = Math.min(1, 0.75 + round * 0.1);
+  const push = Math.min(0.6, 0.4 + round * 0.1);
   const out: Params = [];
   for (let i = 0; i < PARAM_COUNT; i++) {
     const v = rng.float(-1, 1);
@@ -134,6 +148,61 @@ export function clampHandle(p: Pt): Pt {
     x: Math.max(-HANDLE_LIMIT, Math.min(HANDLE_LIMIT, p.x)),
     y: Math.max(-HANDLE_LIMIT, Math.min(HANDLE_LIMIT, p.y)),
   };
+}
+
+// ── Rounds, the flash bonus and snapping ──
+
+export function roundSeconds(round: number): number {
+  return ROUND_SECONDS[Math.min(round, ROUND_SECONDS.length - 1)] ?? 12;
+}
+
+export function roundName(round: number): string {
+  return ROUND_NAMES[Math.min(round, ROUND_NAMES.length - 1)] ?? "FINAL";
+}
+
+/** Point multiplier for the round: the last round pays double. */
+export function roundStakes(round: number): number {
+  return round >= ROUNDS - 1 ? FINAL_STAKES : 1;
+}
+
+/** Flash bonus: x2 at the opening whistle, draining to x1 at the buzzer. Snap early and it is yours. */
+export function flashMult(timeLeft: number, roundS: number): number {
+  const f = Math.max(0, Math.min(1, roundS > 0 ? timeLeft / roundS : 0));
+  return 1 + f;
+}
+
+/** Points for snapping a mug of `match` % with `timeLeft` seconds on the clock. */
+export function snapScore(match: number, timeLeft: number, roundS: number, round: number): number {
+  return Math.round(match * flashMult(timeLeft, roundS) * roundStakes(round));
+}
+
+export type Tier = "PERFECT" | "SO CLOSE" | "NICE" | "MEH" | "WHO?";
+
+/** A word for a snapped match %. 85-89 is a near miss on PERFECT. */
+export function scoreTier(match: number): Tier {
+  if (match >= 90) return "PERFECT";
+  if (match >= 85) return "SO CLOSE";
+  if (match >= 65) return "NICE";
+  if (match >= 40) return "MEH";
+  return "WHO?";
+}
+
+/** Seats on the lowest total get the underdog guide next round. Nobody does when everyone is level. */
+export function underdogs(totals: readonly number[]): number[] {
+  if (totals.length < 2) return [];
+  const min = Math.min(...totals);
+  const max = Math.max(...totals);
+  if (min === max) return [];
+  const out: number[] = [];
+  totals.forEach((t, i) => { if (t === min) out.push(i); });
+  return out;
+}
+
+/** A tomato lands: the handle is yanked 0.2-0.35 head radii in a random direction (roughly -20% match until fixed). */
+export function knockHandle(h: Pt, rng: Rng): Pt {
+  const a = rng.float(0, Math.PI * 2);
+  const d = rng.float(0.2, 0.35);
+  return clampHandle({ x: h.x + Math.cos(a) * d, y: h.y + Math.sin(a) * d });
 }
 
 /** Rubbery skin: a spring per handle that lags behind, overshoots and settles. */
@@ -164,17 +233,31 @@ export function stepSpring(s: Spring, h: Handles, dt: number, stiffness = 220, d
   }
 }
 
-/** Bot: drags one handle at a time toward a noisy copy of the target. */
+// ── Bots ──
+
+/** Bot: drags one handle at a time toward a noisy copy of the target, then eyeballs its mug and snaps. */
 export interface BotState {
   goal: Handles;
   queue: number[];
   current: number | null;
   wait: number;
   speed: number;
+  /** 0 = patient perfectionist, 1 = trigger happy. */
+  greed: number;
+  /** Seconds until the bot commits to a snap it has decided on; negative while undecided. */
+  decide: number;
+  /** The bot's (noisy) idea of its own match %. */
+  estimate: number;
+  /** Seconds until the bot throws the tomato it has decided to throw; negative while undecided. */
+  throwIn: number;
+  /** Second-guessing tweaks left once every handle has been placed (perfectionists fuss more). */
+  fuss: number;
+  /** Seconds until the bot next looks at its mug and re-estimates. */
+  look: number;
 }
 
 /** `error` 0.05-0.25: how far off (in param units) the bot's idea of the target is. */
-export function planBot(target: Params, error: number, rng: Rng): BotState {
+export function planBot(target: Params, error: number, rng: Rng, greed = rng.float(0, 1)): BotState {
   const goalParams = target.map((p) => p + rng.float(-error, error) * 1.5);
   const queue = [LEFT_EYE, RIGHT_EYE, LEFT_BROW, RIGHT_BROW, LEFT_MOUTH, RIGHT_MOUTH, NOSE];
   for (let i = queue.length - 1; i > 0; i--) {
@@ -183,7 +266,10 @@ export function planBot(target: Params, error: number, rng: Rng): BotState {
     queue[i] = b;
     queue[j] = a;
   }
-  return { goal: handlesFromParams(goalParams), queue, current: null, wait: rng.float(0.4, 1.0), speed: rng.float(5, 8) };
+  return {
+    goal: handlesFromParams(goalParams), queue, current: null, wait: rng.float(0.5, 1.4), speed: rng.float(3.5, 6),
+    greed, decide: -1, estimate: 0, throwIn: -1, fuss: Math.round((1 - greed) * 3), look: 0,
+  };
 }
 
 /** Advance the bot; mutates `handles`. Returns true when the bot moved something this step. */
@@ -192,8 +278,31 @@ export function stepBot(bot: BotState, handles: Handles, dt: number, rng: Rng): 
   if (bot.wait > 0) return false;
   if (bot.current === null) {
     const next = bot.queue.shift();
-    if (next === undefined) return false;
-    bot.current = next;
+    if (next !== undefined) {
+      bot.current = next;
+    } else {
+      // Repairs: a tomato knocked something, so go back and fix the worst handle.
+      let worst = -1;
+      let worstD = 0.06;
+      for (let i = 0; i < handles.length; i++) {
+        const d = Math.hypot(bot.goal[i]!.x - handles[i]!.x, bot.goal[i]!.y - handles[i]!.y);
+        if (d > worstD) { worstD = d; worst = i; }
+      }
+      if (worst >= 0) {
+        bot.current = worst;
+      } else if (bot.fuss > 0) {
+        // Everything is placed; a fussy bot still nudges something "just a touch".
+        bot.fuss -= 1;
+        const i = rng.int(0, handles.length - 1);
+        const g = bot.goal[i]!;
+        bot.goal[i] = clampHandle({ x: g.x + rng.float(-0.03, 0.03), y: g.y + rng.float(-0.03, 0.03) });
+        bot.current = i;
+        bot.wait = rng.float(0.2, 0.6);
+        return false;
+      } else {
+        return false;
+      }
+    }
   }
   const i = bot.current;
   const h = handles[i]!, g = bot.goal[i]!;
@@ -204,7 +313,51 @@ export function stepBot(bot: BotState, handles: Handles, dt: number, rng: Rng): 
     h.x = g.x;
     h.y = g.y;
     bot.current = null;
-    bot.wait = rng.float(0.1, 0.45);
+    bot.wait = rng.float(0.15, 0.6);
   }
   return true;
+}
+
+/** How good a mug must look before a bot snaps it, given the fraction of the round left. */
+export function botSnapThreshold(timeFrac: number, greed: number): number {
+  return 94 - (1 - timeFrac) * 50 - greed * 24;
+}
+
+/**
+ * The bot eyeballs its own mug (with noise) and commits when it looks good enough for the time left,
+ * then hesitates a beat before pressing. Returns true on the frame it snaps.
+ */
+export function botSnapCheck(bot: BotState, match: number, timeFrac: number, dt: number, rng: Rng): boolean {
+  if (bot.decide >= 0) {
+    bot.decide -= dt;
+    return bot.decide <= 0;
+  }
+  bot.look -= dt;
+  if (bot.look <= 0) {
+    bot.look = rng.float(0.25, 0.5);
+    bot.estimate = match + rng.float(-8, 8);
+  }
+  const panic = timeFrac < 0.1 && rng.next() < dt * 4;
+  if (bot.estimate >= botSnapThreshold(timeFrac, bot.greed) || panic) {
+    bot.decide = rng.float(0.25, 0.8);
+  }
+  return false;
+}
+
+export interface TargetInfo {
+  index: number;
+  snapped: boolean;
+  /** How much the bot wants them hit: live match % or total points. */
+  threat: number;
+}
+
+/** Bots throw at whoever is still sculpting and looks most dangerous; -1 when there is nobody worth hitting. */
+export function botPickTarget(candidates: readonly TargetInfo[]): number {
+  let best = -1;
+  let bestThreat = -Infinity;
+  for (const c of candidates) {
+    if (c.snapped) continue;
+    if (c.threat > bestThreat) { bestThreat = c.threat; best = c.index; }
+  }
+  return best;
 }
