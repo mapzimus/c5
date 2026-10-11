@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { Rng } from "../../core/rng";
 import { scribbleRace } from "./scribble-race";
 import {
-  accuracy, beginTrace, buildPath, catmullRom, feedTrace, generateControls, liftTrace, nearestOnPath,
-  newBot, newTrace, pathEnd, pathStart, pointAt, roundScore, stepBot, type Fit, type TracePath,
+  accuracy, beginTrace, blotAlpha, blotLanding, buildPath, catmullRom, feedTrace, finishBonus, generateControls,
+  inBlot, liftTrace, nearestOnPath, newBlot, newBot, newTrace, pathEnd, pathStart, pickSmudgeTarget, pointAt,
+  roundScore, stepBlots, stepBot, totalRoundScore, wideBrushSeats, BLOT_FADE_S, BLOT_LIFE_S, ROUNDS, ROUND_CONFIG,
+  type Fit, type TracePath,
 } from "./logic";
 
 const FIT: Fit = { w: 320, h: 720, padX: 60, padTop: 100, padBottom: 50, tol: 28, startR: 56 };
@@ -67,6 +69,16 @@ describe("scribble race paths", () => {
     const windowed = nearestOnPath(path, end, 0, 10, 40);
     expect(windowed.dist).toBeGreaterThan(path.tol * 3);
   });
+
+  it("rounds escalate: more points, thinner band, and the last round is the Inkstorm", () => {
+    expect(ROUND_CONFIG).toHaveLength(ROUNDS);
+    for (let i = 1; i < ROUND_CONFIG.length; i++) {
+      expect(ROUND_CONFIG[i]!.points).toBeGreaterThan(ROUND_CONFIG[i - 1]!.points);
+      expect(ROUND_CONFIG[i]!.tol).toBeLessThan(ROUND_CONFIG[i - 1]!.tol);
+    }
+    expect(ROUND_CONFIG[ROUNDS - 1]!.title).toBe("INKSTORM");
+    expect(ROUND_CONFIG[ROUNDS - 1]!.mult).toBeGreaterThan(1);
+  });
 });
 
 describe("scribble race tracing", () => {
@@ -80,13 +92,14 @@ describe("scribble race tracing", () => {
     expect(t.state).toBe("tracing");
   });
 
-  it("a perfect trace finishes at 100%, a sloppy one scores less", () => {
+  it("a perfect trace finishes at 100% with a full streak, a sloppy one scores less", () => {
     const path = makePath(3);
     const perfect = newTrace();
     beginTrace(perfect, path, pathStart(path));
     expect(traceAlong(perfect, path, 0)).toBe("finished");
     expect(perfect.state).toBe("done");
     expect(roundScore(perfect, path)).toBe(100);
+    expect(perfect.bestStreak).toBe(perfect.samples);
 
     const sloppy = newTrace();
     beginTrace(sloppy, path, pathStart(path));
@@ -95,17 +108,45 @@ describe("scribble race tracing", () => {
     expect(score).toBeGreaterThan(0);
     expect(score).toBeLessThan(60);
     expect(accuracy(sloppy)).toBeLessThan(accuracy(perfect));
+    expect(sloppy.bestStreak).toBeLessThan(perfect.bestStreak);
   });
 
-  it("straying past the outer band scraps the stroke", () => {
+  it("straying past the outer band scraps the stroke but keeps half its partial", () => {
     const path = makePath(4);
     const t = newTrace();
     beginTrace(t, path, pathStart(path));
+    for (let s = 0; s <= path.length * 0.6; s += 4) {
+      const q = pointAt(path, s);
+      expect(feedTrace(t, path, { x: q.x, y: q.y })).toBe("ok");
+    }
     expect(traceAlong(t, path, path.tol * 3.5)).toBe("scrapped");
     expect(t.state).toBe("idle");
     expect(t.points).toHaveLength(0);
     expect(t.scraps).toBe(1);
-    expect(roundScore(t, path)).toBe(0);
+    expect(t.streak).toBe(0);
+    // Ran 60% clean before straying: keeps half of that.
+    expect(roundScore(t, path)).toBeGreaterThanOrEqual(26);
+    expect(roundScore(t, path)).toBeLessThanOrEqual(31);
+  });
+
+  it("coming back from the danger band counts a close call", () => {
+    // A straight line, so a sideways offset is measured against the stretch under the finger.
+    const path = buildPath([{ x: 0.5, y: 0 }, { x: 0.5, y: 1 }], FIT);
+    const t = newTrace();
+    beginTrace(t, path, pathStart(path));
+    const mid = path.length * 0.5;
+    for (let s = 0; s <= mid; s += 4) {
+      const q = pointAt(path, s);
+      feedTrace(t, path, { x: q.x, y: q.y });
+    }
+    const q = pointAt(path, mid + 4);
+    expect(feedTrace(t, path, { x: q.x + q.nx * path.tol * 2.6, y: q.y + q.ny * path.tol * 2.6 })).toBe("ok");
+    expect(t.danger).toBe(true);
+    expect(t.closeCalls).toBe(0);
+    const q2 = pointAt(path, mid + 8);
+    expect(feedTrace(t, path, { x: q2.x, y: q2.y })).toBe("ok");
+    expect(t.danger).toBe(false);
+    expect(t.closeCalls).toBe(1);
   });
 
   it("lifting early scraps; an unfinished trace scores fraction times accuracy", () => {
@@ -118,9 +159,71 @@ describe("scribble race tracing", () => {
     }
     expect(roundScore(t, path)).toBeGreaterThanOrEqual(49);
     expect(roundScore(t, path)).toBeLessThanOrEqual(51);
-    expect(liftTrace(t)).toBe("scrapped");
-    expect(liftTrace(t)).toBe("ignored");
-    expect(roundScore(t, path)).toBe(0);
+    expect(liftTrace(t, path)).toBe("scrapped");
+    expect(liftTrace(t, path)).toBe("ignored");
+    expect(roundScore(t, path)).toBe(25);
+  });
+
+  it("finish bonuses reward the first two in and the Inkstorm multiplies the lot", () => {
+    expect(finishBonus(0)).toBe(10);
+    expect(finishBonus(1)).toBe(5);
+    expect(finishBonus(2)).toBe(0);
+    expect(totalRoundScore(80, 0, 1)).toBe(90);
+    expect(totalRoundScore(80, null, 1)).toBe(80);
+    expect(totalRoundScore(80, 1, 1.5)).toBe(128);
+  });
+
+  it("the wide brush goes to whoever is last, and to nobody when level", () => {
+    expect(wideBrushSeats([90, 40, 70, 40])).toEqual([false, true, false, true]);
+    expect(wideBrushSeats([0, 0])).toEqual([false, false]);
+    expect(wideBrushSeats([])).toEqual([]);
+  });
+});
+
+describe("scribble race smudging", () => {
+  it("blots stay wet, then dry away", () => {
+    let blots = [newBlot(10, 10, 50, "#fff", 1)];
+    expect(blotAlpha(blots[0]!)).toBe(1);
+    expect(inBlot(blots, { x: 40, y: 10 })).toBe(true);
+    expect(inBlot(blots, { x: 80, y: 10 })).toBe(false);
+    blots = stepBlots(blots, BLOT_LIFE_S + BLOT_FADE_S * 0.8);
+    expect(blots).toHaveLength(1);
+    expect(blotAlpha(blots[0]!)).toBeCloseTo(0.2, 5);
+    expect(inBlot(blots, { x: 40, y: 10 })).toBe(false);
+    blots = stepBlots(blots, BLOT_FADE_S);
+    expect(blots).toHaveLength(0);
+  });
+
+  it("a blot lands just ahead of a tracing finger, or mid-path for an idle one", () => {
+    const path = makePath(7);
+    const rng = new Rng(3);
+    const t = newTrace();
+    beginTrace(t, path, pathStart(path));
+    for (let s = 0; s <= path.length * 0.3; s += 4) {
+      const q = pointAt(path, s);
+      feedTrace(t, path, { x: q.x, y: q.y });
+    }
+    const ahead = blotLanding(path, t, rng);
+    const near = nearestOnPath(path, ahead, 0, 0, path.length);
+    expect(near.dist).toBeLessThan(0.5);
+    expect(near.s).toBeGreaterThan(t.progress);
+    expect(near.s).toBeLessThan(path.length);
+    const idle = blotLanding(path, newTrace(), rng);
+    const nearIdle = nearestOnPath(path, idle, 0, 0, path.length);
+    expect(nearIdle.s).toBeGreaterThan(path.length * 0.29);
+    expect(nearIdle.s).toBeLessThan(path.length * 0.71);
+  });
+
+  it("smudgers target the unfinished rival who is winning", () => {
+    const seats = [
+      { finished: true, score: 90 },
+      { finished: false, score: 120 },
+      { finished: false, score: 70 },
+      { finished: true, score: 200 },
+    ];
+    expect(pickSmudgeTarget(seats, 0)).toBe(1);
+    expect(pickSmudgeTarget(seats, 1)).toBe(2);
+    expect(pickSmudgeTarget([{ finished: true, score: 1 }, { finished: true, score: 2 }], 0)).toBe(-1);
   });
 });
 
@@ -131,7 +234,7 @@ describe("scribble race bots", () => {
       for (let seed = 1; seed <= 12; seed++) {
         const rng = new Rng(seed * 7);
         const path = makePath(seed, 6);
-        const bot = newBot(rng, path, skill);
+        const bot = newBot(rng, path, skill, { slips: false });
         const t = newTrace();
         let res = "ok";
         for (let f = 0; f < 60 * 14 && res !== "finished"; f++) {
@@ -148,10 +251,37 @@ describe("scribble race bots", () => {
       expect(Math.abs(mean - skill)).toBeLessThan(0.12);
     }
   });
+
+  it("slips make bots fallible and a blot makes them sloppier", () => {
+    let closeOrScrap = 0;
+    let blindAcc = 0;
+    let clearAcc = 0;
+    const runs = 16;
+    for (let seed = 1; seed <= runs; seed++) {
+      const path = makePath(seed, 6);
+      for (const blind of [false, true]) {
+        const rng = new Rng(seed * 13);
+        const bot = newBot(rng, path, 0.85, { slips: !blind });
+        const t = newTrace();
+        let res = "ok";
+        for (let f = 0; f < 60 * 14 && res !== "finished" && res !== "scrapped"; f++) {
+          const p = stepBot(bot, path, rng, 1 / 60, blind);
+          if (!p) continue;
+          if (t.state === "idle") beginTrace(t, path, p);
+          else res = feedTrace(t, path, p);
+        }
+        if (!blind && (res === "scrapped" || t.closeCalls > 0)) closeOrScrap += 1;
+        if (blind) blindAcc += accuracy(t);
+        else clearAcc += accuracy(t);
+      }
+    }
+    expect(closeOrScrap).toBeGreaterThan(runs * 0.3);
+    expect(blindAcc / runs).toBeLessThan(clearAcc / runs - 0.1);
+  });
 });
 
 describe("scribble race game", () => {
-  it("an all-bot table plays three rounds to the end", () => {
+  it("an all-bot table plays four rounds to the end, smudging along the way", () => {
     const ctx = {
       width: 1280, height: 720, rng: new Rng(11), minTap: 44,
       players: [0, 1, 2, 3].map((slot) => ({ id: `p${slot}`, name: `P${slot}`, color: "#3EE0FF", kind: "bot", slot })),
@@ -160,15 +290,21 @@ describe("scribble race game", () => {
       sfx: new Proxy({}, { get: () => vi.fn() }),
     } as never;
     const game = scribbleRace.create(ctx);
-    for (let f = 0; f < 60 * 120 && !game.isFinished(); f++) game.update(1 / 60);
+    let frames = 0;
+    for (; frames < 60 * 120 && !game.isFinished(); frames++) game.update(1 / 60);
     expect(game.isFinished()).toBe(true);
+    expect(frames / 60).toBeGreaterThan(40);
+    expect(frames / 60).toBeLessThan(100);
     const scores = game.getScores();
     expect(scores).toHaveLength(4);
     for (const s of scores) {
       expect(s.score).toBeGreaterThan(100);
-      expect(s.score).toBeLessThanOrEqual(300);
+      expect(s.score).toBeLessThanOrEqual(ROUNDS * 110 * 1.5);
     }
-    expect(game.getStats?.().some((s) => s.label === "Best trace %")).toBe(true);
+    const stats = game.getStats?.() ?? [];
+    expect(stats.some((s) => s.label === "Best trace %")).toBe(true);
+    const smudges = stats.filter((s) => s.label === "Smudges thrown").reduce((a, s) => a + Number(s.value), 0);
+    expect(smudges).toBeGreaterThan(0);
     game.destroy();
   });
 });
