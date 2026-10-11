@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "crests": "python3 scripts/fetch-crests.py",
+    "thumbs": "node scripts/capture-thumbs.mjs",
     "build:android": "tsc --noEmit && vite build --base=./",
     "android:sync": "npm run build:android && cap sync android",
     "android:apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1"

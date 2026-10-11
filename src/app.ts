@@ -79,9 +79,17 @@ export class App {
     const cards = el("div", { class: "cards" });
     games.forEach((game, index) => {
       const accent = ACCENTS[index % ACCENTS.length]!;
-      const card = el("button", { class: "card", style: `--accent:${accent}` });
+      const card = el("button", { class: "card", style: `--accent:${accent}`, "data-game": game.id });
+      const thumb = el("img", {
+        class: "card-thumb",
+        src: `${import.meta.env.BASE_URL}thumbs/${game.id}.jpg`,
+        alt: "",
+        loading: "lazy",
+        decoding: "async",
+      });
+      thumb.addEventListener("error", () => thumb.remove());
       card.append(
-        el("span", { class: "card-num", text: String(index + 1).padStart(2, "0") }),
+        thumb,
         el("h3", { text: game.name }),
         el("p", { text: game.tagline }),
         el("span", { class: "tag", text: game.durationMs > 0 ? `${game.durationMs / 1000} sec` : "Turns" }),

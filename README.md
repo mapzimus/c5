@@ -54,6 +54,7 @@ overflows. [Rules and controls](src/games/imported/lucky-drop/README.md).
 1. Copy `src/games/template.ts` (or drop a port in `src/games/imported/`).
 2. Add the export to `allGames` in `src/games/index.ts`.
 3. The main menu picks it up.
+4. For its menu thumbnail, run `npm run dev`, then `npm run thumbs -- http://localhost:5173/ <game-id>` (needs Playwright). It plays the game bot-vs-bot and saves a mid-game shot to `public/thumbs/<id>.jpg`. Tune the timing in `DELAY` in `scripts/capture-thumbs.mjs`.
 
 Pitches and half-thoughts go in `ideas/inbox.md` until they are a real game.
 
