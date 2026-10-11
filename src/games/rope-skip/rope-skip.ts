@@ -13,8 +13,13 @@ import {
   clampOmega,
   crossedBottom,
   isClear,
+  isCloseCall,
   jumpHeight,
+  knockVelocity,
+  MAX_OMEGA,
   MIN_OMEGA,
+  streakBonus,
+  STREAK_EVERY,
   nextBotSegment,
   ROUND_SECONDS,
   scoreRound,
@@ -31,7 +36,8 @@ export const ropeSkip: GameDefinition = {
   description:
     "Each round one player turns a giant rope and everyone else jumps it. " +
     "The spinner drags in circles to speed up, slow down or stutter the rope; jumpers tap to hop. " +
-    "Get swept and you're out. Survive 15s for +1; the spinner gets +1 per knockout. Everyone spins once.",
+"Get swept and you go flying. Survive 15s for +1, every 5 clears in a row is +1 more; the " +
+    "spinner gets +1 per knockout. Everyone spins once.",
   durationMs: 0,
   controls: "Jumpers: tap your strip. Spinner: drag circles on the ring",
   create: (ctx) => new RopeSkip(ctx),
@@ -54,6 +60,7 @@ interface Seat {
   score: number;
   knockouts: number;
   survived: number;
+  bestStreak: number;
 }
 
 interface Jumper {
@@ -65,6 +72,11 @@ interface Jumper {
   lead: number;
   jumpedThisTurn: boolean;
   jumps: number;
+  streak: number;
+  /** Ragdoll state after a knockout. */
+  rag: { x: number; y: number; vx: number; vy: number; rot: number; spin: number; bounces: number } | null;
+  /** Squash (<1) / stretch (>1) on the body, eases back to 1. */
+  squash: number;
 }
 
 type Phase = "intro" | "play" | "outro" | "done";
@@ -88,7 +100,7 @@ class RopeSkip implements GameInstance {
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice(() => ctx.rng.next());
-    this.seats = ctx.players.map((player) => ({ player, score: 0, knockouts: 0, survived: 0 }));
+    this.seats = ctx.players.map((player) => ({ player, score: 0, knockouts: 0, survived: 0, bestStreak: 0 }));
     this.order = spinnerOrder(ctx.players.length);
     this.startRound();
     const c = ctx.canvas;
@@ -122,6 +134,9 @@ class RopeSkip implements GameInstance {
       lead: botLead(this.rand),
       jumpedThisTurn: false,
       jumps: 0,
+      streak: 0,
+      rag: null,
+      squash: 1,
     }));
     this.phi = 0;
     this.omega = 3.5;
@@ -199,14 +214,54 @@ class RopeSkip implements GameInstance {
 
   private stepJumpers(dt: number): void {
     for (const j of this.jumpers) {
+      j.squash += (1 - j.squash) * Math.min(1, dt * 14);
       if (j.out) {
         j.tumble += dt;
+        this.stepRag(j, dt);
         continue;
       }
       if (j.jumpT !== null) {
         j.jumpT += dt;
-        if (j.jumpT >= AIR_TIME) j.jumpT = null;
+        if (j.jumpT >= AIR_TIME) {
+          j.jumpT = null;
+          j.squash = 0.62;
+          this.juice.burst(j.x, GROUND_Y, "rgba(244,247,251,0.45)", {
+            count: 6, speed: 110, gravity: 200, size: 4, life: 0.35, angle: -Math.PI / 2, spread: 2.4,
+          });
+        }
       }
+    }
+  }
+
+  private stepRag(j: Jumper, dt: number): void {
+    const r = j.rag;
+    if (!r) return;
+    r.vy += 1600 * dt;
+    r.x += r.vx * dt;
+    r.y += r.vy * dt;
+    r.rot += r.spin * dt;
+    const floor = GROUND_Y - 26;
+    if (r.y >= floor && r.vy > 0) {
+      r.y = floor;
+      r.bounces++;
+      r.vy = -r.vy * 0.45;
+      r.vx *= 0.65;
+      r.spin *= 0.6;
+      j.squash = 0.7;
+      if (r.bounces <= 2) {
+        this.juice.burst(r.x, GROUND_Y, "rgba(244,247,251,0.4)", { count: 5, speed: 90, gravity: 200, size: 4, life: 0.3, angle: -Math.PI / 2, spread: 2.4 });
+        this.ctx.sfx.tick();
+      }
+      if (Math.abs(r.vy) < 90) {
+        r.vy = 0;
+        r.vx = 0;
+        r.spin = 0;
+      }
+    }
+    const edge = this.ctx.width - 30;
+    if (r.x > edge) {
+      r.x = edge;
+      r.vx = -Math.abs(r.vx) * 0.5;
     }
   }
 
@@ -226,11 +281,31 @@ class RopeSkip implements GameInstance {
     for (const j of this.jumpers) {
       j.jumpedThisTurn = false;
       j.lead = botLead(this.rand);
-      if (j.out || isClear(j.jumpT)) continue;
+      if (j.out) continue;
+      const seat = this.seats[j.seat]!;
+      const p = seat.player;
+      if (isClear(j.jumpT)) {
+        j.streak++;
+        seat.bestStreak = Math.max(seat.bestStreak, j.streak);
+        const bonus = streakBonus(j.streak);
+        if (bonus > 0) {
+          seat.score += bonus;
+          this.juice.burst(j.x, GROUND_Y - 60, [p.color, "#B8FF3D", "#ffffff"], { count: 22, speed: 260, gravity: 300 });
+          this.callouts.show(`${p.name} x${j.streak}! +${bonus}`, "#B8FF3D", { size: 40, life: 0.9, y: 0.12 });
+          this.ctx.sfx.streak(Math.min(6, j.streak / STREAK_EVERY));
+        } else if (isCloseCall(j.jumpT)) {
+          this.juice.burst(j.x, GROUND_Y - 10, ["#FFB020", "#ffffff"], { count: 8, speed: 200, gravity: 200, size: 3, life: 0.4 });
+        }
+        continue;
+      }
       j.out = true;
       j.jumpT = null;
-      const p = this.seats[j.seat]!.player;
-      this.juice.shake(0.35);
+      j.streak = 0;
+      const v = knockVelocity(this.omega, this.rand);
+      j.rag = { x: j.x, y: GROUND_Y - 26, vx: v.vx, vy: v.vy, rot: 0, spin: v.spin, bounces: 0 };
+      j.squash = 1.4;
+      this.juice.hitStop(0.06);
+      this.juice.shake(0.35 + 0.25 * (this.omega / MAX_OMEGA));
       this.juice.burst(j.x, GROUND_Y - 20, [p.color, "#ffffff", "#FF3D7A"], { count: 26, speed: 280 });
       this.ctx.sfx.hit();
       this.callouts.show(`${p.name} OUT!`, "#FF3D7A", { size: 44, life: 0.9, y: 0.18 });
@@ -241,6 +316,7 @@ class RopeSkip implements GameInstance {
     if (j.out || j.jumpT !== null || this.phase === "done") return;
     j.jumpT = 0;
     j.jumps++;
+    j.squash = 1.3;
     this.ctx.sfx.whoosh();
   }
 
@@ -365,17 +441,21 @@ class RopeSkip implements GameInstance {
     const lift = jumpHeight(j.jumpT) * JUMP_PEAK;
     const r = 26;
     g.save();
-    if (j.out) {
-      const t = Math.min(1, j.tumble / 0.6);
-      g.translate(j.x + t * 40, GROUND_Y - r + t * 8);
-      g.rotate(t * Math.PI * 0.5);
-      g.globalAlpha = 1 - t * 0.6;
+    if (j.out && j.rag) {
+      g.translate(j.rag.x, j.rag.y);
+      g.rotate(j.rag.rot);
+      g.globalAlpha = 0.75;
     } else {
       g.translate(j.x, GROUND_Y - r - lift);
     }
+    // Squash and stretch: volume-ish preserving.
+    const sy = j.squash;
+    const sx = 1 / Math.sqrt(sy);
+    g.translate(0, r * (1 - sy));
+    g.scale(sx, sy);
     g.fillStyle = p.color;
     g.beginPath();
-    g.ellipse(0, 0, r, r * (j.jumpT === null ? 1 : 1.08), 0, 0, TAU);
+    g.ellipse(0, 0, r, r, 0, 0, TAU);
     g.fill();
     g.fillStyle = "#070b14";
     g.beginPath();
@@ -388,7 +468,7 @@ class RopeSkip implements GameInstance {
     g.font = "700 20px Bebas Neue, Impact, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "top";
-    g.fillText(j.out ? "OUT" : p.name, j.x, GROUND_Y + 10);
+    g.fillText(j.out ? "OUT" : j.streak >= 3 ? `${p.name} x${j.streak}` : p.name, j.x, GROUND_Y + 10);
   }
 
   private drawSpinner(g: CanvasRenderingContext2D): void {
@@ -409,11 +489,17 @@ class RopeSkip implements GameInstance {
     g.arc(POLE_R + 50, GROUND_Y - 30, 30, 0, TAU);
     g.fill();
 
-    // control ring
+    // control ring with a speed gauge filling around it
     g.strokeStyle = "rgba(244,247,251,0.18)";
     g.lineWidth = 14;
     g.beginPath();
     g.arc(RING.x, RING.y, RING.r, 0, TAU);
+    g.stroke();
+    const speed = (this.omega - MIN_OMEGA) / (MAX_OMEGA - MIN_OMEGA);
+    g.strokeStyle = speed > 0.75 ? "#FF3D7A" : speed > 0.4 ? "#FFB020" : "#B8FF3D";
+    g.lineWidth = 6;
+    g.beginPath();
+    g.arc(RING.x, RING.y, RING.r + 14, -Math.PI / 2, -Math.PI / 2 + TAU * Math.max(0.02, speed));
     g.stroke();
     const a = this.phi - Math.PI / 2;
     g.fillStyle = color;
@@ -476,6 +562,7 @@ class RopeSkip implements GameInstance {
     const out: GameStat[] = [];
     for (const s of this.seats) {
       out.push({ playerId: s.player.id, label: "Rounds survived", value: String(s.survived) });
+      out.push({ playerId: s.player.id, label: "Best clear streak", value: String(s.bestStreak) });
       if (this.order[0]! >= 0) out.push({ playerId: s.player.id, label: "Knockouts as spinner", value: String(s.knockouts) });
     }
     return out;

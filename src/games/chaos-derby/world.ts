@@ -231,7 +231,7 @@ export class DerbyWorld {
     Composite.add(this.engine.world, [ground, ...walls]);
     this.buildTrack();
     this.runners = entries.map((entry, i) => this.makeRunner(entry, i));
-    this.nextEvent = rng.float(1.5, 2.5);
+    this.nextEvent = rng.float(3, 4.5);
     Events.on(this.engine, "collisionStart", this.onCollide);
   }
 
@@ -425,7 +425,7 @@ export class DerbyWorld {
       this.randomEvent();
       // fewer runners left, fewer events: stragglers shouldn't get all the chaos to themselves
       const left = Math.max(1, this.runners.filter((r) => !r.finished).length);
-      this.nextEvent = this.rng.float(0.85, 1.9) * Math.sqrt(this.runners.length / left) / (this.opts.eventMul ?? 1);
+      this.nextEvent = this.rng.float(1.8, 3.4) * Math.sqrt(this.runners.length / left) / (this.opts.eventMul ?? 1);
     }
     this.gustT = Math.max(0, this.gustT - dt);
     if (this.gustT <= 0) this.gust = 0;

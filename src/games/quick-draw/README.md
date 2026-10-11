@@ -7,6 +7,9 @@ A 2–4 player standoff. The screen is split into one tap zone per player, each 
 - Fake calls show up during the wait: **DRUM!**, **DRAWER!**, **DRAMA!**, **BRAW!**, or a tumbleweed rolling across. Round 1 has 0–1 fakes; later rounds get more (up to 5).
 - Tapping before the real DRAW (fakes included) is a false start: you're out for that round. If everyone false-starts, nobody scores. If nobody taps within 3s of DRAW, nobody scores.
 - Best of 5: first to 3 round wins. If nobody reaches 3 after 5 rounds, the most round wins takes it (ties share).
+- During the wait a heartbeat pulse (vignette + tick) speeds up the longer it goes.
+- The winner fires both ways: bullets knock the hats off everyone else, and the hats tumble and bounce. A false start fires into the dirt and drops your own hat.
+- Reacting under 200ms shows **LIGHTNING!**. A human beating their fastest-ever draw (saved on the device) gets **NEW RECORD**.
 - Bots react 180–400ms after DRAW, and have a ~15% chance to bite on each fake.
 
 ## Inspired by

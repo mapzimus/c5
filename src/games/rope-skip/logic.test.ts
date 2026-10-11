@@ -10,6 +10,10 @@ import {
   clampOmega,
   crossedBottom,
   isClear,
+  isCloseCall,
+  knockVelocity,
+  streakBonus,
+  STREAK_EVERY,
   jumpHeight,
   nextBotSegment,
   scoreRound,
@@ -85,8 +89,33 @@ describe("rope skip game", () => {
     expect(game.isFinished()).toBe(true);
     expect(frames / 60).toBeGreaterThan(3 * 15);
     const total = game.getScores().reduce((a, s) => a + s.score, 0);
-    // Each round hands out exactly one point per jumper (survive or knockout).
-    expect(total).toBe(3 * 2);
+    // Each round hands out one point per jumper (survive or knockout), plus clear-streak bonuses.
+    expect(total).toBeGreaterThanOrEqual(3 * 2);
     game.destroy();
+  });
+});
+
+describe("rope skip streaks and knockouts", () => {
+  it("pays a bonus every STREAK_EVERY clears", () => {
+    expect(streakBonus(0)).toBe(0);
+    expect(streakBonus(STREAK_EVERY - 1)).toBe(0);
+    expect(streakBonus(STREAK_EVERY)).toBe(1);
+    expect(streakBonus(STREAK_EVERY * 2)).toBe(1);
+  });
+
+  it("close call is a clear by a hair", () => {
+    expect(isCloseCall(null)).toBe(false);
+    expect(isCloseCall(AIR_TIME / 2)).toBe(false);
+    // Just past takeoff: cleared, but barely.
+    const t = AIR_TIME * 0.07;
+    expect(isClear(t)).toBe(true);
+    expect(isCloseCall(t)).toBe(true);
+  });
+
+  it("faster rope launches harder", () => {
+    const slow = knockVelocity(MIN_OMEGA, () => 0.5);
+    const fast = knockVelocity(MAX_OMEGA, () => 0.5);
+    expect(fast.vx).toBeGreaterThan(slow.vx);
+    expect(fast.vy).toBeLessThan(slow.vy);
   });
 });

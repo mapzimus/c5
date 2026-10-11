@@ -35,8 +35,31 @@ export function sliceDrop(top: Span, dropX: number, width: number): DropResult {
   return { kind: "hit", block, cut: { x: cutX, w: cutW } };
 }
 
-export function dropScore(result: DropResult): number {
-  return result.kind === "perfect" ? 2 : result.kind === "hit" ? 1 : 0;
+/** Each perfect in a row widens the block back by this much (capped at START_WIDTH). */
+export const PERFECT_REGROW = 14;
+/** Perfect streak needed for ON FIRE (bigger regrow, bigger points). */
+export const FIRE_STREAK = 3;
+
+/**
+ * Points for a drop. `streak` = perfects in a row including this one.
+ * Perfect pays 2, +1 per extra streak step (3, 4, 5...), capped at 6.
+ */
+export function dropScore(result: DropResult, streak = 1): number {
+  if (result.kind === "perfect") return Math.min(6, 1 + Math.max(1, streak));
+  return result.kind === "hit" ? 1 : 0;
+}
+
+/** Width after a perfect: streaks earn the tower its width back. */
+export function perfectWidth(w: number, streak: number): number {
+  const grow = PERFECT_REGROW * (streak >= FIRE_STREAK ? 2 : 1);
+  return Math.min(START_WIDTH, w + grow);
+}
+
+/** Wobble kick (rad/s) a landing gives the tower: more overhang sliced = harder knock. */
+export function wobbleKick(result: DropResult, height: number): number {
+  if (result.kind !== "hit") return 0;
+  const frac = result.cut.w / Math.max(1, result.block.w + result.cut.w);
+  return frac * 1.4 * (1 + Math.min(2, height * 0.08));
 }
 
 /** Widen a span after a miss so play can continue. */
