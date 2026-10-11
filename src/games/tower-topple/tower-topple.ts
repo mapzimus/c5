@@ -9,14 +9,17 @@ import type {
 } from "../../core/types";
 import {
   DROPS_EACH,
+  FIRE_STREAK,
   START_LIVES,
   START_WIDTH,
   dropScore,
   isOver,
   nextSeat,
+  perfectWidth,
   regrow,
   sliceDrop,
   swingSpeed,
+  wobbleKick,
   type Seat,
   type Span,
 } from "./rules";
@@ -28,7 +31,8 @@ export const towerTopple: GameDefinition = {
   description:
     "Take turns dropping a swinging block onto one shared tower. Whatever hangs over the edge " +
     "gets sliced off, so you inherit the mess the last player left. +1 per landed block, +2 for a " +
-    "PERFECT drop that keeps its width. Miss and you lose one of 3 lives. The swing speeds up as " +
+    "PERFECT drop. Chain perfects to grow the block back and score 3, 4, 5... Sloppy drops make " +
+    "the tower wobble. Miss and you lose one of 3 lives. The swing speeds up as " +
     `the tower grows. Ends when one player has lives left or after ${DROPS_EACH} drops each.`,
   durationMs: 0,
   controls: "Tap anywhere (or Space) to drop",
@@ -60,12 +64,15 @@ interface Debris {
   rot: number;
   vr: number;
   color: string;
+  bounces: number;
+  rest: number;
 }
 
 interface Seating extends Seat {
   player: Player;
   score: number;
   perfects: number;
+  bestStreak: number;
 }
 
 type Phase = "swing" | "falling" | "settle" | "over";
@@ -87,6 +94,12 @@ class TowerTopple implements GameInstance {
   private botWait = 0;
   private lastSwingX = PIVOT_X;
   private finishTimer = 0;
+  /** Perfects in a row on the shared tower (any player keeps it alive). */
+  private streak = 0;
+  /** Tower wobble: lean angle (rad) and angular velocity, a damped spring. */
+  private lean = 0;
+  private leanVel = 0;
+  private flash = 0;
 
   constructor(private readonly ctx: GameContext) {
     this.juice = new Juice(() => ctx.rng.next());
@@ -96,6 +109,7 @@ class TowerTopple implements GameInstance {
       drops: 0,
       score: 0,
       perfects: 0,
+      bestStreak: 0,
     }));
     this.swingPhase = ctx.rng.float(0, Math.PI * 2);
     this.startTurn(0);
@@ -149,6 +163,11 @@ class TowerTopple implements GameInstance {
     this.camY += (camTarget - this.camY) * Math.min(1, dt * 4);
 
     this.updateDebris(dt);
+    this.flash = Math.max(0, this.flash - realDt * 3);
+    // Damped spring back to upright; taller towers are floppier.
+    const stiff = 40 / (1 + this.stack.length * 0.05);
+    this.leanVel += (-this.lean * stiff - this.leanVel * 4) * dt;
+    this.lean += this.leanVel * dt;
 
     if (this.phase === "over") {
       this.finishTimer -= realDt;
@@ -192,6 +211,7 @@ class TowerTopple implements GameInstance {
   private drop(): void {
     if (this.phase !== "swing" || this.phaseTime < TURN_GRACE) return;
     const p = this.swingPos();
+    // The tower's lean shifts where the top actually is when the block arrives.
     this.fall = { x: p.x, y: p.y + this.camY, vy: 0, w: this.top.w };
     this.phase = "falling";
     this.phaseTime = 0;
@@ -201,22 +221,31 @@ class TowerTopple implements GameInstance {
   private land(): void {
     const seat = this.current;
     seat.drops++;
-    const result = sliceDrop(this.top, this.fall.x, this.fall.w);
+    // A leaning tower moves its top: a wobble left by the last player can ruin your drop.
+    const shift = Math.sin(this.lean) * this.stack.length * BLOCK_H;
+    const raw = sliceDrop({ x: this.top.x + shift, w: this.top.w }, this.fall.x, this.fall.w);
+    const result =
+      raw.kind === "miss" ? raw
+      : raw.kind === "perfect" ? { ...raw, block: { x: raw.block.x - shift, w: raw.block.w } }
+      : { ...raw, block: { x: raw.block.x - shift, w: raw.block.w }, cut: { x: raw.cut.x - shift, w: raw.cut.w } };
     const color = seat.player.color;
     const landY = this.topY - BLOCK_H / 2;
     const textY = 0.22;
 
     if (result.kind === "miss") {
       seat.lives--;
+      this.streak = 0;
       this.debris.push({
         x: this.fall.x, y: this.fall.y, w: this.fall.w,
         vx: (this.fall.x - this.top.x) * 0.8, vy: this.fall.vy * 0.5,
-        rot: 0, vr: Math.sign(this.fall.x - this.top.x || 1) * 4, color,
+        rot: 0, vr: Math.sign(this.fall.x - this.top.x || 1) * 4, color, bounces: 0, rest: 0,
       });
       const grown = regrow(this.top);
       this.top.x = grown.x;
       this.top.w = grown.w;
-      this.juice.shake(0.35);
+      this.leanVel += Math.sign(this.fall.x - this.top.x || 1) * 0.9;
+      this.juice.shake(0.5);
+      this.juice.slowMo(0.45, 0.3);
       this.ctx.sfx.hit();
       this.callouts.show(
         seat.lives > 0 ? `MISS! ${seat.lives} ${seat.lives === 1 ? "LIFE" : "LIVES"} LEFT` : `${seat.player.name} IS OUT!`,
@@ -224,23 +253,45 @@ class TowerTopple implements GameInstance {
         { size: 52, y: textY },
       );
     } else {
-      this.stack.push({ x: result.block.x, w: result.block.w, color });
-      seat.score += dropScore(result);
       const sy = landY - this.camY;
       if (result.kind === "perfect") {
+        this.streak++;
         seat.perfects++;
+        seat.bestStreak = Math.max(seat.bestStreak, this.streak);
+        const pts = dropScore(result, this.streak);
+        seat.score += pts;
+        const w = perfectWidth(result.block.w, this.streak);
+        this.stack.push({ x: result.block.x, w, color });
+        const fire = this.streak >= FIRE_STREAK;
         this.juice.burst(result.block.x, sy + BLOCK_H / 2, [color, "#ffffff", "#FFB020"], {
-          count: 26, speed: 320, gravity: 400, life: 0.6,
+          count: fire ? 48 : 26, speed: fire ? 420 : 320, gravity: 400, life: 0.6,
         });
-        this.ctx.sfx.streak(Math.min(6, seat.perfects));
-        this.callouts.show("PERFECT! +2", "#FFB020", { size: 60, y: textY });
+        // Width regrow shows as a shockwave of sparks sideways.
+        this.juice.burst(result.block.x - w / 2, sy, "#FFB020", { count: 8, angle: Math.PI, spread: 0.6, speed: 260, gravity: 200 });
+        this.juice.burst(result.block.x + w / 2, sy, "#FFB020", { count: 8, angle: 0, spread: 0.6, speed: 260, gravity: 200 });
+        this.juice.hitStop(fire ? 0.09 : 0.05);
+        this.flash = fire ? 1 : 0.5;
+        this.ctx.sfx.streak(Math.min(6, this.streak));
+        const label = this.streak === 1 ? `PERFECT! +${pts}` : fire ? `ON FIRE x${this.streak}! +${pts}` : `PERFECT x${this.streak}! +${pts}`;
+        this.callouts.show(label, fire ? "#FF3D7A" : "#FFB020", { size: fire ? 68 : 60, y: textY });
       } else {
+        this.streak = 0;
+        seat.score += dropScore(result);
+        this.stack.push({ x: result.block.x, w: result.block.w, color });
+        const dir = Math.sign(result.cut.x - result.block.x);
         this.debris.push({
           x: result.cut.x, y: landY, w: result.cut.w,
-          vx: Math.sign(result.cut.x - result.block.x) * 90, vy: -60,
-          rot: 0, vr: Math.sign(result.cut.x - result.block.x) * 3, color,
+          vx: dir * (90 + result.cut.w * 1.5), vy: -60,
+          rot: 0, vr: dir * 3, color, bounces: 0, rest: 0,
         });
-        this.juice.shake(0.12);
+        // Dust puffs out from the seam on the side that took the hit.
+        this.juice.burst(result.block.x - dir * result.block.w / 2, sy + BLOCK_H / 2, "rgba(244,247,251,0.6)", {
+          count: 10, angle: dir > 0 ? Math.PI : 0, spread: 1.2, speed: 160, gravity: 150, size: 5, life: 0.5,
+        });
+        const kick = wobbleKick(result, this.stack.length);
+        this.leanVel += dir * kick;
+        this.juice.shake(0.12 + kick * 0.15);
+        if (kick > 0.6) this.callouts.show("WOBBLY!", "#9AA4B8", { size: 40, y: textY, life: 0.8 });
         this.ctx.sfx.tick();
       }
     }
@@ -250,14 +301,39 @@ class TowerTopple implements GameInstance {
   }
 
   private updateDebris(dt: number): void {
+    const groundTop = -BLOCK_H / 2;
     for (const d of this.debris) {
+      if (d.rest > 0) {
+        d.rest += dt;
+        continue;
+      }
       d.vy += GRAVITY * 0.6 * dt;
       d.x += d.vx * dt;
       d.y += d.vy * dt;
       d.rot += d.vr * dt;
+      // Bounce off the ground beside the tower (not under it), then come to rest.
+      const base = this.stack[0]!;
+      const underTower = Math.abs(d.x - base.x) < base.w / 2 + d.w / 2;
+      if (d.y >= groundTop && d.vy > 0 && !underTower) {
+        d.y = groundTop;
+        d.bounces++;
+        d.vy = -d.vy * 0.45;
+        d.vx *= 0.7;
+        d.vr = d.vr * -0.5;
+        if (Math.abs(d.vy) < 120 || d.bounces > 2) {
+          d.vy = 0;
+          d.vx = 0;
+          d.vr = 0;
+          d.rot = Math.round(d.rot / (Math.PI / 2)) * (Math.PI / 2);
+          d.rest = 0.001;
+        } else {
+          this.juice.burst(d.x, 0, "rgba(244,247,251,0.5)", { count: 6, speed: 90, gravity: 100, size: 4, life: 0.4, angle: -Math.PI / 2, spread: 2 });
+          this.ctx.sfx.tick();
+        }
+      }
     }
     const floor = this.camY + this.ctx.height + 200;
-    this.debris = this.debris.filter((d) => d.y < floor);
+    this.debris = this.debris.filter((d) => d.y < floor && d.rest < 6);
   }
 
   private endGame(): void {
@@ -291,9 +367,14 @@ class TowerTopple implements GameInstance {
       g.fillRect(0, groundY, width, height - groundY + 40);
     }
 
+    // The tower leans as one body, pivoting on its base: higher blocks swing further.
+    const base = this.stack[0]!;
     for (let i = 0; i < this.stack.length; i++) {
       const b = this.stack[i]!;
-      this.drawBlock(g, b.x, -(i + 1) * BLOCK_H + BLOCK_H / 2 - this.camY, b.w, b.color, 0);
+      const h = (i + 0.5) * BLOCK_H;
+      const sway = Math.sin(this.lean) * h;
+      const y = -h - this.camY + (1 - Math.cos(this.lean)) * h;
+      this.drawBlock(g, b.x + sway + (b.x - base.x) * (Math.cos(this.lean) - 1), y, b.w, b.color, this.lean);
     }
 
     for (const d of this.debris) this.drawBlock(g, d.x, d.y - this.camY, d.w, d.color, d.rot);
@@ -316,6 +397,10 @@ class TowerTopple implements GameInstance {
     }
 
     this.juice.end(g);
+    if (this.flash > 0) {
+      g.fillStyle = `rgba(255,255,255,${this.flash * 0.18})`;
+      g.fillRect(0, 0, width, height);
+    }
     this.drawHud(g);
     this.callouts.draw(g, width, height);
   }
@@ -355,6 +440,12 @@ class TowerTopple implements GameInstance {
     g.textAlign = "right";
     g.textBaseline = "top";
     g.fillText(`HEIGHT ${this.stack.length - 1}`, width - 20, 12);
+    if (this.streak > 0) {
+      const fire = this.streak >= FIRE_STREAK;
+      g.fillStyle = fire ? "#FF3D7A" : "#FFB020";
+      g.font = `700 ${fire ? 30 : 24}px Bebas Neue, Impact, sans-serif`;
+      g.fillText(fire ? `ON FIRE x${this.streak}` : `PERFECT x${this.streak}`, width - 20, 44);
+    }
 
     const n = this.seats.length;
     const sbW = 170;
@@ -398,6 +489,7 @@ class TowerTopple implements GameInstance {
     const out: GameStat[] = [];
     for (const s of this.seats) {
       out.push({ playerId: s.player.id, label: "Perfects", value: String(s.perfects) });
+      out.push({ playerId: s.player.id, label: "Best streak", value: String(s.bestStreak) });
       out.push({ playerId: s.player.id, label: "Lives left", value: String(s.lives) });
     }
     return out;

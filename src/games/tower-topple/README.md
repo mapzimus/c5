@@ -4,7 +4,10 @@ One shared tower. Everyone takes turns stacking onto it.
 
 - A block swings on a rope above the tower. On your turn, tap anywhere (or press Space) to drop it.
 - Whatever hangs over the edge of the block below is sliced off and tumbles away, so the tower narrows. The next player inherits whatever you left.
-- Land within 6px of center for a **PERFECT**: the block keeps its full width and you score +2. Any other landing scores +1.
+- Land within 6px of center for a **PERFECT**: the block keeps its width, grows back 14px, and you score +2. Any other landing scores +1.
+- Perfects chain across players on the shared tower: the streak pays +3, +4, +5 (cap +6) and from 3 in a row it's **ON FIRE** (double regrow, hit-stop, flash). Any non-perfect drop ends the streak.
+- Sloppy drops knock the tower: it sways on a damped spring, and a swaying top shifts where the next block has to land. Bigger overhang, bigger wobble.
+- Sliced chunks and missed blocks bounce on the ground beside the tower before coming to rest.
 - Miss the tower entirely and you lose one of your 3 lives. The top of the tower widens a bit so play can continue.
 - The swing speeds up as the tower grows, and the camera scrolls up with it.
 - The game ends when only one player has lives left, or when everyone has used their 12 drops. Highest score wins (ties share the win).

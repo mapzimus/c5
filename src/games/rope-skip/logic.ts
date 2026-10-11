@@ -11,6 +11,10 @@ export const MAX_OMEGA = 9;
 /** Rope phase where it sweeps the jumpers' feet. 0 = overhead. */
 export const BOTTOM = Math.PI;
 export const BOT_LEAD = 0.2;
+/** Every this many clears in a row pays a bonus point. */
+export const STREAK_EVERY = 5;
+/** Clearing with less height margin than this is a close call (sparks, no bonus). */
+export const CLOSE_CALL_MARGIN = 0.12;
 
 export function clampOmega(omega: number): number {
   return Math.min(MAX_OMEGA, Math.max(MIN_OMEGA, Math.abs(omega)));
@@ -38,6 +42,27 @@ export function jumpHeight(t: number | null): number {
 /** True when a jumper `t` seconds into a jump (null = grounded) is high enough to clear the rope. */
 export function isClear(t: number | null): boolean {
   return jumpHeight(t) > CLEAR_FRACTION;
+}
+
+/** Bonus points awarded when a jumper's clear streak reaches `streak` (1 per STREAK_EVERY). */
+export function streakBonus(streak: number): number {
+  return streak > 0 && streak % STREAK_EVERY === 0 ? 1 : 0;
+}
+
+/** True when a clear was barely a clear. */
+export function isCloseCall(t: number | null): boolean {
+  const h = jumpHeight(t);
+  return h > CLEAR_FRACTION && h < CLEAR_FRACTION + CLOSE_CALL_MARGIN;
+}
+
+/** Launch velocity (px/s) for a jumper the rope just swept, scaled by rope speed. */
+export function knockVelocity(omega: number, rand: () => number): { vx: number; vy: number; spin: number } {
+  const k = omega / MAX_OMEGA;
+  return {
+    vx: 180 + k * 420 + rand() * 80,
+    vy: -(260 + k * 360),
+    spin: 6 + k * 10 + rand() * 4,
+  };
 }
 
 /** Wrapped signed angle difference in (-PI, PI]. */

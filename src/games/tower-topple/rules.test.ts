@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { Rng } from "../../core/rng";
 import { towerTopple } from "./tower-topple";
-import { isOver, nextSeat, regrow, sliceDrop, START_WIDTH } from "./rules";
+import {
+  FIRE_STREAK, PERFECT_REGROW, START_WIDTH, dropScore, isOver, nextSeat, perfectWidth, regrow, sliceDrop, wobbleKick,
+} from "./rules";
 
 describe("tower topple rules", () => {
   const top = { x: 640, w: 200 };
@@ -64,5 +66,31 @@ describe("tower topple game", () => {
     expect(game.isFinished()).toBe(true);
     expect(game.getScores().some((s) => s.score > 0)).toBe(true);
     game.destroy();
+  });
+});
+
+describe("tower topple streaks and wobble", () => {
+  it("perfect streaks pay more, capped", () => {
+    const perfect = sliceDrop({ x: 640, w: 200 }, 640, 200);
+    expect(dropScore(perfect, 1)).toBe(2);
+    expect(dropScore(perfect, 2)).toBe(3);
+    expect(dropScore(perfect, 9)).toBe(6);
+    expect(dropScore(sliceDrop({ x: 640, w: 200 }, 700, 200), 5)).toBe(1);
+  });
+
+  it("perfects grow the block back, faster on fire", () => {
+    expect(perfectWidth(100, 1)).toBe(100 + PERFECT_REGROW);
+    expect(perfectWidth(100, FIRE_STREAK)).toBe(100 + PERFECT_REGROW * 2);
+    expect(perfectWidth(START_WIDTH - 1, 1)).toBe(START_WIDTH);
+  });
+
+  it("sloppier drops kick the tower harder", () => {
+    const top = { x: 640, w: 200 };
+    const small = wobbleKick(sliceDrop(top, 650, 200), 5);
+    const big = wobbleKick(sliceDrop(top, 720, 200), 5);
+    expect(small).toBeGreaterThan(0);
+    expect(big).toBeGreaterThan(small);
+    expect(wobbleKick(sliceDrop(top, 640, 200), 5)).toBe(0);
+    expect(wobbleKick(sliceDrop(top, 900, 200), 5)).toBe(0);
   });
 });
