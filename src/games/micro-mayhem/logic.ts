@@ -7,19 +7,37 @@ import type { Rng } from "../../core/rng";
  */
 
 export const MICROGAMES_PER_MATCH = 15;
-export const CARD_S = 1.0;
+export const CARD_S = 1.1;
 export const RESULT_S = 0.6;
 export const INTRO_S = 1.3;
-export const FINAL_S = 2.2;
+export const FINAL_S = 2.4;
 /** Play time per microgame, by speed tier (every 5 microgames ramps a tier). */
-export const TIER_LIMITS = [4.0, 3.2, 2.5] as const;
+export const TIER_LIMITS = [3.6, 3.0, 2.4] as const;
 /** Bot success odds per tier. */
 export const BOT_SUCCESS = [0.8, 0.7, 0.58] as const;
+/** A jinxed bot succeeds this fraction as often (humans suffer through the distortion itself). */
+export const BOT_JINX_FACTOR = 0.6;
 export const BOT_DELAY_MIN = 0.2;
 export const BOT_DELAY_MAX = 0.7;
+/** Heat multiplier caps here. */
+export const HEAT_MAX = 3;
+/** Points lost when a DOUBLE wager fails (doubled in overdrive). */
+export const WAGER_PENALTY = 2;
+/** Microgame index from which every point counts double. */
+export const OVERDRIVE_FROM = 10;
+/** Trailing the leader by this many points (and being last) makes you the underdog. */
+export const UNDERDOG_GAP = 3;
 
 export type MicroKind = "pop" | "swat" | "catch" | "dodge" | "match" | "hold" | "shake" | "stop";
 export const MICRO_KINDS: readonly MicroKind[] = ["pop", "swat", "catch", "dodge", "match", "hold", "shake", "stop"];
+
+/** Lane distortions a JINX can cast on a rival's next microgame. */
+export type JinxKind = "flip" | "spin" | "tiny" | "fog";
+export const JINX_KINDS: readonly JinxKind[] = ["flip", "spin", "tiny", "fog"];
+export const JINX_LABEL: Record<JinxKind, string> = { flip: "FLIPPED", spin: "SPINNING", tiny: "TINY", fog: "FOGGED" };
+/** Scale used by the TINY jinx: tap targets stay >= the minimum touch size. */
+export const TINY_SCALE = 0.72;
+export const SPIN_RATE = 2.2;
 
 export function tierOf(index: number): number {
   return Math.min(TIER_LIMITS.length - 1, Math.floor(index / 5));
@@ -32,6 +50,10 @@ export function limitFor(index: number): number {
 /** True when microgame `index` starts a faster tier (5, 10). */
 export function isSpeedUp(index: number): boolean {
   return index > 0 && index % 5 === 0 && tierOf(index) !== tierOf(index - 1);
+}
+
+export function isOverdrive(index: number): boolean {
+  return index >= OVERDRIVE_FROM;
 }
 
 /** Random microgame order with no immediate repeats. */
@@ -47,23 +69,84 @@ export function planOrder(rng: Rng, count = MICROGAMES_PER_MATCH): MicroKind[] {
   return out;
 }
 
-export interface Outcome {
+/** Heat multiplier for a run of `streak` consecutive successes: x1, x2 from 2 in a row, x3 from 4. */
+export function heatFor(streak: number): number {
+  return Math.min(HEAT_MAX, 1 + Math.floor(streak / 2));
+}
+
+export interface RoundSeat {
   success: boolean;
   /** Seconds from microgame start to the success, null when failed. */
   at: number | null;
+  /** Heat multiplier the seat played this microgame with. */
+  heat: number;
+  /** DOUBLE wager armed during the card. */
+  wagered: boolean;
+  /** Underdogs lose nothing when a wager fails. */
+  underdog: boolean;
 }
 
-/** 1 point per success, +1 for the single fastest success. */
-export function scoreOutcomes(outcomes: readonly Outcome[]): { points: number[]; fastest: number | null } {
-  const points = outcomes.map((o) => (o.success ? 1 : 0));
+export interface RoundScore {
+  /** Score change per seat (can be negative; callers floor the total at 0). */
+  deltas: number[];
+  fastest: number | null;
+}
+
+/**
+ * Success scores `heat` points, x2 when doubled, +1 to the single fastest success; everything
+ * x2 in overdrive. A failed wager costs WAGER_PENALTY (x2 in overdrive) unless the seat is the underdog.
+ */
+export function scoreRound(seats: readonly RoundSeat[], overdrive: boolean): RoundScore {
+  const mult = overdrive ? 2 : 1;
   let fastest: number | null = null;
-  for (let i = 0; i < outcomes.length; i++) {
-    const o = outcomes[i]!;
-    if (!o.success || o.at === null) continue;
-    if (fastest === null || o.at < outcomes[fastest]!.at!) fastest = i;
+  for (let i = 0; i < seats.length; i++) {
+    const s = seats[i]!;
+    if (!s.success || s.at === null) continue;
+    if (fastest === null || s.at < seats[fastest]!.at!) fastest = i;
   }
-  if (fastest !== null) points[fastest]! += 1;
-  return { points, fastest };
+  const deltas = seats.map((s, i) => {
+    if (s.success) return (s.heat * (s.wagered ? 2 : 1) + (fastest === i ? 1 : 0)) * mult;
+    return s.wagered && !s.underdog ? -WAGER_PENALTY * mult : 0;
+  });
+  return { deltas, fastest };
+}
+
+/** Legacy helper kept for the simple case: 1 per success, +1 fastest. */
+export function scoreOutcomes(outcomes: readonly { success: boolean; at: number | null }[]): { points: number[]; fastest: number | null } {
+  const r = scoreRound(outcomes.map((o) => ({ ...o, heat: 1, wagered: false, underdog: false })), false);
+  return { points: r.deltas, fastest: r.fastest };
+}
+
+/**
+ * JINX punches up: the fastest seat hexes the highest-scoring rival whose score is at least their own.
+ * Returns null when nobody qualifies (the jinxer is alone in front).
+ */
+export function pickJinxTarget(scores: readonly number[], jinxer: number): number | null {
+  const mine = scores[jinxer] ?? 0;
+  let target: number | null = null;
+  for (let i = 0; i < scores.length; i++) {
+    if (i === jinxer) continue;
+    const sc = scores[i]!;
+    if (sc < mine) continue;
+    if (target === null || sc > scores[target]!) target = i;
+  }
+  return target;
+}
+
+/** Last place (ties allowed) and at least UNDERDOG_GAP behind the leader. */
+export function isUnderdog(scores: readonly number[], i: number): boolean {
+  if (scores.length < 2) return false;
+  const mine = scores[i] ?? 0;
+  const top = Math.max(...scores);
+  const low = Math.min(...scores);
+  return mine === low && top - mine >= UNDERDOG_GAP;
+}
+
+/** Odds a bot arms DOUBLE: underdogs nearly always, otherwise more when behind, hot or in overdrive. */
+export function botWagerChance(opts: { deficit: number; heat: number; underdog: boolean; overdrive: boolean }): number {
+  if (opts.underdog) return 0.9;
+  const p = 0.15 + Math.min(0.25, opts.deficit * 0.05) + (opts.heat - 1) * 0.12 + (opts.overdrive ? 0.15 : 0);
+  return Math.max(0, Math.min(0.75, p));
 }
 
 export interface Zone {
@@ -91,13 +174,41 @@ export interface BotPlan {
   succeed: boolean;
 }
 
+/** Affine lane distortion about the play-area centre. */
+export interface JinxTransform {
+  scale: number;
+  rot: number;
+  /** -1 mirrors vertically. */
+  flipY: number;
+}
+
+export function jinxTransform(kind: JinxKind | null, t: number): JinxTransform {
+  switch (kind) {
+    case "flip": return { scale: 1, rot: 0, flipY: -1 };
+    case "spin": return { scale: 1, rot: t * SPIN_RATE, flipY: 1 };
+    case "tiny": return { scale: TINY_SCALE, rot: 0, flipY: 1 };
+    default: return { scale: 1, rot: 0, flipY: 1 };
+  }
+}
+
+/** Map a point in play-area coords through the inverse of the distortion (finger -> world). */
+export function unjinxPoint(xf: JinxTransform, cx: number, cy: number, x: number, y: number): { x: number; y: number } {
+  const dx = x - cx;
+  const dy = y - cy;
+  const c = Math.cos(-xf.rot);
+  const s = Math.sin(-xf.rot);
+  const rx = dx * c - dy * s;
+  const ry = dx * s + dy * c;
+  return { x: cx + rx / xf.scale, y: cy + ry / (xf.scale * xf.flipY) };
+}
+
 export interface Sparks {
   burst(x: number, y: number, colors: readonly string[], big?: boolean): void;
 }
 
 const FONT = "Bebas Neue, Impact, sans-serif";
-/** Space reserved at the top of a zone for name + score. */
-export const ZONE_HEADER = 96;
+/** Space reserved at the top of a zone for name, score and heat. */
+export const ZONE_HEADER = 110;
 
 /** A short set of distinct, readable colours for props. */
 const PROP_COLORS = ["#FF3D7A", "#3EE0FF", "#FFB020", "#B8FF3D", "#C77DFF", "#FF8C42"] as const;
@@ -108,9 +219,16 @@ export abstract class Microgame {
   abstract readonly hint: string;
   success = false;
   failed = false;
+  /** Set by a microgame when a failure was a whisker away ("SO CLOSE"). */
+  nearMiss = false;
   /** Seconds since reset. */
   t = 0;
   successAt: number | null = null;
+  /** Lane distortion in force for this microgame. */
+  jinx: JinxKind | null = null;
+  /** Last finger position in play coords (the FOG spotlight follows it). */
+  lastTouch: { x: number; y: number } | null = null;
+  private hintDeferred = false;
   protected zone: Zone = { x: 0, y: 0, w: 320, h: 720 };
   protected limit = 4;
   protected minTap = 60;
@@ -139,10 +257,13 @@ export abstract class Microgame {
     this.sparks = sparks;
     this.success = false;
     this.failed = false;
+    this.nearMiss = false;
     this.t = 0;
     this.successAt = null;
     this.bot = null;
     this.botDone = false;
+    this.jinx = null;
+    this.lastTouch = null;
     this.setup();
   }
 
@@ -167,18 +288,49 @@ export abstract class Microgame {
     if (!this.done && this.t >= this.limit) this.fail();
   }
 
-  /** Feed one pointer event (already in logical canvas coords). */
+  /** Feed one pointer event (already in logical canvas coords). A jinx warps the finger the same way it warps the lane. */
   handle(ev: MicroInput): void {
     if (this.done) return;
-    this.input({ ...ev, x: ev.x - this.zone.x, y: ev.y - this.zone.y - ZONE_HEADER });
+    const local = { x: ev.x - this.zone.x, y: ev.y - this.zone.y - ZONE_HEADER };
+    this.lastTouch = local;
+    const p = unjinxPoint(jinxTransform(this.jinx, this.t), this.pw / 2, this.ph / 2, local.x, local.y);
+    this.input({ ...ev, x: p.x, y: p.y });
   }
 
   /** Draw in zone space: (0,0) is the top-left of the play area under the header. */
   render(g: CanvasRenderingContext2D, zone: Zone): void {
     g.save();
+    g.beginPath();
+    g.rect(zone.x, zone.y, zone.w, zone.h);
+    g.clip();
     g.translate(zone.x, zone.y + ZONE_HEADER);
+    const xf = jinxTransform(this.jinx, this.t);
+    const cx = this.pw / 2;
+    const cy = this.ph / 2;
+    this.hintDeferred = this.jinx !== null;
+    g.save();
+    g.translate(cx, cy);
+    g.rotate(xf.rot);
+    g.scale(xf.scale, xf.scale * xf.flipY);
+    g.translate(-cx, -cy);
     this.draw(g);
     g.restore();
+    if (this.jinx === "fog" && !this.done) this.drawFog(g);
+    if (this.hintDeferred) {
+      this.hintDeferred = false;
+      this.drawHint(g);
+    }
+    g.restore();
+  }
+
+  private drawFog(g: CanvasRenderingContext2D): void {
+    const c = this.lastTouch ?? { x: this.pw / 2, y: this.ph / 2 };
+    const r = Math.max(this.pw * 0.3, this.minTap * 1.6);
+    const grad = g.createRadialGradient(c.x, c.y, r * 0.5, c.x, c.y, r * 1.6);
+    grad.addColorStop(0, "rgba(10,6,24,0)");
+    grad.addColorStop(1, "rgba(10,6,24,0.93)");
+    g.fillStyle = grad;
+    g.fillRect(0, 0, this.pw, this.ph);
   }
 
   protected win(): void {
@@ -209,6 +361,7 @@ export abstract class Microgame {
   protected abstract botTick(dt: number): void;
 
   protected drawHint(g: CanvasRenderingContext2D): void {
+    if (this.hintDeferred) return;
     g.save();
     g.fillStyle = "rgba(244,247,251,0.35)";
     g.font = `700 ${Math.round(Math.min(26, this.pw * 0.08))}px ${FONT}`;
@@ -362,9 +515,12 @@ export class SwatGame extends Microgame {
   protected input(ev: MicroInput): void {
     if (ev.type !== "down") return;
     this.swats.push({ x: ev.x, y: ev.y, life: 0.25 });
-    if (Math.hypot(ev.x - this.x, ev.y - this.y) < this.r * 1.4) {
+    const d = Math.hypot(ev.x - this.x, ev.y - this.y);
+    if (d < this.r * 1.4) {
       this.spark(this.x, this.y, ["#B8FF3D", "#2d3b12"], true);
       this.win();
+    } else if (d < this.r * 2.6) {
+      this.nearMiss = true;
     }
   }
 
@@ -461,6 +617,7 @@ export class CatchGame extends Microgame {
         this.win();
       } else {
         this.splat = true;
+        this.nearMiss = Math.abs(this.eggX - this.basketX) - this.basketW / 2 < this.basketW * 0.35;
         this.spark(this.eggX, this.eggY + 10, ["#FFE08A", "#f4f7fb"]);
         this.fail();
       }
@@ -572,6 +729,7 @@ export class DodgeGame extends Microgame {
         this.spark(blobX, this.blobY, ["#B8FF3D", "#ffffff"]);
         this.win();
       } else {
+        this.nearMiss = this.startY !== null;
         this.spark(blobX, this.blobY, ["#FF3D7A", "#F4F7FB"], true);
         this.fail();
       }
@@ -789,6 +947,7 @@ export class HoldGame extends Microgame {
         this.spark(this.pw / 2, this.barY, ["#B8FF3D", "#ffffff"], true);
         this.win();
       } else {
+        this.nearMiss = Math.min(Math.abs(this.fill - this.bandLo), Math.abs(this.fill - this.bandHi)) < 0.07;
         this.fail();
       }
     }
@@ -872,6 +1031,7 @@ export class ShakeGame extends Microgame {
 
   protected step(dt: number): void {
     this.wobble *= Math.pow(0.02, dt);
+    if (this.t >= this.limit && this.taps >= SHAKE_TAPS - 2) this.nearMiss = true;
     if (this.success) {
       this.appleVy += 1400 * dt;
       this.appleY = Math.min(this.ph * 0.46, this.appleY + this.appleVy * dt);
@@ -985,6 +1145,8 @@ export class StopGame extends Microgame {
       this.spark(cx, cy, ["#B8FF3D", "#ffffff"], true);
       this.win();
     } else {
+      const into = this.intoWedge(this.angle);
+      this.nearMiss = into < this.wedgeSize + 0.35 || into > Math.PI * 2 - 0.35;
       this.spark(cx, cy, ["#FF3D7A"]);
       this.fail();
     }
@@ -1054,9 +1216,9 @@ export function makeMicrogame(kind: MicroKind): Microgame {
   }
 }
 
-/** Bot plan for a microgame at speed tier `tier`: 200-700ms delay, ~80% success, less when faster. */
-export function planBot(rng: Rng, tier: number): BotPlan {
-  const chance = BOT_SUCCESS[Math.min(tier, BOT_SUCCESS.length - 1)]!;
+/** Bot plan for a microgame at speed tier `tier`: 200-700ms delay, ~80% success, less when faster or jinxed. */
+export function planBot(rng: Rng, tier: number, jinxed = false): BotPlan {
+  const chance = BOT_SUCCESS[Math.min(tier, BOT_SUCCESS.length - 1)]! * (jinxed ? BOT_JINX_FACTOR : 1);
   return { delay: rng.float(BOT_DELAY_MIN, BOT_DELAY_MAX), succeed: rng.next() < chance };
 }
 
