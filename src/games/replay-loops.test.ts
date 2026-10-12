@@ -26,21 +26,45 @@ describe("replay loops", () => {
     game.destroy();
   });
 
-  it("Booty Haul rewards a raid once, blocks repeats, and recharges movement", () => {
+  it("Booty Haul raids into the hold, blocks repeats, hauls home, and recharges movement", () => {
     const game = bootyHaul.create(context());
     // Inspect the live fleet to place the player beside an actual vessel.
     const state = game as any;
     state.park("p0", shipPos(state.ships[0], state.lanes));
     state.raid("p0");
-    const score = game.getScores()[0]!.score;
-    expect(score).toBeGreaterThan(0);
+    const seat = state.playerStates.get("p0");
+    const hold = seat.hold;
+    expect(hold).toBeGreaterThan(0);
+    expect(game.getScores()[0]!.score).toBe(0);
     state.raid("p0");
-    expect(game.getScores()[0]!.score).toBe(score);
+    expect(seat.hold).toBe(hold);
+    state.haul("p0");
+    expect(seat.hold).toBe(0);
+    expect(game.getScores()[0]!.score).toBe(Math.round(hold * 1.5));
+    state.haul("p0");
+    expect(game.getScores()[0]!.score).toBe(Math.round(hold * 1.5));
     state.park("p0", [0, 0]);
     state.park("p0", [1, 1]);
-    expect(state.playerStates.get("p0").reparks).toBe(0);
+    expect(seat.reparks).toBe(0);
     for (let i = 0; i < 7 * 60; i++) game.update(1 / 60);
-    expect(state.playerStates.get("p0").reparks).toBe(1);
+    expect(seat.reparks).toBe(1);
+    game.destroy();
+  });
+
+  it("Booty Haul banks leftover hold at face value when time runs out", () => {
+    const game = bootyHaul.create(context());
+    const state = game as any;
+    state.park("p0", shipPos(state.ships[0], state.lanes));
+    state.raid("p0");
+    const seat = state.playerStates.get("p0");
+    const hold = seat.hold;
+    expect(hold).toBeGreaterThan(0);
+    state.elapsed = 74.99;
+    // The raid's hit-stop freezes a few frames first.
+    for (let i = 0; i < 30 && !game.isFinished(); i++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(true);
+    expect(seat.hold).toBe(0);
+    expect(game.getScores()[0]!.score).toBe(hold);
     game.destroy();
   });
 
