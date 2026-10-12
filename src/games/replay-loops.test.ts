@@ -85,7 +85,9 @@ describe("replay loops", () => {
     expect(game.isFinished()).toBe(true);
     const stats = game.getStats().filter((s) => s.label === "Damage");
     expect(stats.some((s) => Number(s.value) > 0)).toBe(true);
-    expect(Math.max(...game.wins)).toBe(2);
+    // Four players play two islands, so the winner may take it on damage with a single island win.
+    expect(Math.max(...game.wins)).toBeGreaterThanOrEqual(1);
+    expect(game.island).toBe(2);
     expect(game.perks.some((p) => p.length > 0)).toBe(true);
     game.destroy();
   }, 120_000);
