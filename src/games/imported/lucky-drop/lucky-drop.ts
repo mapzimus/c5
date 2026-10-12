@@ -8,18 +8,22 @@ import { botAim } from "./rules";
 import { Callouts, Juice } from "../../../fx/juice";
 import { ModePicker } from "../../mode-picker";
 import { LuckyDropVersus } from "./versus";
+import { LuckyDropSprint } from "./sprint";
 
 export const luckyDrop: GameDefinition = {
   id: "lucky-drop",
   name: "Lucky Drop",
-  tagline: "Drop, match, multiply. A little skill. A little luck.",
-  description: "Unlimited drops, but a shot clock drops for you if you wait too long, and it speeds up as your score climbs. Bigger orbs (8s, 16s) start dropping too. Match identical orbs, build chains, and shake the board. Make 128 for a 1,000-point bonus; every size up doubles it, all the way to 4096. Take turns on fresh boards, or play Versus: two boards side by side on the same drops, at the same time. Highest score wins when every board overflows.",
+  tagline: "Same orbs. Same beat. Your call. A little skill. A little luck.",
+  description: "Sprint (the party mode): everyone plays at once on their own board for 90 seconds, in lockstep. One shared deck and one shared beat: each beat every board gets the same orb and you choose where it lands; hesitate and it drops where you aim. Match identical orbs, build chains, shake the board. Overflowing is a BUST, not the end: lose a quarter of that board's points and keep going on a fresh one. Anyone behind the leader charges a shake faster, and the last 20 seconds are OVERDRIVE at double points. Classic keeps the endless Take Turns and Versus modes.",
   durationMs: 0,
-  controls: "Pick Turns or Versus · Drag and release to drop · Arrows/A-D to aim · Space/seat action to drop · S or Shake to nudge",
+  controls: "Sprint: drag and release on your board to drop · seat keys: left/right aim, action drops, down shakes · tap SHAKE when charged · Classic: Take Turns or Versus",
   create: ctx => new ModePicker(ctx, "LUCKY DROP", [
-    { title: "TAKE TURNS", line1: "One board, one player", line2: "at a time.", color: LIME, create: c => new LuckyDropGame(c) },
-    { title: "VERSUS", line1: "Two boards at once,", line2: "same drops. Beat their score.", color: "#FF3D7A", create: c => new LuckyDropVersus(c) },
-  ], ctx.players.length < 2 || ctx.players.every(p => p.kind === "bot")),
+    { title: "SPRINT", line1: "90 seconds, all at once.", line2: "Same orbs, same beat. Busts cost 25%.", color: LIME, create: c => new LuckyDropSprint(c) },
+    { title: "CLASSIC", line1: "Endless until overflow:", line2: "Take Turns or Versus.", color: "#FF3D7A", create: c => new ModePicker(c, "CLASSIC · ENDLESS", [
+      { title: "TAKE TURNS", line1: "One board, one player", line2: "at a time.", color: LIME, create: cc => new LuckyDropGame(cc) },
+      { title: "VERSUS", line1: "Two boards at once,", line2: "same drops. Beat their score.", color: "#FF3D7A", create: cc => new LuckyDropVersus(cc) },
+    ], c.players.length < 2) },
+  ], ctx.players.every(p => p.kind === "bot")),
 };
 
 const LIME = UI.lime;

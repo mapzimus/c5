@@ -31,12 +31,13 @@ export function label(g: CanvasRenderingContext2D, text: string, x: number, y: n
   g.fillText(text, x, y);
 }
 
-export function drawOrb(g: CanvasRenderingContext2D, x: number, y: number, tier: number, alpha = 1, radius: number = RADII[tier]): void {
+/** `blur` false skips the soft shadow: cheaper when four boards draw at once. */
+export function drawOrb(g: CanvasRenderingContext2D, x: number, y: number, tier: number, alpha = 1, radius: number = RADII[tier], blur = true): void {
   g.save();
   g.globalAlpha = alpha;
   g.fillStyle = COLORS[tier];
   g.shadowColor = "#0b160943";
-  g.shadowBlur = 8;
+  g.shadowBlur = blur ? 8 : 0;
   g.shadowOffsetY = 5;
   g.beginPath(); g.arc(x, y, radius, 0, Math.PI * 2); g.fill();
   g.shadowColor = "transparent";

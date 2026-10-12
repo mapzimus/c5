@@ -40,20 +40,36 @@ export class DropWorld {
   lastDrop = -10;
   danger = 0;
   over = false;
+  /** Seconds a settled orb may sit above the line before the board overflows. */
+  dangerLimit = 3;
+  /** Height of the overflow line (Sprint lowers it so stacks matter inside 90 seconds). */
+  dangerLine: number = BOARD.danger;
+  /** Merge and bonus points are multiplied by this (Sprint's OVERDRIVE sets 2). */
+  multiplier = 1;
+  /** Biggest orb made so far on this board. */
+  topTier = 0;
   next: number;
   queued: number;
   events: DropEvent[] = [];
   private id = 0;
+  private rolled = 0;
 
+  /**
+   * `roller`, when given, replaces the score-based odds: it is asked for the tier of
+   * the n-th orb this board queues (0, 1, 2, …), so a shared deck can feed several boards.
+   */
   constructor(
     private readonly random: () => number,
     private readonly shakeRandom: () => number = random,
+    private readonly roller?: (index: number) => number,
   ) {
     this.next = this.roll();
     this.queued = this.roll();
   }
 
   private roll(): number {
+    const index = this.rolled++;
+    if (this.roller) return this.roller(index);
     // Odds shift toward 8s and 16s as the score climbs (see levels.ts).
     return rollTier(this.random(), this.score);
   }
@@ -79,8 +95,8 @@ export class DropWorld {
     return true;
   }
 
-  shake(): boolean {
-    if (this.charge < 6 || this.over) return false;
+  shake(cost = 6): boolean {
+    if (this.charge < cost || this.over) return false;
     this.charge = 0;
     for (const ball of this.balls) {
       ball.vx += (this.shakeRandom() - 0.5) * 420;
@@ -152,11 +168,12 @@ export class DropWorld {
         this.merges++;
         this.charge = Math.min(6, this.charge + 1);
         const tier = a.tier + 1, x = (a.x + b.x) / 2, y = (a.y + b.y) / 2;
-        const points = 2 ** tier * 10 * this.chain;
+        const points = 2 ** tier * 10 * this.chain * this.multiplier;
         this.score += points;
+        this.topTier = Math.max(this.topTier, tier);
         this.events.push({ type: "merge", x, y, tier, points, chain: this.chain });
         // 128 and up pay a doubling bonus with fanfare; the board stays.
-        const bonus = bonusFor(tier);
+        const bonus = bonusFor(tier) * this.multiplier;
         if (bonus) {
           this.score += bonus;
           this.events.push({ type: "burst", x, y, tier, bonus });
@@ -165,10 +182,10 @@ export class DropWorld {
       }
     }
 
-    const high = this.balls.some(ball => ball.y - ball.radius < BOARD.danger &&
+    const high = this.balls.some(ball => ball.y - ball.radius < this.dangerLine &&
       this.time - ball.born > 1.7 && Math.abs(ball.vy) < 75);
     this.danger = high ? this.danger + dt : Math.max(0, this.danger - dt * 2);
-    if (this.danger >= 3) {
+    if (this.danger >= this.dangerLimit) {
       this.over = true;
       this.events.push({ type: "over" });
     }
