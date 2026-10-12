@@ -9,17 +9,20 @@ import {
   type Player,
 } from "../../core/types";
 import { drawRacer, labelColor, shade, type RacerLook } from "./draw";
+import { traitsOf } from "./logic";
 import {
   RACER_COUNT,
   backersOf,
   draftRacers,
+  jitterStats,
   placings,
-  rollStats,
   type RacerEntry,
 } from "./rules";
-import { DerbyWorld, FINISH_X, STEP, type DerbyEvent, type Runner } from "./world";
+import { DerbyWorld, STEP, type DerbyEvent, type Runner } from "./world";
 
 const HEATS = 3;
+/** Cup heats run on a short course so three of them fit a party. */
+const TRACK_MUL = 0.62;
 const PLACE_PTS = [6, 5, 4, 3, 2, 1];
 const PLACE = ["1ST", "2ND", "3RD", "4TH", "5TH", "6TH"];
 const LANE_DY = 20;
@@ -111,13 +114,15 @@ export class CupDerby implements GameInstance {
   private startHeat(): void {
     if (this.heat > 0) this.world?.destroy();
     const cond = CONDITIONS[this.heat]!;
+    // the same runners on a different day: tendencies carry across the cup, with a wobble
     const entries = this.roster.map((e) => ({
       ...e,
-      stats: rollStats(this.ctx.rng),
+      stats: this.heat === 0 ? e.stats : jitterStats(e.stats, this.ctx.rng),
     }));
     this.world = new DerbyWorld(entries, this.ctx.rng, {
       obstacleMul: cond.obstacleMul,
       eventMul: cond.eventMul,
+      trackMul: TRACK_MUL,
     });
     this.camX = 260;
     this.zoom = ZOOM_MAX;
@@ -262,7 +267,7 @@ export class CupDerby implements GameInstance {
 
     // photo-finish slow-mo
     const [a, b] = order;
-    if (a && b && !a.finished && a.x > FINISH_X - 180 && a.x - b.x < 50) this.juice.slowMo(0.1, 0.35);
+    if (a && b && !a.finished && a.x > this.world.finishX - 180 && a.x - b.x < 50) this.juice.slowMo(0.1, 0.35);
 
     const cutoff = this.winnerAt >= 0 && this.world.time - this.winnerAt > AFTER_WIN_S;
     if (this.world.over([...this.bets.values()]) || cutoff) {
@@ -368,7 +373,7 @@ export class CupDerby implements GameInstance {
     const view = GAME_WIDTH / this.zoom;
     let target = (lead + tail) / 2 + 40;
     if (span > view) target = lead - view / 2 + 200 / this.zoom;
-    target = Math.min(target, FINISH_X + 250);
+    target = Math.min(target, this.world.finishX + 250);
     this.camX += (target - this.camX) * Math.min(1, dt * 2.5);
   }
 
@@ -629,7 +634,8 @@ export class CupDerby implements GameInstance {
       g.textAlign = "center";
       g.textBaseline = "middle";
       const meters = k * boardW;
-      const label = meters > 0 && meters < FINISH_X && meters % 1200 === 0 ? `${Math.round((FINISH_X - meters) / 10)}M TO GO` : ADS[((k % ADS.length) + ADS.length) % ADS.length]!;
+      const finish = this.world.finishX;
+      const label = meters > 0 && meters < finish && meters % 1200 === 0 ? `${Math.round((finish - meters) / 10)}M TO GO` : ADS[((k % ADS.length) + ADS.length) % ADS.length]!;
       g.fillText(label, (x0 + x1) / 2, boardY + boardH / 2 + 1);
     }
   }
@@ -659,7 +665,7 @@ export class CupDerby implements GameInstance {
     }
     g.fillStyle = "rgba(255,255,255,0.8)";
     g.fillRect(this.sx(0) - 2, top, 4, bottom - top);
-    const fx = this.sx(FINISH_X);
+    const fx = this.sx(this.world.finishX);
     const sq = 8 * this.zoom;
     for (let y = top, i = 0; y < bottom; y += sq, i += 1) {
       for (let c = 0; c < 2; c += 1) {
@@ -1178,7 +1184,7 @@ export class CupDerby implements GameInstance {
     }
     const order = this.world.order();
     for (const r of [...order].reverse()) {
-      const t = clamp(r.x / FINISH_X, 0, 1);
+      const t = clamp(r.x / this.world.finishX, 0, 1);
       const mx = x0 + (x1 - x0) * t;
       const my = y + (r.lane - 2.5) * 2.5;
       const backers = backersOf(r.lane, this.bets);
@@ -1260,10 +1266,13 @@ export class CupDerby implements GameInstance {
       g.font = "700 22px Bebas Neue, Impact, sans-serif";
       g.textAlign = "left";
       g.fillText(`#${r.lane + 1}`, x + 14, CARD_Y + 30);
-      g.textAlign = "right";
-      g.fillStyle = "#94a3b8";
-      g.font = "600 14px Outfit, sans-serif";
-      g.fillText(r.odds, x + CARD_W - 14, CARD_Y + 28);
+      let ox = x + CARD_W - 24;
+      for (const id of backersOf(r.lane, this.bets)) {
+        const p = this.ctx.players.find((pl) => pl.id === id);
+        if (!p) continue;
+        drawPlayerOrb(g, ox, CARD_Y + 24, 10, p);
+        ox -= 24;
+      }
       g.save();
       g.beginPath();
       g.roundRect(x, CARD_Y, CARD_W, CARD_H, 18);
@@ -1294,18 +1303,24 @@ export class CupDerby implements GameInstance {
       g.fillStyle = labelColor(r.spec.color);
       g.font = "700 34px Bebas Neue, Impact, sans-serif";
       g.fillText(r.spec.name.toUpperCase(), x + CARD_W / 2, CARD_Y + 262);
-      let ox = x + CARD_W / 2 - (backersOf(r.lane, this.bets).length - 1) * 15;
-      for (const id of backersOf(r.lane, this.bets)) {
-        const p = this.ctx.players.find((pl) => pl.id === id);
-        if (!p) continue;
-        drawPlayerOrb(g, ox, CARD_Y + 298, 12, p);
-        ox += 30;
-      }
+      // two honest traits; they carry (with a wobble) through all three heats
+      traitsOf(r.stats).forEach((trait, i) => {
+        const py = CARD_Y + 282 + i * 22;
+        g.fillStyle = trait.good ? "rgba(184,255,61,0.16)" : "rgba(255,61,122,0.16)";
+        g.beginPath();
+        g.roundRect(x + 19, py - 9, CARD_W - 38, 18, 9);
+        g.fill();
+        g.fillStyle = trait.good ? "#B8FF3D" : "#FF7EA6";
+        g.font = "600 12px Outfit, sans-serif";
+        g.textBaseline = "middle";
+        g.fillText(trait.label, x + CARD_W / 2, py);
+        g.textBaseline = "alphabetic";
+      });
     }
     g.fillStyle = "#64748b";
     g.font = "600 15px Outfit, sans-serif";
     g.textAlign = "center";
-    g.fillText("Click a runner or press 1–6 · your pick races all 3 heats", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
+    g.fillText("Tap a runner or press 1–6 · your pick races all 3 heats · pure luck, no cheering", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
   }
 
   // ------------------------------------------------------------------ GameInstance

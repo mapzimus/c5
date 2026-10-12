@@ -1,20 +1,45 @@
 import { drawPlayerOrb } from "../../core/draw";
-import { Callouts, Juice } from "../../fx/juice";
+import { Callouts, Juice, loadBest, saveBest } from "../../fx/juice";
 import { GAME_HEIGHT, GAME_WIDTH, type GameContext, type GameDefinition, type GameInstance, type GameStat, type Player } from "../../core/types";
 import { drawRacer, labelColor, shade, type RacerLook } from "./draw";
-import { RACER_COUNT, backersOf, draftRacers, placings, scoreBets } from "./rules";
-import { DerbyWorld, FINISH_X, STEP, type DerbyEvent, type Runner } from "./world";
+import {
+  BELL_AT,
+  FINAL_STRETCH_AT,
+  FINAL_STRETCH_EVENTS,
+  HEDGE_SLOWMO,
+  HEDGE_WINDOW_S,
+  botCheerRate,
+  botHedgeDelay,
+  botHedgePick,
+  cheerBox,
+  cheerSeconds,
+  chipBoxes,
+  decisiveIncident,
+  describeIncident,
+  hedgeOptions,
+  inBox,
+  isUnderdogCheer,
+  panelLayout,
+  pickPoints,
+  scorePicks,
+  traitsOf,
+  type Box,
+  type Incident,
+  type Picks,
+} from "./logic";
+import { RACER_COUNT, backersOf, draftRacers, placings } from "./rules";
+import { DerbyWorld, STEP, type DerbyEvent, type Runner } from "./world";
 import { CupDerby } from "./cup";
 import { ModePicker } from "../mode-picker";
 
 export const chaosDerby: GameDefinition = {
   id: "chaos-derby",
   name: "Chaos Derby",
-  tagline: "Bet on a runner. Watch it all go wrong.",
+  tagline: "Bet on a runner. Cheer once. Hedge at the bell.",
   description:
-    "Six runners, a long track full of hurdles, crates, bananas and mud, and zero skill. Pick who you think wins, then watch them trip, nap, sneeze, get flattened by boulders and run the wrong way. Whoever backed the best finisher takes the point.",
+    "Six runners, a long track full of hurdles, crates, bananas and mud, and almost zero skill. Pick who you think wins, then watch them trip, nap, sneeze, get flattened by boulders and run the wrong way. You get one CHEER to spend when it matters, and when the halfway bell rings you can hedge on a second runner. Whoever's picks pay out most takes the point.",
   durationMs: 0,
-  controls: "Click a runner or press 1–6 to bet. Then yell at the screen.",
+  controls: "Tap a runner or press 1–6 to bet. Tap your CHEER button (or your action key) once per race. At the bell, tap a chip to hedge.",
   create: (ctx) =>
     new ModePicker(
       ctx,
@@ -22,14 +47,14 @@ export const chaosDerby: GameDefinition = {
       [
         {
           title: "SINGLE RACE",
-          line1: "One race, one bet,",
-          line2: "one winner.",
+          line1: "One bet, one cheer,",
+          line2: "a hedge at the bell.",
           color: "#FFB020",
           create: (c) => new ChaosDerby(c),
         },
         {
           title: "3-RACE CUP",
-          line1: "Three heats, escalating chaos.",
+          line1: "Three short heats, pure luck.",
           line2: "Your pick races them all.",
           color: "#ef4444",
           create: (c) => new CupDerby(c),
@@ -44,8 +69,12 @@ const GROUND_SY = 585;
 const ZOOM_MIN = 0.85;
 const ZOOM_MAX = 1.45;
 const READY_S = 3;
-const AFTER_WIN_S = 12;
-const RESULTS_S = 5;
+const AFTER_WIN_S = 6;
+const RESULTS_S = 6;
+/** Single races run on a shorter course than the full FINISH_X track: about half a minute of racing. */
+const TRACK_MUL = 0.66;
+const BEST_KEY = "v2-hedge";
+const GOLD = "#FFB020";
 const PLACE = ["1ST", "2ND", "3RD", "4TH", "5TH", "6TH"];
 const ADS = ["BEANS", "NAP CO.", "SOCKS 4 LESS", "BANANA INSURANCE", "DAVE'S CRATES", "HORSE? NO.", "SNACKS", "C5"];
 const CARD_W = 188;
@@ -78,6 +107,24 @@ interface Dust {
 
 const laneDy = (lane: number): number => (lane - 2.5) * LANE_DY;
 
+/** One player's stake in the race and the buttons they get for it. */
+interface Seat {
+  player: Player;
+  panel: Box;
+  /** Lane backed at the bet, -1 until placed. */
+  main: number;
+  hedge: number | null;
+  /** Race time the cheer was spent, -1 while still in hand. */
+  cheerAt: number;
+  /** Seconds the backed runner has been off their feet. */
+  downT: number;
+  /** When in the window a bot taps a chip, null if it dithers. */
+  botHedgeAt: number | null;
+  /** Short highlight on the panel after something good. */
+  flashT: number;
+  flash: string;
+}
+
 class ChaosDerby implements GameInstance {
   private readonly world: DerbyWorld;
   private readonly bets = new Map<string, number>();
@@ -85,6 +132,9 @@ class ChaosDerby implements GameInstance {
   private readonly callouts = new Callouts();
   private readonly pops: Pop[] = [];
   private readonly dust: Dust[] = [];
+  private readonly seats: Seat[];
+  private readonly incidents: Incident[] = [];
+  private readonly best: number;
   private phase: Phase = "bet";
   private time = 0;
   private phaseT = 0;
@@ -98,16 +148,123 @@ class ChaosDerby implements GameInstance {
   private lastTick = 0;
   private finished = false;
   private readonly crowd: string[] = [];
+  /** Real seconds left in the hedge window; 0 when closed. */
+  private hedgeT = 0;
+  private bellRung = false;
+  private betsClosed = false;
+  private finalStretch = false;
+  /** Crowd going wild (cheers, final stretch), seconds left. */
+  private roarT = 0;
+  private recorded = false;
+  private newRecord = false;
 
   constructor(private readonly ctx: GameContext) {
-    this.world = new DerbyWorld(draftRacers(ctx.rng), ctx.rng);
+    this.world = new DerbyWorld(draftRacers(ctx.rng), ctx.rng, { trackMul: TRACK_MUL });
     this.botWait = ctx.rng.float(0.7, 1.5);
     const palette = ["#f87171", "#fbbf24", "#60a5fa", "#a78bfa", "#34d399", "#f472b6", "#e2e8f0", "#fb923c", "#94a3b8"];
     for (let i = 0; i < 97; i += 1) this.crowd.push(palette[(i * 7 + (i >> 2)) % palette.length]!);
+    const panels = panelLayout(ctx.players.length, GAME_WIDTH, ctx.minTap);
+    this.seats = ctx.players.map((player, i) => ({
+      player,
+      panel: panels[i]!,
+      main: -1,
+      hedge: null,
+      cheerAt: -1,
+      downT: 0,
+      botHedgeAt: null,
+      flashT: 0,
+      flash: "",
+    }));
+    this.best = loadBest(chaosDerby.id, BEST_KEY);
+    ctx.canvas.style.touchAction = "none";
+    ctx.canvas.addEventListener("pointerdown", this.onDown);
   }
 
   private get bettor(): Player | undefined {
     return this.ctx.players.find((p) => !this.bets.has(p.id));
+  }
+
+  private get picks(): Map<string, Picks> {
+    return new Map(this.seats.filter((s) => s.main >= 0).map((s) => [s.player.id, { main: s.main, hedge: s.hedge }]));
+  }
+
+  private runnerOf(lane: number): Runner | undefined {
+    return this.world.runners.find((r) => r.lane === lane);
+  }
+
+  /** Every lane someone has money on: main picks and hedges. */
+  private watchedLanes(): number[] {
+    const lanes: number[] = [];
+    for (const seat of this.seats) {
+      if (seat.main >= 0) lanes.push(seat.main);
+      if (seat.hedge !== null) lanes.push(seat.hedge);
+    }
+    return lanes;
+  }
+
+  // ------------------------------------------------------------------ input
+
+  private toLogical(e: PointerEvent): { x: number; y: number } {
+    const r = this.ctx.canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / (r.width || 1)) * GAME_WIDTH,
+      y: ((e.clientY - r.top) / (r.height || 1)) * GAME_HEIGHT,
+    };
+  }
+
+  /** Multi-touch by pointer: every human can hit their own CHEER or chips at once. */
+  private readonly onDown = (e: PointerEvent): void => {
+    if (this.phase !== "race") return;
+    const { x, y } = this.toLogical(e);
+    for (const seat of this.seats) {
+      if (seat.player.kind !== "human" || seat.main < 0) continue;
+      if (seat.cheerAt < 0 && inBox(x, y, cheerBox(seat.panel, this.ctx.minTap))) {
+        e.preventDefault();
+        this.cheer(seat);
+        return;
+      }
+      if (this.hedgeT > 0 && seat.hedge === null) {
+        for (const { lane, box } of chipBoxes(seat.panel, hedgeOptions(seat.main), this.ctx.minTap)) {
+          if (!inBox(x, y, box)) continue;
+          e.preventDefault();
+          this.hedge(seat, lane);
+          return;
+        }
+      }
+    }
+  };
+
+  private cheer(seat: Seat): void {
+    if (this.phase !== "race" || seat.cheerAt >= 0) return;
+    const r = this.runnerOf(seat.main);
+    if (!r || r.finished) return;
+    const order = this.world.order();
+    const position = order.indexOf(r);
+    const dur = cheerSeconds(position, order.length);
+    seat.cheerAt = this.world.time;
+    for (const event of this.world.cheer(r.lane, dur)) this.onEvent(event);
+    const name = seat.player.name.toUpperCase();
+    const underdog = isUnderdogCheer(position, order.length);
+    this.callouts.show(underdog ? `${name}: UNDERDOG ROAR!` : `${name} CHEERS FOR ${r.spec.name.toUpperCase()}!`, seat.player.color, { life: 1.6, size: underdog ? 48 : 38, y: 0.56 });
+    this.juice.burst(this.sx(r.body.position.x), this.sy(r.body.position.y, r.lane), [seat.player.color, "#F4F7FB"], { count: 26, speed: 300, gravity: 300, life: 0.8, size: 5 });
+    this.juice.shake(underdog ? 0.3 : 0.15);
+    this.roarT = Math.max(this.roarT, dur);
+    seat.flashT = 1;
+    seat.flash = underdog ? "ROAR!" : "GO GO GO";
+    this.ctx.sfx.collect();
+    this.ctx.sfx.streak(underdog ? 3 : 2);
+  }
+
+  private hedge(seat: Seat, lane: number): void {
+    if (this.hedgeT <= 0 || seat.hedge !== null || lane === seat.main) return;
+    const r = this.runnerOf(lane);
+    if (!r) return;
+    seat.hedge = lane;
+    this.pops.push({ lane, text: `${seat.player.name.toUpperCase()} HEDGES`, life: 1.4, max: 1.4, color: seat.player.color, tilt: this.ctx.rng.float(-0.15, 0.15) });
+    this.juice.burst(this.sx(r.body.position.x), this.sy(r.body.position.y, r.lane) - 30 * this.zoom, seat.player.color, { count: 14, speed: 180, gravity: 200, life: 0.6 });
+    seat.flashT = 0.8;
+    seat.flash = `HEDGED #${lane + 1}`;
+    this.ctx.sfx.collect();
   }
 
   // ------------------------------------------------------------------ update
@@ -127,7 +284,7 @@ class ChaosDerby implements GameInstance {
         this.updateReady();
         break;
       case "race":
-        this.updateRace(dt);
+        this.updateRace(dt, realDt);
         break;
       case "done": {
         const click = this.ctx.input.consumeClick();
@@ -179,6 +336,8 @@ class ChaosDerby implements GameInstance {
 
   private placeBet(player: Player, lane: number): void {
     this.bets.set(player.id, lane);
+    const seat = this.seats.find((s) => s.player.id === player.id);
+    if (seat) seat.main = lane;
     this.ctx.sfx.collect();
     const x = cardX(lane) + CARD_W / 2;
     this.juice.burst(x, CARD_Y + CARD_H - 30, player.color, { count: 16, speed: 180, gravity: 260, life: 0.55 });
@@ -198,8 +357,9 @@ class ChaosDerby implements GameInstance {
     }
   }
 
-  private updateRace(dt: number): void {
-    this.acc += dt;
+  private updateRace(dt: number, realDt: number): void {
+    // the halfway bell: the race crawls while everyone picks a hedge
+    this.acc += this.hedgeT > 0 ? dt * HEDGE_SLOWMO : dt;
     let steps = 0;
     while (this.acc >= STEP && steps < 5) {
       for (const event of this.world.step()) this.onEvent(event);
@@ -207,12 +367,16 @@ class ChaosDerby implements GameInstance {
       steps += 1;
     }
     if (steps === 5) this.acc = 0;
+    this.roarT = Math.max(0, this.roarT - realDt);
+    for (const seat of this.seats) seat.flashT = Math.max(0, seat.flashT - realDt);
 
     const order = this.world.order();
     const lead = order[0]!;
+    this.updateBell(lead, realDt);
+    this.updateSeats(order, realDt);
     if (!lead.finished && lead.lane !== this.leaderLane) {
       if (this.leaderLane >= 0 && this.world.time > 4 && this.world.time - this.lastLeadCall > 4) {
-        this.callouts.show(`#${lead.lane + 1} ${lead.spec.name.toUpperCase()} TAKES THE LEAD`, labelColor(lead.spec.color), { life: 1.6, size: 34, y: 0.2 });
+        this.callouts.show(`#${lead.lane + 1} ${lead.spec.name.toUpperCase()} TAKES THE LEAD`, labelColor(lead.spec.color), { life: 1.6, size: 34, y: 0.27 });
         this.lastLeadCall = this.world.time;
       }
       this.leaderLane = lead.lane;
@@ -220,12 +384,111 @@ class ChaosDerby implements GameInstance {
 
     // photo-finish slow-mo
     const [a, b] = order;
-    if (a && b && !a.finished && a.x > FINISH_X - 180 && a.x - b.x < 50) this.juice.slowMo(0.1, 0.35);
+    if (a && b && !a.finished && a.x > this.world.finishX - 180 && a.x - b.x < 50) this.juice.slowMo(0.1, 0.35);
 
     const cutoff = this.winnerAt >= 0 && this.world.time - this.winnerAt > AFTER_WIN_S;
-    if (this.world.over([...this.bets.values()]) || cutoff) {
+    if (this.world.over(this.watchedLanes()) || cutoff) {
       this.setPhase("done");
       this.ctx.sfx.win();
+      this.recordBest();
+    }
+  }
+
+  /** Ring the bell at halfway, run the hedge window, open the final stretch. */
+  private updateBell(lead: Runner, realDt: number): void {
+    const progress = Math.max(lead.x, 0) / this.world.finishX;
+    if (!this.bellRung && progress >= BELL_AT) {
+      this.bellRung = true;
+      this.hedgeT = HEDGE_WINDOW_S;
+      this.callouts.show("HALFWAY BELL!", GOLD, { life: 2, size: 80, y: 0.5 });
+      this.callouts.show("HEDGE ON A SECOND RUNNER", "#F4F7FB", { life: 2, size: 34, y: 0.6 });
+      this.juice.shake(0.25);
+      this.ctx.sfx.go();
+      for (const seat of this.seats) if (seat.player.kind === "bot") seat.botHedgeAt = botHedgeDelay(this.ctx.rng);
+    }
+    if (this.hedgeT > 0) {
+      const elapsed = HEDGE_WINDOW_S - this.hedgeT;
+      this.hedgeT = Math.max(0, this.hedgeT - realDt);
+      const running = this.world.order().filter((r) => !r.finished).map((r) => r.lane);
+      for (const seat of this.seats) {
+        if (seat.hedge !== null || seat.main < 0) continue;
+        if (seat.player.kind === "bot") {
+          if (seat.botHedgeAt !== null && elapsed >= seat.botHedgeAt) {
+            const lane = botHedgePick(running, seat.main, this.ctx.rng);
+            if (lane !== null) this.hedge(seat, lane);
+          }
+        }
+      }
+      // keyboard: digits hedge for the first human still deciding
+      const human = this.seats.find((s) => s.player.kind === "human" && s.hedge === null && s.main >= 0);
+      if (human) {
+        for (let i = 0; i < RACER_COUNT; i += 1) {
+          if (this.ctx.input.justPressed(`Digit${i + 1}`) || this.ctx.input.justPressed(`Numpad${i + 1}`)) this.hedge(human, i);
+        }
+      }
+      const tick = Math.ceil(this.hedgeT);
+      if (tick !== this.lastTick && tick <= 3 && tick >= 1) {
+        this.lastTick = tick;
+        this.ctx.sfx.tick();
+      }
+      const everyone = this.seats.every((s) => s.main < 0 || s.hedge !== null);
+      if (this.hedgeT <= 0 || everyone) {
+        this.hedgeT = 0;
+        this.betsClosed = true;
+        this.callouts.show("BETS CLOSED", "#F4F7FB", { life: 1.2, size: 48, y: 0.5 });
+        this.ctx.sfx.whoosh();
+      }
+    }
+    if (!this.finalStretch && progress >= FINAL_STRETCH_AT) {
+      this.finalStretch = true;
+      this.world.eventBoost = FINAL_STRETCH_EVENTS;
+      this.callouts.show("FINAL STRETCH!", "#ef4444", { life: 1.8, size: 84, y: 0.3 });
+      this.juice.shake(0.3);
+      this.roarT = Math.max(this.roarT, 3);
+      this.ctx.sfx.hit();
+      this.ctx.sfx.streak(3);
+    }
+  }
+
+  /** Human cheer keys and bot cheering instincts. */
+  private updateSeats(order: Runner[], realDt: number): void {
+    const lead = order[0]!;
+    const leaderProgress = Math.max(lead.x, 0) / this.world.finishX;
+    for (const seat of this.seats) {
+      if (seat.main < 0) continue;
+      const r = this.runnerOf(seat.main);
+      if (!r) continue;
+      const down = r.mode !== "run" && r.mode !== "finished";
+      seat.downT = down ? seat.downT + realDt : 0;
+      if (seat.cheerAt >= 0 || r.finished) continue;
+      if (seat.player.kind === "human") {
+        if (this.ctx.input.actionPressed(seat.player.slot)) this.cheer(seat);
+        continue;
+      }
+      const rate = botCheerRate({
+        down,
+        downFor: seat.downT,
+        position: order.indexOf(r),
+        field: order.length,
+        leaderProgress,
+        windowOpen: this.hedgeT > 0,
+      });
+      if (rate > 0 && this.ctx.rng.next() < rate * realDt) this.cheer(seat);
+    }
+  }
+
+  private recordBest(): void {
+    if (this.recorded) return;
+    this.recorded = true;
+    const order = placings(this.world.runners);
+    for (const seat of this.seats) {
+      if (seat.player.kind !== "human" || seat.main < 0) continue;
+      const total = pickPoints(order, { main: seat.main, hedge: seat.hedge }).total;
+      if (total > 0 && saveBest(chaosDerby.id, total, BEST_KEY)) this.newRecord = true;
+    }
+    if (this.newRecord) {
+      this.callouts.show("NEW RECORD!", GOLD, { life: 2.2, size: 56, y: 0.46 });
+      this.ctx.sfx.streak(3);
     }
   }
 
@@ -262,7 +525,26 @@ class ChaosDerby implements GameInstance {
     if (r && event.kind === "cannon") this.puff(r, 14, "#475569");
     if (r && (event.kind === "hole" || event.kind === "popout")) this.puff(r, 12, "#7c5a34");
     if (r && event.kind === "mega") this.puff(r, 10, "#fde047");
+    if (r && event.kind === "cheer") this.puff(r, 10, "#fde047");
+    if (r) this.logIncident(event, r);
     if (r && event.kind === "finish") this.onFinish(r);
+  }
+
+  /** Keep the bad luck for the recap: who it hit, how hard, and where they were running. */
+  private logIncident(event: DerbyEvent, r: Runner): void {
+    let kind = event.kind;
+    let severity = event.severity;
+    if (kind === "fall") {
+      if (event.pop === "ZZZ") kind = "nap";
+      else if (event.pop === "ACHOO") kind = "sneeze";
+      else if (event.pop === "WHOA") kind = "trip";
+      else if (event.pop === "BONK" || event.pop === "OOF") severity = 0;
+      else return;
+    } else if (kind === "flattened") severity = 2;
+    else if (kind === "banana") severity = 1;
+    if (severity === undefined) return;
+    const position = event.position ?? this.world.order().indexOf(r);
+    this.incidents.push({ t: this.world.time, lane: r.lane, kind, severity, position });
   }
 
   private onFinish(r: Runner): void {
@@ -273,10 +555,27 @@ class ChaosDerby implements GameInstance {
       this.juice.slowMo(0.9, 0.3);
       this.juice.burst(GAME_WIDTH / 2, 120, [r.spec.color, "#F4F7FB", "#FFB020", "#3EE0FF"], { count: 90, speed: 520, gravity: 420, life: 1.6, size: 6 });
       const names = backersOf(r.lane, this.bets).map((id) => this.ctx.players.find((p) => p.id === id)?.name ?? "?");
-      this.callouts.show(`${r.spec.name.toUpperCase()} WINS!`, labelColor(r.spec.color), { life: 2.6, size: 88, y: 0.28 });
-      this.callouts.show(names.length ? `${names.join(" & ")} called it` : "Nobody backed that", "#F4F7FB", { life: 2.6, size: 36, y: 0.39 });
+      const hedgers = this.seats.filter((s) => s.hedge === r.lane);
+      this.callouts.show(`${r.spec.name.toUpperCase()} WINS!`, labelColor(r.spec.color), { life: 2.6, size: 88, y: 0.3 });
+      this.callouts.show(names.length ? `${names.join(" & ")} called it` : hedgers.length ? "Nobody backed that… but someone hedged" : "Nobody backed that", "#F4F7FB", { life: 2.6, size: 36, y: 0.39 });
+      for (const seat of this.seats) {
+        if (seat.main === r.lane) {
+          seat.flashT = 3;
+          seat.flash = "WINNER!";
+        } else if (seat.hedge === r.lane) {
+          seat.flashT = 3;
+          seat.flash = "HEDGE PAYS!";
+        }
+      }
+      if (hedgers.length) this.callouts.show(`${hedgers.map((s) => s.player.name.toUpperCase()).join(" & ")}: HEDGE PAYS!`, "#3EE0FF", { life: 2.4, size: 36, y: 0.48 });
     } else if (r.place === 2 && r.finishTime - this.winnerAt < 0.3) {
       this.callouts.show("PHOTO FINISH!", "#3EE0FF", { life: 1.6, size: 48, y: 0.48 });
+      for (const seat of this.seats) {
+        if (seat.main === r.lane) {
+          seat.flashT = 2;
+          seat.flash = "SO CLOSE!";
+        }
+      }
     }
   }
 
@@ -320,7 +619,7 @@ class ChaosDerby implements GameInstance {
   private updateCamera(dt: number): void {
     const racers = this.world.runners;
     const lead = Math.max(...racers.map((r) => r.x));
-    const bet = new Set(this.bets.values());
+    const bet = new Set(this.watchedLanes());
     const watched = racers.filter((r) => !r.finished && bet.has(r.lane));
     const tail = watched.length ? Math.min(...watched.map((r) => r.x)) : lead;
     const span = Math.max(1, lead - tail) + 360;
@@ -329,7 +628,7 @@ class ChaosDerby implements GameInstance {
     const view = GAME_WIDTH / this.zoom;
     let target = (lead + tail) / 2 + 40;
     if (span > view) target = lead - view / 2 + 200 / this.zoom;
-    target = Math.min(target, FINISH_X + 250);
+    target = Math.min(target, this.world.finishX + 250);
     this.camX += (target - this.camX) * Math.min(1, dt * 2.5);
   }
 
@@ -360,6 +659,7 @@ class ChaosDerby implements GameInstance {
     else {
       this.drawHud(g);
       this.drawOffscreen(g);
+      this.drawPanels(g);
     }
     if (this.phase === "done") this.drawResults(g);
     this.callouts.draw(g, GAME_WIDTH, GAME_HEIGHT);
@@ -395,7 +695,7 @@ class ChaosDerby implements GameInstance {
     g.fillStyle = "#101b33";
     g.fillRect(-40, standTop, GAME_WIDTH + 80, trackTop - standTop);
     const par = 0.4;
-    const excite = this.phase === "race" ? 1 : 0.4;
+    const excite = (this.phase === "race" ? 1 : 0.4) + (this.roarT > 0 ? 1.4 : 0);
     for (let row = 0; row < 8; row += 1) {
       const y = standTop + 14 + row * 17;
       const off = (this.camX * par) % 13;
@@ -420,14 +720,16 @@ class ChaosDerby implements GameInstance {
       const x1 = this.sx((k + 1) * boardW);
       if (x1 < -10 || x0 > GAME_WIDTH + 10) continue;
       const colors = ["#1d4ed8", "#be123c", "#047857", "#7c3aed", "#b45309"];
-      g.fillStyle = colors[((k % colors.length) + colors.length) % colors.length]!;
+      const flash = this.finalStretch && Math.floor(this.time * 4 + k) % 2 === 0;
+      g.fillStyle = flash ? "#ef4444" : colors[((k % colors.length) + colors.length) % colors.length]!;
       g.fillRect(x0, boardY, x1 - x0 - 3, boardH);
       g.fillStyle = "rgba(255,255,255,0.9)";
       g.font = `700 ${Math.round(boardH * 0.7)}px Bebas Neue, Impact, sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "middle";
       const meters = k * boardW;
-      const label = meters > 0 && meters < FINISH_X && meters % 1200 === 0 ? `${Math.round((FINISH_X - meters) / 10)}M TO GO` : ADS[((k % ADS.length) + ADS.length) % ADS.length]!;
+      const finish = this.world.finishX;
+      const label = flash ? "FINAL STRETCH" : meters > 0 && meters < finish && meters % 1200 === 0 ? `${Math.round((finish - meters) / 10)}M TO GO` : ADS[((k % ADS.length) + ADS.length) % ADS.length]!;
       g.fillText(label, (x0 + x1) / 2, boardY + boardH / 2 + 1);
     }
   }
@@ -458,7 +760,7 @@ class ChaosDerby implements GameInstance {
     // start and finish
     g.fillStyle = "rgba(255,255,255,0.8)";
     g.fillRect(this.sx(0) - 2, top, 4, bottom - top);
-    const fx = this.sx(FINISH_X);
+    const fx = this.sx(this.world.finishX);
     const sq = 8 * this.zoom;
     for (let y = top, i = 0; y < bottom; y += sq, i += 1) {
       for (let c = 0; c < 2; c += 1) {
@@ -789,6 +1091,18 @@ class ChaosDerby implements GameInstance {
     const h = r.h * r.scale;
     if (ride?.kind === "ufo") this.drawUfo(g, x, y, h, true);
     if (ride?.kind === "balloon") this.drawBalloons(g, x, y, h, r.lane);
+    if (r.hypeT > 0) {
+      const cheerer = this.seats.find((s) => s.main === r.lane && s.cheerAt >= 0);
+      const glow = g.createRadialGradient(x, y, 4 * z, x, y, (h * 0.9 + 20) * z);
+      glow.addColorStop(0, `${cheerer?.player.color ?? GOLD}aa`);
+      glow.addColorStop(1, "rgba(255,255,255,0)");
+      g.fillStyle = glow;
+      g.globalAlpha = 0.55 + Math.sin(this.time * 18) * 0.25;
+      g.beginPath();
+      g.arc(x, y, (h * 0.9 + 20) * z, 0, Math.PI * 2);
+      g.fill();
+      g.globalAlpha = 1;
+    }
 
     g.save();
     if (ride?.kind === "hole") {
@@ -842,11 +1156,21 @@ class ChaosDerby implements GameInstance {
       g.textAlign = "center";
       g.fillText(PLACE[r.place - 1]!, x, headY - 16 * z);
     }
-    let ox = x - (backersOf(r.lane, this.bets).length - 1) * 9;
-    for (const id of backersOf(r.lane, this.bets)) {
-      const player = this.ctx.players.find((p) => p.id === id);
-      if (!player) continue;
-      drawPlayerOrb(g, ox, headY, 8, player);
+    const backers = this.seats.filter((s) => s.main === r.lane);
+    const hedgers = this.seats.filter((s) => s.hedge === r.lane);
+    let ox = x - (backers.length + hedgers.length - 1) * 9;
+    for (const seat of backers) {
+      drawPlayerOrb(g, ox, headY, 8, seat.player);
+      ox += 18;
+    }
+    for (const seat of hedgers) {
+      g.strokeStyle = seat.player.color;
+      g.lineWidth = 2.5;
+      g.setLineDash([3, 3]);
+      g.beginPath();
+      g.arc(ox, headY, 7, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
       ox += 18;
     }
   }
@@ -1023,19 +1347,28 @@ class ChaosDerby implements GameInstance {
       g.fillStyle = i % 2 ? "#111827" : "#f8fafc";
       g.fillRect(x1 + 4, y - 9 + i * 6, 12, 6);
     }
+    // the bell and the final stretch, marked on the bar
+    for (const [at, color] of [[BELL_AT, GOLD], [FINAL_STRETCH_AT, "#ef4444"]] as const) {
+      const bx = x0 + (x1 - x0) * at;
+      g.fillStyle = color;
+      g.fillRect(bx - 1.5, y - 10, 3, 20);
+    }
     const order = this.world.order();
     for (const r of [...order].reverse()) {
-      const t = clamp(r.x / FINISH_X, 0, 1);
+      const t = clamp(r.x / this.world.finishX, 0, 1);
       const mx = x0 + (x1 - x0) * t;
       const my = y + (r.lane - 2.5) * 2.5;
       const backers = backersOf(r.lane, this.bets);
+      const hedger = this.seats.find((s) => s.hedge === r.lane);
       g.fillStyle = r.spec.color;
-      g.strokeStyle = backers.length ? (this.ctx.players.find((p) => p.id === backers[0])?.color ?? "#fff") : "#0b1020";
-      g.lineWidth = backers.length ? 3 : 1.5;
+      g.strokeStyle = backers.length ? (this.ctx.players.find((p) => p.id === backers[0])?.color ?? "#fff") : hedger ? hedger.player.color : "#0b1020";
+      g.lineWidth = backers.length ? 3 : hedger ? 2 : 1.5;
+      if (!backers.length && hedger) g.setLineDash([3, 3]);
       g.beginPath();
       g.arc(mx, my, 11, 0, Math.PI * 2);
       g.fill();
       g.stroke();
+      g.setLineDash([]);
       g.fillStyle = labelColor(r.spec.color) === r.spec.color ? "#0b1020" : "#f8fafc";
       g.font = "700 15px Bebas Neue, Impact, sans-serif";
       g.textAlign = "center";
@@ -1046,6 +1379,100 @@ class ChaosDerby implements GameInstance {
     g.fillStyle = "#94a3b8";
     g.font = "600 14px Outfit, sans-serif";
     g.fillText(this.phase === "ready" ? "ON YOUR MARKS" : `${this.world.time.toFixed(1)}s`, 24, y + 1);
+    if (this.hedgeT > 0) {
+      g.textAlign = "right";
+      g.fillStyle = GOLD;
+      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      g.fillText(`HEDGE ${Math.ceil(this.hedgeT)}`, GAME_WIDTH - 24, y + 1);
+    }
+  }
+
+  /** One panel per seat: who they back, how it's going, their CHEER, and the hedge chips while the bell rings. */
+  private drawPanels(g: CanvasRenderingContext2D): void {
+    const minTap = this.ctx.minTap;
+    const order = this.world.order();
+    for (const seat of this.seats) {
+      const { panel, player } = seat;
+      const flash = seat.flashT > 0 ? Math.min(1, seat.flashT) : 0;
+      g.fillStyle = "rgba(7,11,20,0.78)";
+      g.strokeStyle = flash ? player.color : `${player.color}99`;
+      g.lineWidth = flash ? 3 : 2;
+      g.beginPath();
+      g.roundRect(panel.x, panel.y, panel.w, panel.h, 14);
+      g.fill();
+      g.stroke();
+      drawPlayerOrb(g, panel.x + 20, panel.y + 20, 10, player);
+      g.textAlign = "left";
+      g.textBaseline = "middle";
+      g.fillStyle = flash ? player.color : "#F4F7FB";
+      g.font = "600 15px Outfit, sans-serif";
+      g.fillText(flash ? seat.flash : player.name, panel.x + 36, panel.y + 20);
+
+      const main = seat.main >= 0 ? this.runnerOf(seat.main) : undefined;
+      const placeOf = (r: Runner): string => (r.finished ? PLACE[r.place - 1]! : PLACE[order.indexOf(r)] ?? "");
+      if (main) {
+        g.fillStyle = labelColor(main.spec.color);
+        g.font = "700 20px Bebas Neue, Impact, sans-serif";
+        g.fillText(`#${main.lane + 1} ${main.spec.name.toUpperCase()} · ${placeOf(main)}`, panel.x + 12, panel.y + 45);
+      }
+      const hedge = seat.hedge === null ? undefined : this.runnerOf(seat.hedge);
+      g.font = "700 16px Bebas Neue, Impact, sans-serif";
+      if (hedge) {
+        g.fillStyle = labelColor(hedge.spec.color);
+        g.fillText(`HEDGE #${hedge.lane + 1} ${hedge.spec.name.toUpperCase()} · ${placeOf(hedge)}`, panel.x + 12, panel.y + 66);
+      } else if (this.hedgeT > 0) {
+        g.fillStyle = GOLD;
+        g.fillText(player.kind === "bot" ? "THINKING…" : "TAP A CHIP TO HEDGE ↓", panel.x + 12, panel.y + 66);
+      } else if (this.betsClosed) {
+        g.fillStyle = "#64748b";
+        g.fillText("NO HEDGE", panel.x + 12, panel.y + 66);
+      } else {
+        g.fillStyle = "#64748b";
+        g.fillText("HEDGE AT THE BELL", panel.x + 12, panel.y + 66);
+      }
+
+      // the CHEER button
+      const box = cheerBox(panel, minTap);
+      const live = this.phase === "race" && seat.cheerAt < 0 && main !== undefined && !main.finished;
+      const spent = seat.cheerAt >= 0;
+      const pulse = live ? 1 + Math.sin(this.time * 6) * 0.03 : 1;
+      g.save();
+      g.translate(box.x + box.w / 2, box.y + box.h / 2);
+      g.scale(pulse, pulse);
+      g.fillStyle = spent ? "rgba(148,163,184,0.18)" : live ? player.color : "rgba(148,163,184,0.3)";
+      g.beginPath();
+      g.roundRect(-box.w / 2, -box.h / 2, box.w, box.h, 12);
+      g.fill();
+      g.fillStyle = spent ? "#64748b" : live ? "#0b1020" : "#94a3b8";
+      g.font = `700 ${spent ? 16 : 24}px Bebas Neue, Impact, sans-serif`;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(spent ? "CHEERED" : "CHEER!", 0, 1);
+      g.restore();
+
+      // hedge chips for humans still deciding
+      if (this.hedgeT > 0 && seat.hedge === null && seat.main >= 0 && player.kind === "human") {
+        for (const { lane, box: chip } of chipBoxes(panel, hedgeOptions(seat.main), minTap)) {
+          const r = this.runnerOf(lane);
+          if (!r) continue;
+          g.fillStyle = r.spec.color;
+          g.strokeStyle = "rgba(7,11,20,0.9)";
+          g.lineWidth = 3;
+          g.beginPath();
+          g.roundRect(chip.x, chip.y, chip.w, chip.h, 10);
+          g.fill();
+          g.stroke();
+          const ink = labelColor(r.spec.color) === r.spec.color ? "#0b1020" : "#f8fafc";
+          g.fillStyle = ink;
+          g.font = `700 ${Math.round(chip.h * 0.46)}px Bebas Neue, Impact, sans-serif`;
+          g.textAlign = "center";
+          g.textBaseline = "middle";
+          g.fillText(`#${lane + 1}`, chip.x + chip.w / 2, chip.y + chip.h * 0.38);
+          g.font = `600 ${Math.round(chip.h * 0.2)}px Outfit, sans-serif`;
+          g.fillText(placeOf(r), chip.x + chip.w / 2, chip.y + chip.h * 0.74);
+        }
+      }
+    }
   }
 
   private drawOffscreen(g: CanvasRenderingContext2D): void {
@@ -1105,10 +1532,13 @@ class ChaosDerby implements GameInstance {
       g.font = "700 22px Bebas Neue, Impact, sans-serif";
       g.textAlign = "left";
       g.fillText(`#${r.lane + 1}`, x + 14, CARD_Y + 30);
-      g.textAlign = "right";
-      g.fillStyle = "#94a3b8";
-      g.font = "600 14px Outfit, sans-serif";
-      g.fillText(r.odds, x + CARD_W - 14, CARD_Y + 28);
+      let ox = x + CARD_W - 24;
+      for (const id of backersOf(r.lane, this.bets)) {
+        const p = this.ctx.players.find((pl) => pl.id === id);
+        if (!p) continue;
+        drawPlayerOrb(g, ox, CARD_Y + 24, 10, p);
+        ox -= 24;
+      }
 
       g.save();
       g.beginPath();
@@ -1141,33 +1571,41 @@ class ChaosDerby implements GameInstance {
       g.fillStyle = labelColor(r.spec.color);
       g.font = "700 34px Bebas Neue, Impact, sans-serif";
       g.fillText(r.spec.name.toUpperCase(), x + CARD_W / 2, CARD_Y + 262);
-      let ox = x + CARD_W / 2 - (backersOf(r.lane, this.bets).length - 1) * 15;
-      for (const id of backersOf(r.lane, this.bets)) {
-        const p = this.ctx.players.find((pl) => pl.id === id);
-        if (!p) continue;
-        drawPlayerOrb(g, ox, CARD_Y + 298, 12, p);
-        ox += 30;
-      }
+      // two honest traits, read off this race's form
+      traitsOf(r.stats).forEach((trait, i) => {
+        const py = CARD_Y + 282 + i * 22;
+        g.fillStyle = trait.good ? "rgba(184,255,61,0.16)" : "rgba(255,61,122,0.16)";
+        g.beginPath();
+        g.roundRect(x + 19, py - 9, CARD_W - 38, 18, 9);
+        g.fill();
+        g.fillStyle = trait.good ? "#B8FF3D" : "#FF7EA6";
+        g.font = "600 12px Outfit, sans-serif";
+        g.textBaseline = "middle";
+        g.fillText(trait.label, x + CARD_W / 2, py);
+        g.textBaseline = "alphabetic";
+      });
     }
     g.fillStyle = "#64748b";
     g.font = "600 15px Outfit, sans-serif";
     g.textAlign = "center";
-    g.fillText("Click a runner or press 1–6 · the odds are made up · nobody knows anything", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
+    g.fillText("Tap a runner or press 1–6 · the traits are true, the chaos is truer · one CHEER each · hedge at the halfway bell", GAME_WIDTH / 2, CARD_Y + CARD_H + 40);
   }
 
   private drawResults(g: CanvasRenderingContext2D): void {
     if (this.phaseT < 0.6) return;
     const order = placings(this.world.runners);
-    const scores = scoreBets(order, this.bets);
-    const rows = this.ctx.players.map((p) => {
-      const lane = this.bets.get(p.id);
-      const runner = lane === undefined ? null : this.world.runners.find((r) => r.lane === lane)!;
-      return { p, runner, place: runner ? order.indexOf(runner) : -1, score: scores.get(p.id) ?? 0 };
+    const rows = this.seats.map((seat) => {
+      const main = seat.main >= 0 ? this.runnerOf(seat.main) : undefined;
+      const hedge = seat.hedge === null ? undefined : this.runnerOf(seat.hedge);
+      const pts = seat.main >= 0 ? pickPoints(order, { main: seat.main, hedge: seat.hedge }) : { main: 0, hedge: 0, total: 0 };
+      return { seat, main, hedge, pts };
     });
-    const w = 560;
-    const h = 96 + rows.length * 38;
+    const winner = order[0];
+    const incident = winner ? decisiveIncident(this.incidents, winner.lane) : null;
+    const w = 760;
+    const h = 126 + rows.length * 38;
     const x = (GAME_WIDTH - w) / 2;
-    const y = GAME_HEIGHT * 0.62 - h / 2;
+    const y = GAME_HEIGHT * 0.6 - h / 2;
     g.fillStyle = "rgba(7,11,20,0.9)";
     g.strokeStyle = "rgba(244,247,251,0.25)";
     g.lineWidth = 2;
@@ -1179,23 +1617,36 @@ class ChaosDerby implements GameInstance {
     g.textBaseline = "middle";
     g.fillStyle = "#94a3b8";
     g.font = "600 16px Outfit, sans-serif";
-    g.fillText("Where the money went", GAME_WIDTH / 2, y + 30);
-    const best = Math.max(...rows.map((r) => r.score));
+    g.fillText("Where the money went · main pays double, hedge pays single", GAME_WIDTH / 2, y + 28);
+    g.fillStyle = GOLD;
+    g.font = "600 15px Outfit, sans-serif";
+    const victim = incident ? this.runnerOf(incident.lane) : undefined;
+    const recap = incident && victim
+      ? `Turning point: ${describeIncident(incident, `#${victim.lane + 1} ${victim.spec.name}`)}`
+      : winner
+        ? `Clean run: #${winner.lane + 1} ${winner.spec.name} was never caught`
+        : "";
+    g.fillText(recap, GAME_WIDTH / 2, y + 52);
+    const best = Math.max(...rows.map((r) => r.pts.total));
+    const placeOf = (r: Runner): string => (r.finished ? PLACE[order.indexOf(r)]! : "DNF");
     rows.forEach((row, i) => {
-      const ry = y + 72 + i * 38;
-      drawPlayerOrb(g, x + 40, ry, 13, row.p);
+      const ry = y + 92 + i * 38;
+      drawPlayerOrb(g, x + 36, ry, 13, row.seat.player);
       g.textAlign = "left";
-      g.fillStyle = row.score === best ? "#FFB020" : "#F4F7FB";
-      g.font = "600 20px Outfit, sans-serif";
-      const label = row.runner ? `#${row.runner.lane + 1} ${row.runner.spec.name} · ${row.runner.finished ? PLACE[row.place] : "still out there"}` : "no bet";
-      g.fillText(`${row.p.name} → ${label}`, x + 66, ry);
+      g.fillStyle = row.pts.total === best && best > 0 ? GOLD : "#F4F7FB";
+      g.font = "600 19px Outfit, sans-serif";
+      const main = row.main ? `#${row.main.lane + 1} ${row.main.spec.name} ${placeOf(row.main)}` : "no bet";
+      const hedge = row.hedge ? ` · hedge #${row.hedge.lane + 1} ${row.hedge.spec.name} ${placeOf(row.hedge)}` : row.main ? " · no hedge" : "";
+      g.fillText(`${row.seat.player.name} → ${main}${hedge}`, x + 60, ry);
       g.textAlign = "right";
-      g.fillText(row.score === best ? "WIN" : "", x + w - 30, ry);
+      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      g.fillText(`${row.pts.total} PTS${row.pts.total === best && best > 0 ? " · WIN" : ""}`, x + w - 26, ry);
     });
     g.textAlign = "center";
     g.fillStyle = "#475569";
     g.font = "600 13px Outfit, sans-serif";
-    g.fillText("click to continue", GAME_WIDTH / 2, y + h - 16);
+    const bestLine = this.newRecord ? "NEW RECORD for this table!" : this.best > 0 ? `best payout on this device: ${this.best} pts` : "";
+    g.fillText(`${bestLine}${bestLine ? " · " : ""}click to continue`, GAME_WIDTH / 2, y + h - 16);
   }
 
   isFinished(): boolean {
@@ -1203,21 +1654,26 @@ class ChaosDerby implements GameInstance {
   }
 
   getScores(): { playerId: string; score: number }[] {
-    const scores = scoreBets(placings(this.world.runners), this.bets);
+    const scores = scorePicks(placings(this.world.runners), this.picks);
     return this.ctx.players.map((p) => ({ playerId: p.id, score: scores.get(p.id) ?? 0 }));
   }
 
   getStats(): GameStat[] {
     const stats: GameStat[] = [];
     const order = placings(this.world.runners);
-    for (const p of this.ctx.players) {
-      const lane = this.bets.get(p.id);
-      if (lane === undefined) continue;
-      const runner = this.world.runners.find((r) => r.lane === lane);
+    for (const seat of this.seats) {
+      const p = seat.player;
+      const runner = seat.main >= 0 ? this.runnerOf(seat.main) : undefined;
       if (!runner) continue;
       const place = order.indexOf(runner) + 1;
-      stats.push({ playerId: p.id, label: "Backed", value: `#${lane + 1} ${runner.spec.name}` });
+      stats.push({ playerId: p.id, label: "Backed", value: `#${runner.lane + 1} ${runner.spec.name}` });
       stats.push({ playerId: p.id, label: "Finish", value: runner.finished ? PLACE[place - 1]! : "DNF" });
+      const hedge = seat.hedge === null ? undefined : this.runnerOf(seat.hedge);
+      if (hedge) {
+        const hp = order.indexOf(hedge) + 1;
+        stats.push({ playerId: p.id, label: "Hedge", value: `#${hedge.lane + 1} ${hedge.spec.name} ${hedge.finished ? PLACE[hp - 1]! : "DNF"}` });
+      }
+      stats.push({ playerId: p.id, label: "Cheer", value: seat.cheerAt >= 0 ? `at ${seat.cheerAt.toFixed(0)}s` : "unused" });
     }
     const top2 = order.filter((r) => r.finished).slice(0, 2);
     if (top2.length === 2) {
@@ -1235,6 +1691,7 @@ class ChaosDerby implements GameInstance {
   }
 
   destroy(): void {
+    this.ctx.canvas.removeEventListener("pointerdown", this.onDown);
     this.world.destroy();
   }
 }

@@ -94,6 +94,8 @@ export interface Runner extends Placeable {
   stuckX: number;
   /** Seconds a flattened racer can't be hit by a boulder again. */
   immuneT: number;
+  /** Seconds of crowd hype after a cheer: falls are shrugged off fast. */
+  hypeT: number;
   /** Counts down after a hard landing; drives the squash in the drawing. */
   landT: number;
   hopT: number;
@@ -161,6 +163,17 @@ export interface DerbyEvent {
   severity?: Severity;
 }
 
+export interface WorldOptions {
+  /** `false` turns off random events (for tests). */
+  events?: boolean;
+  /** More junk on the track (cup heats). */
+  obstacleMul?: number;
+  /** More random events per second. */
+  eventMul?: number;
+  /** Track length as a fraction of the full FINISH_X course. */
+  trackMul?: number;
+}
+
 type BadEvent =
   | "trip" | "sneeze" | "nap" | "wrongway" | "distracted" | "cramp" | "lightning"
   | "eagle" | "anvil" | "ufo" | "swap" | "balloon" | "hole" | "pie" | "dance" | "shrink";
@@ -204,6 +217,10 @@ export class DerbyWorld {
   finishedCount = 0;
   gust = 0;
   gustT = 0;
+  /** Where the finish line is for this race (FINISH_X scaled by trackMul). */
+  readonly finishX: number;
+  /** Extra event rate the game can switch on (FINAL STRETCH). */
+  eventBoost = 1;
   private nextEvent: number;
   private nextId = 1;
   private readonly hits: Matter.Pair[] = [];
@@ -212,12 +229,12 @@ export class DerbyWorld {
     for (const pair of e.pairs) this.hits.push(pair);
   };
 
-  /** `events: false` turns off random events (for tests). */
   constructor(
     entries: readonly RacerEntry[],
     private readonly rng: Rng,
-    private readonly opts: { events?: boolean; obstacleMul?: number; eventMul?: number } = {},
+    private readonly opts: WorldOptions = {},
   ) {
+    this.finishX = Math.round(FINISH_X * (opts.trackMul ?? 1));
     this.engine = Engine.create({ gravity: { x: 0, y: GRAVITY, scale: 0.001 }, enableSleeping: true });
     const ground = Bodies.rectangle(FINISH_X / 2, 200, FINISH_X + 8000, 400, {
       isStatic: true,
@@ -240,7 +257,7 @@ export class DerbyWorld {
   private buildTrack(): void {
     const rng = this.rng;
     let x = rng.float(900, 1500);
-    while (x < FINISH_X - 900) {
+    while (x < this.finishX - 900) {
       const width = rng.float(380, 640);
       const height = rng.float(24, 58);
       const slope = rng.float(0.55, 0.85);
@@ -258,7 +275,7 @@ export class DerbyWorld {
 
     const om = this.opts.obstacleMul ?? 1;
     x = 520;
-    while (x < FINISH_X - 260) {
+    while (x < this.finishX - 260) {
       if (this.hills.some((h) => x > h.x0 - 90 && x < h.x1 + 90)) {
         x += 120;
         continue;
@@ -384,6 +401,7 @@ export class DerbyWorld {
       stuckT: 0,
       stuckX: 0,
       immuneT: 0,
+      hypeT: 0,
       landT: 0,
       hopT: 0,
       wasGrounded: true,
@@ -425,7 +443,7 @@ export class DerbyWorld {
       this.randomEvent();
       // fewer runners left, fewer events: stragglers shouldn't get all the chaos to themselves
       const left = Math.max(1, this.runners.filter((r) => !r.finished).length);
-      this.nextEvent = this.rng.float(1.8, 3.4) * Math.sqrt(this.runners.length / left) / (this.opts.eventMul ?? 1);
+      this.nextEvent = this.rng.float(1.8, 3.4) * Math.sqrt(this.runners.length / left) / ((this.opts.eventMul ?? 1) * this.eventBoost);
     }
     this.gustT = Math.max(0, this.gustT - dt);
     if (this.gustT <= 0) this.gust = 0;
@@ -454,7 +472,7 @@ export class DerbyWorld {
   private control(r: Runner, dt: number): void {
     const b = r.body;
     r.modeT += dt;
-    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT", "landT", "hopT", "flatT", "pieT", "danceT", "jetT", "scaleT"] as const) {
+    for (const key of ["wrongT", "boostT", "slowT", "stopT", "dizzyT", "charT", "springT", "immuneT", "hypeT", "landT", "hopT", "flatT", "pieT", "danceT", "jetT", "scaleT"] as const) {
       r[key] = Math.max(0, r[key] - dt);
     }
     if (r.scale !== 1 && r.scaleT <= 0) this.setScale(r, 1, 0);
@@ -678,7 +696,7 @@ export class DerbyWorld {
       }
     }
 
-    if (!r.finished && r.x >= FINISH_X) {
+    if (!r.finished && r.x >= this.finishX) {
       r.finished = true;
       this.finishedCount += 1;
       r.place = this.finishedCount;
@@ -724,7 +742,7 @@ export class DerbyWorld {
     const b = r.body;
     this.setMode(r, "fallen");
     r.falls += 1;
-    r.getUpAt = r.stats.getUp * this.rng.float(0.8, 1.5);
+    r.getUpAt = r.stats.getUp * this.rng.float(0.8, 1.5) * (r.hypeT > 0 ? 0.35 : 1);
     grip(b, true);
     Body.setVelocity(b, { x: b.velocity.x + kickX, y: b.velocity.y + kickY });
     Body.setAngularVelocity(b, b.angularVelocity + spin);
@@ -986,7 +1004,7 @@ export class DerbyWorld {
 
   private startRide(r: Runner, kind: Ride["kind"], dur: number, x1: number, drift = 0): void {
     const b = r.body;
-    r.ride = { kind, t: 0, dur, x0: b.position.x, y0: b.position.y, x1: Math.min(FINISH_X - 60, Math.max(20, x1)), drift };
+    r.ride = { kind, t: 0, dur, x0: b.position.x, y0: b.position.y, x1: Math.min(this.finishX - 60, Math.max(20, x1)), drift };
     this.setMode(r, "ride");
     Body.setAngle(b, 0);
     if (kind === "hole") {
@@ -1025,7 +1043,7 @@ export class DerbyWorld {
         y = ground(x) + (r.h * r.scale + 10) * down;
       }
     }
-    x = Math.min(FINISH_X - 40, Math.max(20, x));
+    x = Math.min(this.finishX - 40, Math.max(20, x));
     Body.setPosition(b, { x, y });
     Body.setVelocity(b, { x: 0, y: 0 });
     Body.setAngle(b, ride.kind === "eagle" || ride.kind === "ufo" ? Math.sin(ride.t * 5) * 0.25 : 0);
@@ -1109,6 +1127,45 @@ export class DerbyWorld {
     if ((GOOD_EVENTS as readonly string[]).includes(kind)) this.goodEvent(kind as (typeof GOOD_EVENTS)[number], target, running);
     else if ((FIELD_EVENTS as readonly string[]).includes(kind)) this.fieldEvent(kind as (typeof FIELD_EVENTS)[number], running);
     else if (BAD_BY_SEVERITY.flat().includes(kind as BadEvent)) this.badEvent(kind as BadEvent, target);
+    return this.out.splice(before);
+  }
+
+  /**
+   * A backer's one cheer: the runner gets straight back up if down, shakes off whatever
+   * was slowing them, and sprints for `dur` seconds. Falls while hyped are shrugged off fast.
+   * Returns what happened, like `step()` does.
+   */
+  cheer(lane: number, dur: number): DerbyEvent[] {
+    const before = this.out.length;
+    const r = this.runners.find((x) => x.lane === lane);
+    if (!r || r.finished) return [];
+    const b = r.body;
+    if (r.mode === "ride" && r.ride) r.ride.t = r.ride.dur;
+    if (r.mode === "fallen" || r.mode === "getup") {
+      const standY = -this.heightAt(b.position.x) - (r.h * r.scale) / 2 - 1;
+      Body.setAngle(b, 0);
+      Body.setAngularVelocity(b, 0);
+      Body.setPosition(b, { x: b.position.x, y: standY });
+      Body.setVelocity(b, { x: 0, y: 0 });
+      grip(b, false);
+      r.sleeping = false;
+      this.setMode(r, "run");
+    }
+    r.hypeT = dur;
+    r.boostT = Math.max(r.boostT, dur);
+    r.stamina = 1;
+    r.stopT = 0;
+    r.slowT = 0;
+    r.dizzyT = 0;
+    r.charT = 0;
+    r.pieT = 0;
+    r.danceT = 0;
+    r.flatT = 0;
+    if (r.dir === -1) {
+      r.dir = 1;
+      r.wrongT = 0;
+    }
+    this.emit({ kind: "cheer", lane, pop: "LET'S GO!", sound: "boost" });
     return this.out.splice(before);
   }
 

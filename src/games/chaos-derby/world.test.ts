@@ -184,6 +184,75 @@ describe("chaos derby world", () => {
     }
   }, 60_000);
 
+  it("runs a shorter course when asked, finish line and all", () => {
+    const rng = new Rng(14);
+    const world = new DerbyWorld(draftRacers(rng), rng, { trackMul: 0.66 });
+    expect(world.finishX).toBe(Math.round(FINISH_X * 0.66));
+    for (const item of world.items) expect(item.body.position.x).toBeLessThan(world.finishX);
+    while (!world.runners.every((r) => r.finished) && world.time < MAX_RACE_S) world.step();
+    const first = placings(world.runners)[0]!;
+    expect(first.finished).toBe(true);
+    expect(first.finishTime).toBeLessThan(45);
+    expect(first.x).toBeGreaterThanOrEqual(world.finishX);
+    world.destroy();
+  });
+
+  it("throws events faster once the game turns the boost on", () => {
+    const count = (boost: number): number => {
+      const rng = new Rng(21);
+      const world = new DerbyWorld(draftRacers(rng), rng);
+      world.eventBoost = boost;
+      let n = 0;
+      for (let i = 0; i < 60 * 20; i += 1) for (const e of world.step()) if (e.callout || e.severity !== undefined) n += 1;
+      world.destroy();
+      return n;
+    };
+    expect(count(2.5)).toBeGreaterThan(count(1) * 1.3);
+  });
+
+  it("a cheer stands a sleeping runner straight up and sends them off at a sprint", () => {
+    const rng = new Rng(9);
+    const world = new DerbyWorld(draftRacers(rng), rng, { events: false });
+    for (let i = 0; i < 60 * 2; i += 1) world.step();
+    const r = world.runners[1]!;
+    world.fire("nap", 1);
+    for (let i = 0; i < 30; i += 1) world.step();
+    expect(r.mode).toBe("fallen");
+    expect(r.sleeping).toBe(true);
+    const events = world.cheer(1, 3);
+    expect(events.map((e) => e.kind)).toContain("cheer");
+    expect(r.mode).toBe("run");
+    expect(r.sleeping).toBe(false);
+    expect(r.boostT).toBeCloseTo(3);
+    const x0 = r.x;
+    for (let i = 0; i < 60; i += 1) world.step();
+    expect(r.x - x0).toBeGreaterThan(200);
+    expect(r.hypeT).toBeGreaterThan(0);
+    // cheering a finished runner does nothing
+    r.finished = true;
+    expect(world.cheer(1, 3)).toEqual([]);
+    world.destroy();
+  });
+
+  it("a hyped runner shrugs off a trip quickly", () => {
+    const down = (hyped: boolean): number => {
+      const rng = new Rng(33);
+      const world = new DerbyWorld(draftRacers(rng), rng, { events: false });
+      for (let i = 0; i < 60; i += 1) world.step();
+      const r = world.runners[2]!;
+      if (hyped) world.cheer(2, 4);
+      world.fire("trip", 2);
+      let t = 0;
+      while (r.mode !== "run" && t < 10) {
+        world.step();
+        t += 1 / 60;
+      }
+      world.destroy();
+      return t;
+    };
+    expect(down(true)).toBeLessThan(down(false));
+  });
+
   it("slips a runner who steps on a banana", () => {
     const rng = new Rng(5);
     const world = new DerbyWorld(draftRacers(rng), rng, { events: false });
