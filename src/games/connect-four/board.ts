@@ -1,12 +1,15 @@
-/** Pure board rules for Drop Zone: placing, power discs, gravity and win checks. */
+/** Pure board rules for Drop Zone: placing, power discs, gravity, tilts, line clears and scoring. */
 
 export const COLS = 7;
 export const ROWS = 6;
+/** Points for a plain four. Longer lines and chains multiply it (see lineScore). */
+export const LINE_POINTS = 100;
 
 export type Cell = string | null;
 /** grid[row][col]; row 0 is the top. */
 export type Grid = Cell[][];
 export type DiscKind = "normal" | "bomb" | "anvil";
+export type TiltDir = "left" | "right";
 
 export interface Pos {
   r: number;
@@ -23,6 +26,22 @@ export interface Fall {
   fromR: number;
   toR: number;
   owner: string;
+}
+
+export interface Slide {
+  r: number;
+  fromC: number;
+  toC: number;
+  owner: string;
+}
+
+/** One link of a chain: the lines found, every cell they cover, and the gravity moves after clearing. */
+export interface ChainStep {
+  chain: number;
+  lines: WinLine[];
+  cells: Pos[];
+  falls: Fall[];
+  points: Record<string, number>;
 }
 
 export function createGrid(rows = ROWS, cols = COLS): Grid {
@@ -101,8 +120,8 @@ const DIRS: [number, number][] = [
   [1, -1],
 ];
 
-/** Every run of 4+ same-owner discs on the board, one line per run. */
-export function findWins(grid: Grid): WinLine[] {
+/** Every run of `needed`+ same-owner discs on the board, one line per run. */
+export function findWins(grid: Grid, needed = 4): WinLine[] {
   const rows = grid.length;
   const cols = grid[0]!.length;
   const lines: WinLine[] = [];
@@ -123,7 +142,7 @@ export function findWins(grid: Grid): WinLine[] {
           nr += dr;
           nc += dc;
         }
-        if (cells.length >= 4) lines.push({ cells, winner: owner });
+        if (cells.length >= needed) lines.push({ cells, winner: owner });
       }
     }
   }
@@ -169,12 +188,201 @@ export function playMove(grid: Grid, col: number, kind: DiscKind, owner: string)
   return { grid: next, landed, destroyed, falls, lines, winner: pickWinner(lines, owner) };
 }
 
-/** Columns where `owner` would win right now with a plain disc. */
-export function winningColumns(grid: Grid, owner: string): number[] {
+/** Columns where `owner` would make a line right now with a plain disc. */
+export function winningColumns(grid: Grid, owner: string, needed = 4): number[] {
   const out: number[] = [];
   for (let c = 0; c < grid[0]!.length; c++) {
-    const res = playMove(grid, c, "normal", owner);
-    if (res && res.winner === owner) out.push(c);
+    const row = topRow(grid, c);
+    if (row < 0) continue;
+    grid[row]![c] = owner;
+    const hit = findWins(grid, needed).some((l) => l.winner === owner);
+    grid[row]![c] = null;
+    if (hit) out.push(c);
   }
   return out;
+}
+
+/** How many in a row score: four head to head, three once the board is shared by three or four colours. */
+export function lineLengthFor(playerCount: number): number {
+  return playerCount >= 3 ? 3 : 4;
+}
+
+/** Points one line is worth: 100 for the needed length, +50 per extra disc, times the chain link (1, 2, 3...). */
+export function lineScore(length: number, chain: number, needed = 4): number {
+  return (LINE_POINTS + Math.max(0, length - needed) * 50) * Math.max(1, chain);
+}
+
+/** Distinct cells covered by a set of lines (a cross counts each cell once). */
+export function lineCells(lines: WinLine[]): Pos[] {
+  const seen = new Set<number>();
+  const out: Pos[] = [];
+  for (const line of lines) {
+    for (const cell of line.cells) {
+      const key = cell.r * 1000 + cell.c;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(cell);
+    }
+  }
+  return out;
+}
+
+/** Points per owner for these lines at this chain link. Every line pays its owner; crosses pay twice. */
+export function scoreLines(lines: WinLine[], chain: number, needed = 4): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const line of lines) out[line.winner] = (out[line.winner] ?? 0) + lineScore(line.cells.length, chain, needed);
+  return out;
+}
+
+/** Empties the given cells. */
+export function clearCells(grid: Grid, cells: Pos[]): void {
+  for (const { r, c } of cells) grid[r]![c] = null;
+}
+
+/**
+ * Clears every line on the board, drops what was above, and repeats while new lines form.
+ * Mutates the grid and returns one step per chain link (empty when nothing lined up).
+ */
+export function settle(grid: Grid, needed = 4, startChain = 1, maxSteps = 12): ChainStep[] {
+  const steps: ChainStep[] = [];
+  for (let i = 0; i < maxSteps; i++) {
+    const lines = findWins(grid, needed);
+    if (lines.length === 0) break;
+    const chain = startChain + i;
+    const cells = lineCells(lines);
+    clearCells(grid, cells);
+    const falls = applyGravity(grid);
+    steps.push({ chain, lines, cells, falls, points: scoreLines(lines, chain, needed) });
+  }
+  return steps;
+}
+
+/** Sums the points of several chain steps per owner. */
+export function totalPoints(steps: ChainStep[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const step of steps) {
+    for (const [id, pts] of Object.entries(step.points)) out[id] = (out[id] ?? 0) + pts;
+  }
+  return out;
+}
+
+/**
+ * The Tilt: every row packs toward one side, keeping the order of its discs, as if the board were
+ * rocked sideways. Call applyGravity afterwards to let the stacks drop back down. Returns the moves.
+ */
+export function tiltSlide(grid: Grid, dir: TiltDir): Slide[] {
+  const slides: Slide[] = [];
+  const cols = grid[0]!.length;
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r]!;
+    const order = dir === "left"
+      ? Array.from({ length: cols }, (_, c) => c)
+      : Array.from({ length: cols }, (_, c) => cols - 1 - c);
+    const next: Cell[] = Array.from({ length: cols }, (): Cell => null);
+    let write = 0;
+    for (const c of order) {
+      const owner = row[c];
+      if (!owner) continue;
+      const toC = order[write]!;
+      next[toC] = owner;
+      if (toC !== c) slides.push({ r, fromC: c, toC, owner });
+      write++;
+    }
+    grid[r] = next;
+  }
+  return slides;
+}
+
+export interface TiltResult {
+  grid: Grid;
+  slides: Slide[];
+  falls: Fall[];
+  steps: ChainStep[];
+  points: Record<string, number>;
+}
+
+/** Plays a whole tilt (slide, drop, clear chains) on a copy of the grid. */
+export function previewTilt(grid: Grid, dir: TiltDir, needed = 4): TiltResult {
+  const next = cloneGrid(grid);
+  const slides = tiltSlide(next, dir);
+  const falls = applyGravity(next);
+  const steps = settle(next, needed);
+  return { grid: next, slides, falls, steps, points: totalPoints(steps) };
+}
+
+/** Which way the board tilts: heavier side wins, a tie goes to the most recent vote, no votes keeps the default. */
+export function tallyTilt(
+  votes: { dir: TiltDir; weight: number }[],
+  lastVote: TiltDir | null,
+  fallback: TiltDir,
+): TiltDir {
+  let left = 0;
+  let right = 0;
+  for (const v of votes) {
+    if (v.dir === "left") left += v.weight;
+    else right += v.weight;
+  }
+  if (left > right) return "left";
+  if (right > left) return "right";
+  return lastVote ?? fallback;
+}
+
+export interface SimResult {
+  grid: Grid;
+  landed: Pos;
+  destroyed: { cell: Pos; owner: string }[];
+  steps: ChainStep[];
+  points: Record<string, number>;
+}
+
+/**
+ * A full move as the match plays it: drop (or blast), then clear every chain. If `tilt` is given the
+ * board also tilts that way afterwards, as it does for the last drop before a tilt. Null if illegal.
+ */
+export function simulateMove(grid: Grid, col: number, kind: DiscKind, owner: string, tilt: TiltDir | null = null, needed = 4): SimResult | null {
+  const move = playMove(grid, col, kind, owner);
+  if (!move) return null;
+  const next = move.grid;
+  const steps = settle(next, needed);
+  if (tilt) {
+    const after = previewTilt(next, tilt, needed);
+    return { grid: after.grid, landed: move.landed, destroyed: move.destroyed, steps: steps.concat(after.steps), points: totalPoints(steps.concat(after.steps)) };
+  }
+  return { grid: next, landed: move.landed, destroyed: move.destroyed, steps, points: totalPoints(steps) };
+}
+
+/** Players sitting on the lowest score when someone is ahead of them; nobody when all are level. */
+export function underdogs(scores: Record<string, number>): string[] {
+  const ids = Object.keys(scores);
+  if (ids.length < 2) return [];
+  const values = ids.map((id) => scores[id] ?? 0);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) return [];
+  return ids.filter((id) => (scores[id] ?? 0) === min);
+}
+
+/**
+ * Scatters `perPlayer` discs of every owner onto the board at random, settled, with nothing lined up.
+ * The zone never starts empty, so the first tilt already has something to throw around.
+ */
+export function seedGrid(grid: Grid, owners: string[], perPlayer: number, random: () => number, needed = 4): Pos[] {
+  const placed: Pos[] = [];
+  const cols = grid[0]!.length;
+  const queue: string[] = [];
+  for (let i = 0; i < perPlayer; i++) for (const o of owners) queue.push(o);
+  for (const owner of queue) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const c = Math.floor(random() * cols);
+      const r = topRow(grid, c);
+      if (r < 0) continue;
+      grid[r]![c] = owner;
+      if (findWins(grid, needed).length === 0) {
+        placed.push({ r, c });
+        break;
+      }
+      grid[r]![c] = null;
+    }
+  }
+  return placed;
 }

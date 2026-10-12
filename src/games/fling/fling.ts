@@ -1,57 +1,51 @@
 import { fillArena, drawPlayerOrb } from "../../core/draw";
-import { Callouts, Juice } from "../../fx/juice";
+import { Callouts, Juice, saveBest } from "../../fx/juice";
 import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from "../../core/types";
 import type { Rng } from "../../core/rng";
 import type { Sfx } from "../../core/audio";
+import {
+  aimAt, applyFriction, BANK_STEP, bankMultiplier, bankPayout, BIG_BANK, botPlan, coinWaveInterval, COIN_FRICTION_PER_S,
+  COIN_LIFE_S, COIN_VALUES, COMBO_WINDOW_S, comboMultiplier, crownAndUnderdog, FAT_POUCH, GAME_DURATION_S, GRAB_RADIUS_MULT,
+  isHeist, isNearMiss, launchPower, launchVelocity, MIN_DRAG, nextVaultPos, REGRAB_CD, REGRAB_SPEED,
+  resolveCollision, spillCount, startPositions, stealAmount, stepBody, v2, vadd, VAULT_MOVE_HEIST_S, VAULT_MOVE_S,
+  vaultRadius, vdist, vlen, vmul, vnorm, vsub,
+} from "./logic";
+import type { Body, Bounds, Vec2 } from "./logic";
 
 export const fling: GameDefinition = {
   id: "fling",
-  name: "Fling!",
-  tagline: "Slingshot your ball. Collect coins. Steal everything.",
+  name: "Vault Heist",
+  tagline: "Fling, loot, cash out before they ram you.",
   description:
-    "90 seconds of chaos on a shared screen. Drag back your ball and release to fling it across the arena. " +
-    "Roll through coins to score, smash into opponents to steal theirs. Random events shake up the board " +
-    "every few seconds. The last 15 seconds is FRENZY MODE: double coins, double chaos. Highest score wins.",
-  durationMs: 90_000,
-  controls: "Drag back from your ball, release to fling",
+    "Drag back your ball and let go to fling it. Coins you roll over fill your POUCH, but a pouch is not points: " +
+    "roll into the roaming VAULT to bank it, and the fatter the pouch the bigger the multiplier. Get rammed and " +
+    "the attacker takes half your loot. The leader wears a crown worth extra, last place banks at +1x, and the " +
+    "last 15 seconds are the FINAL HEIST: every bank pays an extra x1. Most banked wins.",
+  durationMs: 63_000,
+  controls: "Drag back from your ball, release to fling. Roll into the vault to bank.",
   fillsScreen: true,
   create: (ctx) => new FlingGame(ctx),
 };
 
-// ── Vector helpers ──
-interface Vec2 { x: number; y: number }
-const v2 = (x = 0, y = 0): Vec2 => ({ x, y });
-const vadd = (a: Vec2, b: Vec2): Vec2 => v2(a.x + b.x, a.y + b.y);
-const vsub = (a: Vec2, b: Vec2): Vec2 => v2(a.x - b.x, a.y - b.y);
-const vmul = (a: Vec2, s: number): Vec2 => v2(a.x * s, a.y * s);
-const vlen = (a: Vec2): number => Math.sqrt(a.x * a.x + a.y * a.y);
-const vnorm = (a: Vec2): Vec2 => { const l = vlen(a); return l > 0.001 ? v2(a.x / l, a.y / l) : v2(); };
-const vdot = (a: Vec2, b: Vec2): number => a.x * b.x + a.y * b.y;
-const vdist = (a: Vec2, b: Vec2): number => vlen(vsub(a, b));
-
-// ── Tuning ──
-const FRICTION = 0.987;
-const RESTITUTION = 0.82;
-const WALL_BOUNCE = 0.75;
-const POWER_SCALE = 5.5;
-const MAX_POWER = 900;
-const MIN_DRAG = 18;
-const GRAB_RADIUS_MULT = 2.8;
-const REGRAB_SPEED = 50;
-const REGRAB_CD = 0.4;
-const GAME_DURATION = 90;
-const FRENZY_TIME = 15;
-const COIN_SPAWN_BASE = 2.2;
+const BEST_KEY = "v2-vault";
+/** Bots fling again a little before the ball has fully stopped (humans wait for REGRAB_SPEED). */
+const BOT_ACT_SPEED = 80;
+const HUD_H = 60;
 const EVENT_INTERVAL_BASE = 9;
 const MAX_COINS = 80;
-const STEAL_THRESHOLD = 150;
 
-const COIN_VALS: Record<string, number> = { bronze: 1, silver: 3, gold: 5, diamond: 10 };
-const COIN_COLORS: Record<string, string> = { bronze: "#cd7f32", silver: "#c0c0c0", gold: "#ffd700", diamond: "#ff66ff", dropped: "#cd7f32" };
+const COIN_COLORS: Record<string, string> = { bronze: "#cd7f32", silver: "#d8dde6", gold: "#ffd700", diamond: "#ff66ff", dropped: "#cd7f32" };
 const PU_NAMES = ["MAGNET", "MEGA", "SHIELD", "TURBO", "DOUBLE"] as const;
 const PU_COLORS: Record<string, string> = { MAGNET: "#ff6688", MEGA: "#ff66aa", SHIELD: "#44bbff", TURBO: "#ffcc00", DOUBLE: "#66ffaa" };
-
 const EVENT_LIST = ["COIN RAIN", "QUAKE", "JACKPOT", "SHUFFLE", "SCATTER", "GRAVITY", "BONUS TIME", "BUMPERS"] as const;
+const EVENT_COLORS: Record<string, string> = {
+  "COIN RAIN": "#ffd700", QUAKE: "#ff7744", JACKPOT: "#ff66ff", SHUFFLE: "#b8ff3d", SCATTER: "#3ee0ff",
+  GRAVITY: "#c9a3ff", "BONUS TIME": "#66ffaa", BUMPERS: "#ff4444",
+};
+const GOLD = "#ffd700";
+const HEIST_PINK = "#FF3D7A";
+const TAUNTS_STEAL = ["MINE!", "THANKS!", "YOINK", "GIMME"] as const;
+const TAUNTS_BANK = ["CHA-CHING", "SAFE!", "EASY", "BANKED"] as const;
 
 // ── Sub-types ──
 interface Coin {
@@ -62,17 +56,23 @@ interface Coin {
 interface MysteryBox { pos: Vec2; radius: number; life: number; bob: number; spin: number }
 interface Bumper { pos: Vec2; radius: number; life: number }
 interface Popup { x: number; y: number; text: string; color: string; size: number; life: number; maxLife: number; vy: number }
+interface Vault { pos: Vec2; radius: number; moveTimer: number; spin: number; flash: number; arrivals: number }
 
-interface Seat {
+interface Seat extends Body {
   player: Player;
-  pos: Vec2; vel: Vec2; radius: number; mass: number;
   grabbed: boolean; grabCd: number;
-  score: number; combo: number; comboTimer: number;
-  totalCollected: number; totalStolen: number;
+  /** Banked points (the score). */
+  score: number;
+  /** Unbanked loot riding on the ball: stealable. */
+  pouch: number;
+  combo: number; comboTimer: number;
+  coinsCollected: number; totalStolen: number; banks: number; bestBank: number;
   activePU: string | null; puTimer: number;
   turboReady: boolean; shielded: boolean; magnetTimer: number;
-  aiTimer: number;
+  aiTimer: number; bankAt: number;
   aim: Vec2 | null;
+  moving: boolean; flightVaultMin: number;
+  hitFlash: number; bankFlash: number;
 }
 
 class FlingGame implements GameInstance {
@@ -80,6 +80,7 @@ class FlingGame implements GameInstance {
   private readonly H: number;
   private readonly ballR: number;
   private readonly coinR: number;
+  private readonly bounds: Bounds;
   private readonly seats: Seat[];
   private readonly coins: Coin[] = [];
   private readonly boxes: MysteryBox[] = [];
@@ -90,16 +91,21 @@ class FlingGame implements GameInstance {
   private readonly callouts = new Callouts();
   private readonly rng: Rng;
   private readonly sfx: Sfx;
+  private readonly vault: Vault;
 
-  private timeLeft = GAME_DURATION;
-  private frenzy = false;
-  private coinTimer = 1.5;
+  private timeLeft = GAME_DURATION_S;
+  private elapsed = 0;
+  private clock = 0;
+  private heist = false;
+  private coinTimer = 1.2;
   private silverTimer = 5;
   private goldTimer = 12;
   private boxTimer = 8;
   private eventTimer = EVENT_INTERVAL_BASE * 0.7;
   private doubleTime = 0;
-  private eventBannerTimer = 0;
+  private leader = -1;
+  private underdog = -1;
+  private lastTick = -1;
   private done = false;
 
   constructor(private readonly ctx: GameContext) {
@@ -110,20 +116,27 @@ class FlingGame implements GameInstance {
     const m = Math.min(this.W, this.H);
     this.ballR = Math.max(14, m * 0.034);
     this.coinR = Math.max(5, this.ballR * 0.38);
+    this.bounds = { x0: 0, y0: HUD_H, x1: this.W, y1: this.H };
     this.juice = new Juice(() => this.rng.next());
 
-    const pad = 80;
-    const spawns = [v2(pad, pad), v2(this.W - pad, pad), v2(pad, this.H - pad), v2(this.W - pad, this.H - pad)];
+    const spawns = startPositions(this.bounds, this.ballR * 3.2);
     this.seats = ctx.players.map((player, i) => ({
       player,
       pos: { ...spawns[i % 4]! }, vel: v2(), radius: this.ballR, mass: 1,
       grabbed: false, grabCd: 0,
-      score: 0, combo: 0, comboTimer: 0, totalCollected: 0, totalStolen: 0,
+      score: 0, pouch: 0, combo: 0, comboTimer: 0, coinsCollected: 0, totalStolen: 0, banks: 0, bestBank: 0,
       activePU: null, puTimer: 0,
       turboReady: false, shielded: false, magnetTimer: 0,
-      aiTimer: 0.8 + this.rng.float(0, 1),
-      aim: null,
+      aiTimer: 0.8 + this.rng.float(0, 1), bankAt: FAT_POUCH + this.rng.int(0, 4),
+      aim: null, moving: false, flightVaultMin: Infinity, hitFlash: 0, bankFlash: 0,
     }));
+
+    const vr = vaultRadius(this.ballR, 0);
+    this.vault = {
+      pos: nextVaultPos(this.rng, this.bounds, spawns, vr, this.ballR * 8),
+      radius: vr, moveTimer: VAULT_MOVE_S, spin: 0, flash: 0, arrivals: 0,
+    };
+    for (let i = 0; i < 5; i++) this.spawnCoin("bronze");
 
     const canvas = ctx.canvas;
     canvas.style.touchAction = "none";
@@ -145,7 +158,7 @@ class FlingGame implements GameInstance {
   private readonly onDown = (event: PointerEvent): void => {
     const p = this.toLogical(event);
     let best = -1;
-    let bestDist = this.ballR * GRAB_RADIUS_MULT;
+    let bestDist = Math.max(this.ctx.minTap, this.ballR * GRAB_RADIUS_MULT);
     this.seats.forEach((seat, i) => {
       if (seat.player.kind !== "human" || seat.grabbed || seat.grabCd > 0) return;
       if (vlen(seat.vel) > REGRAB_SPEED) return;
@@ -177,7 +190,10 @@ class FlingGame implements GameInstance {
     seat.grabbed = false;
     seat.aim = null;
     if (!aim) return;
-    this.launchBall(seat, aim);
+    const vel = launchVelocity(seat.pos, aim, seat.turboReady);
+    if (!vel) return;
+    if (seat.turboReady) seat.turboReady = false;
+    this.launch(seat, vel);
   };
 
   private readonly onCancel = (event: PointerEvent): void => {
@@ -189,74 +205,54 @@ class FlingGame implements GameInstance {
     seat.aim = null;
   };
 
-  private launchBall(seat: Seat, aim: Vec2): void {
-    const drag = vsub(aim, seat.pos);
-    const dist = vlen(drag);
-    if (dist < MIN_DRAG) return;
-    const dir = vnorm(vmul(drag, -1));
-    let power = Math.min(dist * POWER_SCALE, MAX_POWER);
-    if (seat.turboReady) { power *= 2; seat.turboReady = false; }
-    seat.vel = vmul(dir, power);
+  private launch(seat: Seat, vel: Vec2): void {
+    seat.vel = vel;
     seat.grabCd = REGRAB_CD;
+    seat.moving = true;
+    seat.flightVaultMin = Infinity;
     this.sfx.whoosh();
-    this.juice.burst(seat.pos.x, seat.pos.y, seat.player.color, { count: 5, speed: 70, life: 0.25, gravity: 0 });
+    const back = vnorm(vmul(vel, -1));
+    this.juice.burst(seat.pos.x, seat.pos.y, seat.player.color, {
+      count: 6, speed: 90, life: 0.25, gravity: 0, angle: Math.atan2(back.y, back.x), spread: 0.9,
+    });
   }
 
   // ── AI ──
   private aiUpdate(seat: Seat, dt: number): void {
     if (seat.player.kind !== "bot") return;
-    if (seat.grabbed || vlen(seat.vel) > REGRAB_SPEED || seat.grabCd > 0) {
-      seat.aiTimer = 0.4 + this.rng.float(0, 0.6);
+    if (seat.grabbed || vlen(seat.vel) > BOT_ACT_SPEED || seat.grabCd > 0) {
+      seat.aiTimer = 0.3 + this.rng.float(0, 0.45);
       return;
     }
     seat.aiTimer -= dt;
     if (seat.aiTimer > 0) return;
-
-    let target: Vec2 | null = null;
-    const nearBox = this.boxes.reduce<{ pos: Vec2; d: number } | null>((b, bx) => {
-      const d = vdist(seat.pos, bx.pos);
-      return d < (b ? b.d : 200) ? { pos: bx.pos, d } : b;
-    }, null);
-
-    if (nearBox && this.rng.next() < 0.4) {
-      target = nearBox.pos;
-    } else {
-      const leader = this.seats.filter(o => o !== seat).reduce((a, b) => a.score > b.score ? a : b, { score: -1 } as Seat);
-      if (leader.score > seat.score + 8 && this.rng.next() < 0.25 && vdist(seat.pos, leader.pos) < 300) {
-        target = leader.pos;
-      } else {
-        let bestCoin: Coin | null = null;
-        let bestScore = Infinity;
-        for (const c of this.coins) {
-          const d = vdist(seat.pos, c.pos);
-          const score = d - c.value * 30;
-          if (score < bestScore) { bestScore = score; bestCoin = c; }
-        }
-        if (bestCoin) target = bestCoin.pos;
-      }
-    }
-    if (!target) { const a = this.rng.float(0, Math.PI * 2); target = v2(seat.pos.x + Math.cos(a) * 100, seat.pos.y + Math.sin(a) * 100); }
-    const toT = vnorm(vsub(target, seat.pos));
-    const wobble = (this.rng.next() - 0.5) * 0.4;
-    const angle = Math.atan2(toT.y, toT.x) + wobble;
-    const dir = v2(Math.cos(angle), Math.sin(angle));
-    const dist = vdist(seat.pos, target);
-    let power = Math.min(dist * 3 + 80 + this.rng.float(0, 200), MAX_POWER);
-    if (seat.turboReady) { power *= 2; seat.turboReady = false; }
-    seat.vel = vmul(dir, power);
-    seat.grabCd = REGRAB_CD;
-    seat.aiTimer = 0.6 + this.rng.float(0, 0.8);
-    this.sfx.whoosh();
-    this.juice.burst(seat.pos.x, seat.pos.y, seat.player.color, { count: 4, speed: 60, life: 0.2, gravity: 0 });
+    const me = this.seats.indexOf(seat);
+    const rivals = this.seats.filter((o) => o !== seat);
+    const plan = botPlan({
+      pos: seat.pos, pouch: seat.pouch, bankAt: seat.bankAt, vault: this.vault.pos,
+      rivals: rivals.map((r) => ({ pos: r.pos, pouch: r.pouch, crowned: this.seats.indexOf(r) === this.leader })),
+      coins: this.coins.filter((c) => !(c.dropImmunity > 0 && c.droppedBy === me)),
+      heist: this.heist, timeLeft: this.timeLeft, roll: this.rng.next(),
+    });
+    // Human-like error: a little wobble, more when ramming in a hurry; now and then a plain bad shot.
+    const sloppy = this.rng.next() < 0.1;
+    const spread = plan.kind === "ram" ? 0.5 : plan.kind === "bank" ? 0.1 : 0.3;
+    const wobble = (this.rng.next() - 0.5) * spread + (sloppy ? this.rng.float(-0.6, 0.6) : 0);
+    // Bank shots are meant to roll straight through the vault, so they carry extra speed; rams must arrive fast.
+    const powerPerPx = plan.kind === "bank" ? 0.9 : plan.kind === "ram" ? 1.1 : 1.0;
+    const base = plan.kind === "ram" ? 240 : plan.kind === "bank" ? 90 : 80;
+    const vel = aimAt(seat.pos, plan.target, wobble, this.rng.float(-30, 120), seat.turboReady, { powerPerPx, basePower: base });
+    if (seat.turboReady) seat.turboReady = false;
+    this.launch(seat, vel);
+    seat.aiTimer = 0.5 + this.rng.float(0, 0.8);
   }
 
   // ── Physics ──
   private updatePhysics(dt: number): void {
     for (const s of this.seats) {
-      if (s.grabbed) continue;
-      s.vel.x *= FRICTION; s.vel.y *= FRICTION;
-      s.pos.x += s.vel.x * dt; s.pos.y += s.vel.y * dt;
       s.grabCd = Math.max(0, s.grabCd - dt);
+      if (s.hitFlash > 0) s.hitFlash -= dt;
+      if (s.bankFlash > 0) s.bankFlash -= dt;
       if (s.puTimer > 0) {
         s.puTimer -= dt;
         if (s.puTimer <= 0) {
@@ -264,178 +260,244 @@ class FlingGame implements GameInstance {
           s.activePU = null;
         }
       }
-      if (s.pos.x - s.radius < 0) { s.pos.x = s.radius; s.vel.x *= -WALL_BOUNCE; this.wallFX(0, s.pos.y, s.player.color); }
-      if (s.pos.x + s.radius > this.W) { s.pos.x = this.W - s.radius; s.vel.x *= -WALL_BOUNCE; this.wallFX(this.W, s.pos.y, s.player.color); }
-      if (s.pos.y - s.radius < 0) { s.pos.y = s.radius; s.vel.y *= -WALL_BOUNCE; this.wallFX(s.pos.x, 0, s.player.color); }
-      if (s.pos.y + s.radius > this.H) { s.pos.y = this.H - s.radius; s.vel.y *= -WALL_BOUNCE; this.wallFX(s.pos.x, this.H, s.player.color); }
+      if (s.grabbed) continue;
+      s.vel = applyFriction(s.vel, dt);
+      const walls = stepBody(s, dt, this.bounds);
+      if (walls > 0 && vlen(s.vel) > 120) this.wallFX(s);
+      // Near-miss tracking: the closest this flight came to the vault.
+      s.flightVaultMin = Math.min(s.flightVaultMin, vdist(s.pos, this.vault.pos));
+      const speed = vlen(s.vel);
+      if (s.moving && speed < REGRAB_SPEED) {
+        s.moving = false;
+        if (isNearMiss(s.flightVaultMin, this.vault.radius, s.radius, s.pouch) && vdist(s.pos, this.vault.pos) > this.vault.radius) {
+          this.popup(s.pos.x, s.pos.y - s.radius - 24, "SO CLOSE", "#ffffff", 15);
+          this.sfx.miss();
+        }
+      } else if (!s.moving && speed >= REGRAB_SPEED) {
+        s.moving = true;
+        s.flightVaultMin = Infinity;
+      }
     }
   }
 
-  private wallFX(x: number, y: number, c: string): void {
-    if (this.rng.next() < 0.4) this.juice.burst(x, y, c, { count: 3, speed: 40, life: 0.2, gravity: 0 });
+  private wallFX(s: Seat): void {
+    if (this.rng.next() < 0.5) this.juice.burst(s.pos.x, s.pos.y, s.player.color, { count: 3, speed: 50, life: 0.2, gravity: 0 });
   }
 
   private updateCollisions(): void {
     for (let i = 0; i < this.seats.length; i++) {
       for (let j = i + 1; j < this.seats.length; j++) {
-        this.collide(this.seats[i]!, this.seats[j]!);
+        this.collide(this.seats[i]!, this.seats[j]!, i, j);
       }
     }
   }
 
-  private collide(a: Seat, b: Seat): void {
-    const d = vsub(b.pos, a.pos);
-    const dist = vlen(d);
-    const minD = a.radius + b.radius;
-    if (dist >= minD || dist < 0.1) return;
-    const n = vnorm(d);
-    const overlap = minD - dist;
-    const pushA = b.grabbed ? 1 : 0.5;
-    const pushB = a.grabbed ? 1 : 0.5;
-    a.pos = vsub(a.pos, vmul(n, overlap * pushA));
-    b.pos = vadd(b.pos, vmul(n, overlap * pushB));
-    const rv = vsub(a.vel, b.vel);
-    const velN = vdot(rv, n);
-    if (velN < 0) return;
-    if (a.shielded) { a.shielded = false; b.vel = vadd(b.vel, vmul(n, Math.abs(velN) * 2)); this.impactFX(a, b); return; }
-    if (b.shielded) { b.shielded = false; a.vel = vsub(a.vel, vmul(n, Math.abs(velN) * 2)); this.impactFX(a, b); return; }
-    const mA = a.mass; const mB = b.mass;
-    const imp = -(1 + RESTITUTION) * velN / (1 / mA + 1 / mB);
-    a.vel.x += imp * n.x / mA; a.vel.y += imp * n.y / mA;
-    b.vel.x -= imp * n.x / mB; b.vel.y -= imp * n.y / mB;
-    const force = Math.abs(velN);
-    this.impactFX(a, b);
-    if (force > STEAL_THRESHOLD) {
-      const spdA = vlen(a.vel); const spdB = vlen(b.vel);
-      const stealAmt = Math.min(3, Math.floor(force / 200) + 1);
-      if (spdA > spdB) {
-        const stolen = Math.min(stealAmt, b.score);
-        b.score -= stolen; a.score += stolen; a.totalStolen += stolen;
-        if (stolen > 0) this.popup(a.pos.x, a.pos.y - 15, "+" + stolen + " STOLEN", a.player.color);
-        this.dropCoins(b, Math.min(2, Math.floor(force / 300)));
-      } else {
-        const stolen = Math.min(stealAmt, a.score);
-        a.score -= stolen; b.score += stolen; b.totalStolen += stolen;
-        if (stolen > 0) this.popup(b.pos.x, b.pos.y - 15, "+" + stolen + " STOLEN", b.player.color);
-        this.dropCoins(a, Math.min(2, Math.floor(force / 300)));
+  private collide(a: Seat, b: Seat, ia: number, ib: number): void {
+    const hit = resolveCollision(a, b, { aHeld: a.grabbed, bHeld: b.grabbed, aShield: a.shielded, bShield: b.shielded });
+    if (hit.force <= 0) return;
+    this.impactFX(a, b, hit.force);
+    if (hit.shieldPopped) {
+      const owner = hit.shieldPopped === "a" ? a : b;
+      owner.shielded = false;
+      this.popup(owner.pos.x, owner.pos.y - owner.radius - 18, "BLOCKED", PU_COLORS.SHIELD ?? "#44bbff", 14);
+    } else if (hit.attacker) {
+      const att = hit.attacker === "a" ? a : b;
+      const vic = hit.attacker === "a" ? b : a;
+      const vicIdx = hit.attacker === "a" ? ib : ia;
+      this.steal(att, vic, vicIdx, hit.force);
+    }
+    if (a.grabbed && vlen(a.vel) > 60) this.releaseGrab(a);
+    if (b.grabbed && vlen(b.vel) > 60) this.releaseGrab(b);
+  }
+
+  private steal(att: Seat, vic: Seat, vicIdx: number, force: number): void {
+    const crowned = vicIdx === this.leader;
+    const stolen = stealAmount(vic.pouch, crowned);
+    if (stolen > 0) {
+      vic.pouch -= stolen;
+      att.pouch += stolen;
+      att.totalStolen += stolen;
+      vic.hitFlash = 0.4;
+      this.popup(att.pos.x, att.pos.y - att.radius - 18, "+" + stolen + " STOLEN", att.player.color, 15);
+      this.popup(vic.pos.x, vic.pos.y + vic.radius + 16, "-" + stolen, "#ff6666", 14);
+      this.juice.burst(vic.pos.x, vic.pos.y, GOLD, { count: Math.min(16, 4 + stolen), speed: 160, life: 0.45, gravity: 300 });
+      if (stolen >= FAT_POUCH) { this.juice.hitStop(0.05); this.juice.shake(0.35); }
+      if (crowned) { this.callouts.show("CROWN HIT!", GOLD, { size: 54, life: 1 }); this.sfx.streak(4); }
+      if (att.player.kind === "bot" && this.rng.next() < 0.35) {
+        this.popup(att.pos.x, att.pos.y - att.radius - 36, this.rng.pick(TAUNTS_STEAL), att.player.color, 12);
       }
     }
-    if (a.grabbed && vlen(a.vel) > 60) { a.grabbed = false; this.releaseGrab(a); }
-    if (b.grabbed && vlen(b.vel) > 60) { b.grabbed = false; this.releaseGrab(b); }
+    this.dropCoins(vic, vicIdx, spillCount(force));
   }
 
   private releaseGrab(seat: Seat): void {
+    seat.grabbed = false;
     seat.aim = null;
     for (const [pid, idx] of this.grabs) {
       if (this.seats[idx] === seat) { this.grabs.delete(pid); break; }
     }
   }
 
-  private impactFX(a: Seat, b: Seat): void {
+  private impactFX(a: Seat, b: Seat, force: number): void {
     const mid = v2((a.pos.x + b.pos.x) / 2, (a.pos.y + b.pos.y) / 2);
-    const force = vlen(vsub(a.vel, b.vel));
     this.juice.burst(mid.x, mid.y, [a.player.color, b.player.color, "#fff"], {
-      count: Math.min(14, Math.floor(force / 40) * 3 + 3), speed: force * 0.3, life: 0.3, gravity: 0,
+      count: Math.min(14, Math.floor(force / 40) * 3 + 3), speed: force * 0.35, life: 0.3, gravity: 0,
     });
     this.sfx.hit();
-    this.juice.shake(Math.min(0.5, force * 0.002));
+    this.juice.shake(Math.min(0.5, force * 0.0015));
   }
 
   // ── Coins ──
-  private spawnCoin(type: string, x?: number, y?: number, vx = 0, vy = 0): void {
+  private randomSpot(inset: number): Vec2 {
+    return v2(
+      this.rng.float(this.bounds.x0 + inset, this.bounds.x1 - inset),
+      this.rng.float(this.bounds.y0 + inset, this.bounds.y1 - inset),
+    );
+  }
+
+  private spawnCoin(type: string, at?: Vec2, vel: Vec2 = v2()): void {
     if (this.coins.length >= MAX_COINS) return;
-    if (x === undefined) { x = 40 + this.rng.float(0, this.W - 80); y = 40 + this.rng.float(0, this.H - 80); }
-    const lifetimes: Record<string, number> = { bronze: 9, silver: 11, gold: 13, diamond: 16, dropped: 7 };
+    const pos = at ?? this.randomSpot(40);
+    const life = COIN_LIFE_S[type] ?? 9;
     this.coins.push({
-      pos: v2(x, y!), vel: v2(vx, vy), type, value: COIN_VALS[type] ?? 1,
+      pos, vel, type, value: COIN_VALUES[type] ?? 1,
       radius: type === "diamond" ? this.coinR * 1.8 : type === "gold" ? this.coinR * 1.4 : type === "silver" ? this.coinR * 1.2 : this.coinR,
-      life: lifetimes[type] ?? 9, maxLife: lifetimes[type] ?? 9, bob: this.rng.float(0, 6),
+      life, maxLife: life, bob: this.rng.float(0, 6),
       dropImmunity: -1, droppedBy: -1,
     });
   }
 
-  private dropCoins(seat: Seat, count: number): void {
-    const idx = this.seats.indexOf(seat);
+  private dropCoins(seat: Seat, idx: number, count: number): void {
     for (let i = 0; i < count; i++) {
-      if (seat.score <= 0) break;
-      seat.score--;
+      if (seat.pouch <= 0) break;
+      seat.pouch--;
       const a = this.rng.float(0, Math.PI * 2);
-      const s = 80 + this.rng.float(0, 120);
+      const s = 120 + this.rng.float(0, 140);
       this.coins.push({
         pos: { ...seat.pos }, vel: v2(Math.cos(a) * s, Math.sin(a) * s), type: "dropped", value: 1,
         radius: this.coinR * 0.9, life: 7, maxLife: 7, bob: this.rng.float(0, 6),
-        dropImmunity: 0.4, droppedBy: idx,
+        dropImmunity: 0.5, droppedBy: idx,
       });
     }
   }
 
   private updateCoins(dt: number): void {
-    const fr = this.frenzy ? 0.55 : 1;
     this.coinTimer -= dt;
     if (this.coinTimer <= 0) {
-      const n = this.frenzy ? 6 : 4;
+      const n = 4;
       for (let i = 0; i < n; i++) this.spawnCoin("bronze");
-      this.coinTimer = COIN_SPAWN_BASE * fr + this.rng.float(0, 1.5) * fr;
+      this.coinTimer = coinWaveInterval(this.elapsed, this.heist) * (0.8 + this.rng.float(0, 0.5));
     }
     this.silverTimer -= dt;
-    if (this.silverTimer <= 0) { this.spawnCoin("silver"); this.silverTimer = (this.frenzy ? 3 : 5.5) + this.rng.float(0, 2); }
+    if (this.silverTimer <= 0) { this.spawnCoin("silver"); this.silverTimer = (this.heist ? 2.5 : 5) + this.rng.float(0, 2); }
     this.goldTimer -= dt;
-    if (this.goldTimer <= 0) { this.spawnCoin("gold"); this.goldTimer = (this.frenzy ? 6 : 13) + this.rng.float(0, 4); }
+    if (this.goldTimer <= 0) { this.spawnCoin("gold"); this.goldTimer = (this.heist ? 4 : 11) + this.rng.float(0, 3); }
     for (let i = this.coins.length - 1; i >= 0; i--) {
       const c = this.coins[i]!;
       c.life -= dt;
       if (c.life <= 0) { this.coins.splice(i, 1); continue; }
       if (c.dropImmunity > 0) c.dropImmunity -= dt;
       if (vlen(c.vel) > 1) {
-        c.vel.x *= 0.96; c.vel.y *= 0.96;
-        c.pos.x += c.vel.x * dt; c.pos.y += c.vel.y * dt;
-        if (c.pos.x < c.radius) { c.pos.x = c.radius; c.vel.x *= -0.5; }
-        if (c.pos.x > this.W - c.radius) { c.pos.x = this.W - c.radius; c.vel.x *= -0.5; }
-        if (c.pos.y < c.radius) { c.pos.y = c.radius; c.vel.y *= -0.5; }
-        if (c.pos.y > this.H - c.radius) { c.pos.y = this.H - c.radius; c.vel.y *= -0.5; }
+        c.vel = applyFriction(c.vel, dt, COIN_FRICTION_PER_S);
+        stepBody({ pos: c.pos, vel: c.vel, radius: c.radius, mass: 1 }, dt, this.bounds, 0.5);
       }
     }
   }
 
   private collectCoins(dt: number): void {
-    for (const s of this.seats) {
+    this.seats.forEach((s, seatIdx) => {
       if (s.comboTimer > 0) { s.comboTimer -= dt; if (s.comboTimer <= 0) s.combo = 0; }
       if (s.magnetTimer > 0) {
         s.magnetTimer -= dt;
         for (const c of this.coins) {
-          if (c.dropImmunity > 0 && c.droppedBy === this.seats.indexOf(s)) continue;
+          if (c.dropImmunity > 0 && c.droppedBy === seatIdx) continue;
           const d = vdist(s.pos, c.pos);
-          if (d < 130 && d > 5) { const pull = vnorm(vsub(s.pos, c.pos)); c.vel = vadd(c.vel, vmul(pull, 400 * dt)); }
+          if (d < 140 && d > 5) { const pull = vnorm(vsub(s.pos, c.pos)); c.vel = vadd(c.vel, vmul(pull, 450 * dt)); }
         }
       }
-      const seatIdx = this.seats.indexOf(s);
       for (let i = this.coins.length - 1; i >= 0; i--) {
         const c = this.coins[i]!;
         if (c.dropImmunity > 0 && c.droppedBy === seatIdx) continue;
         if (vdist(s.pos, c.pos) < s.radius + c.radius) {
-          const mult = Math.min(4, 1 + Math.floor(s.combo / 3));
+          const mult = comboMultiplier(s.combo);
           const dbl = this.doubleTime > 0 ? 2 : 1;
-          const pts = c.value * mult * dbl * (this.frenzy ? 2 : 1);
-          s.score += pts; s.totalCollected++;
-          s.combo++; s.comboTimer = 1.5;
-          const col = c.type === "diamond" ? "#ff66ff" : c.type === "gold" ? "#ffd700" : c.type === "silver" ? "#e0e0e0" : "#ffb020";
-          this.popup(c.pos.x, c.pos.y - 10, "+" + pts, col);
-          this.juice.burst(c.pos.x, c.pos.y, COIN_COLORS[c.type] ?? "#ffb020", { count: 4, speed: 50, life: 0.2, gravity: 0 });
-          if (c.type === "gold" || c.type === "diamond") this.sfx.streak(3); else this.sfx.collect();
+          const pts = c.value * mult * dbl;
+          s.pouch += pts; s.coinsCollected++;
+          s.combo++; s.comboTimer = COMBO_WINDOW_S;
+          const col = COIN_COLORS[c.type] ?? "#ffb020";
+          this.popup(c.pos.x, c.pos.y - 10, "+" + pts, c.type === "bronze" || c.type === "dropped" ? "#ffb020" : col, c.value >= 5 ? 16 : 13);
+          this.juice.burst(c.pos.x, c.pos.y, col, { count: c.value >= 5 ? 10 : 4, speed: 70, life: 0.25, gravity: 0 });
+          if (c.type === "gold" || c.type === "diamond") this.sfx.streak(3); else if (mult > 1) this.sfx.streak(mult); else this.sfx.collect();
           this.coins.splice(i, 1);
         }
       }
+    });
+  }
+
+  // ── Vault ──
+  private updateVault(dt: number): void {
+    const v = this.vault;
+    v.spin += dt * (this.heist ? 2.2 : 1);
+    if (v.flash > 0) v.flash -= dt;
+    v.radius = vaultRadius(this.ballR, this.elapsed);
+    v.moveTimer -= dt;
+    if (v.moveTimer <= 0) this.relocateVault(null);
+    this.seats.forEach((s, i) => {
+      if (vdist(s.pos, v.pos) >= v.radius + s.radius * 0.2) return;
+      if (s.pouch <= 0) return;
+      this.bank(s, i);
+    });
+  }
+
+  private bank(s: Seat, idx: number): void {
+    const opts = { underdog: idx === this.underdog, heist: this.heist };
+    const mult = bankMultiplier(s.pouch, opts);
+    const payout = bankPayout(s.pouch, opts);
+    s.score += payout;
+    s.banks++;
+    s.bestBank = Math.max(s.bestBank, payout);
+    s.pouch = 0;
+    s.bankFlash = 0.6;
+    this.vault.flash = 0.5;
+    this.vault.arrivals++;
+    this.popup(s.pos.x, s.pos.y - s.radius - 20, `+${payout} BANKED` + (mult > 1 ? ` x${mult}` : ""), GOLD, mult >= 3 ? 20 : 16);
+    this.juice.burst(this.vault.pos.x, this.vault.pos.y, [GOLD, "#fff", s.player.color], { count: 14 + mult * 6, speed: 220, life: 0.6, gravity: 260 });
+    this.sfx.streak(Math.min(6, 2 + mult));
+    this.juice.shake(Math.min(0.5, 0.1 + payout * 0.01));
+    if (payout >= BIG_BANK) {
+      this.callouts.show(`BIG BANK +${payout}`, GOLD, { size: 58, life: 1.1, y: 0.36 });
+      this.juice.hitStop(0.04);
     }
+    if (s.player.kind === "human" && saveBest(fling.id, payout, BEST_KEY)) {
+      this.callouts.show("NEW RECORD", "#B8FF3D", { size: 48, y: 0.44, life: 1.4 });
+      this.sfx.win();
+    }
+    if (s.player.kind === "bot" && this.rng.next() < 0.4) {
+      this.popup(s.pos.x, s.pos.y - s.radius - 40, this.rng.pick(TAUNTS_BANK), s.player.color, 12);
+    }
+    this.relocateVault(s);
+  }
+
+  private relocateVault(banker: Seat | null): void {
+    const v = this.vault;
+    const old = { ...v.pos };
+    const avoid = banker ? [banker.pos] : this.seats.map((s) => s.pos);
+    const minDist = banker ? Math.min(this.W, this.H) * 0.45 : this.ballR * 6;
+    v.pos = nextVaultPos(this.rng, this.bounds, avoid, v.radius, minDist);
+    v.moveTimer = this.heist ? VAULT_MOVE_HEIST_S : VAULT_MOVE_S;
+    const dir = vnorm(vsub(v.pos, old));
+    this.juice.burst(old.x, old.y, GOLD, { count: 10, speed: 160, life: 0.4, gravity: 0, angle: Math.atan2(dir.y, dir.x), spread: 0.6 });
+    this.juice.burst(v.pos.x, v.pos.y, GOLD, { count: 10, speed: 120, life: 0.4, gravity: 0 });
+    if (!banker) this.popup(v.pos.x, v.pos.y - v.radius - 14, "VAULT MOVED", GOLD, 13);
+    this.sfx.tick();
   }
 
   // ── Mystery Boxes ──
   private updateBoxes(dt: number): void {
     this.boxTimer -= dt;
     if (this.boxTimer <= 0 && this.boxes.length < 2) {
-      const x = 60 + this.rng.float(0, this.W - 120);
-      const y = 60 + this.rng.float(0, this.H - 120);
-      this.boxes.push({ pos: v2(x, y), radius: this.ballR * 0.7, life: 12, bob: this.rng.float(0, 6), spin: 0 });
-      this.boxTimer = (this.frenzy ? 6 : 10) + this.rng.float(0, 4);
+      this.boxes.push({ pos: this.randomSpot(60), radius: this.ballR * 0.7, life: 12, bob: this.rng.float(0, 6), spin: 0 });
+      this.boxTimer = (this.heist ? 5 : 9) + this.rng.float(0, 4);
     }
     for (let i = this.boxes.length - 1; i >= 0; i--) {
       const b = this.boxes[i]!;
@@ -444,7 +506,7 @@ class FlingGame implements GameInstance {
       for (const s of this.seats) {
         if (vdist(s.pos, b.pos) < s.radius + b.radius) {
           this.applyPU(s);
-          this.juice.burst(b.pos.x, b.pos.y, "#fff", { count: 10, speed: 80, life: 0.3, gravity: 0 });
+          this.juice.burst(b.pos.x, b.pos.y, "#fff", { count: 12, speed: 100, life: 0.3, gravity: 0 });
           this.sfx.collect();
           this.boxes.splice(i, 1);
           break;
@@ -455,10 +517,9 @@ class FlingGame implements GameInstance {
 
   private applyPU(s: Seat): void {
     const t = this.rng.pick(PU_NAMES);
-    this.popup(s.pos.x, s.pos.y - 20, t, PU_COLORS[t] ?? "#fff", 12);
+    this.popup(s.pos.x, s.pos.y - s.radius - 22, t, PU_COLORS[t] ?? "#fff", 15);
     if (t === "MAGNET") { s.magnetTimer = 6; }
     else if (t === "MEGA") {
-      if (s.activePU === "MEGA") { s.radius = this.ballR; s.mass = 1; }
       s.activePU = "MEGA"; s.puTimer = 7; s.radius = this.ballR * 1.55; s.mass = 2;
     } else if (t === "SHIELD") { s.shielded = true; }
     else if (t === "TURBO") { s.turboReady = true; }
@@ -468,26 +529,25 @@ class FlingGame implements GameInstance {
   // ── Events ──
   private updateEvents(dt: number): void {
     this.eventTimer -= dt;
-    if (this.eventTimer <= 0) {
+    if (this.eventTimer <= 0 && this.timeLeft > 4) {
       const ev = this.rng.pick(EVENT_LIST);
       this.runEvent(ev);
-      this.eventBannerTimer = 2;
-      this.eventTimer = (this.frenzy ? 5 : EVENT_INTERVAL_BASE) + this.rng.float(0, 4);
+      this.callouts.show(ev + "!", EVENT_COLORS[ev] ?? "#fff", { size: 56, life: 1.1, y: 0.2 });
+      this.eventTimer = (this.heist ? 5 : EVENT_INTERVAL_BASE) + this.rng.float(0, 3);
       this.sfx.countdown();
     }
-    if (this.eventBannerTimer > 0) this.eventBannerTimer -= dt;
     if (this.doubleTime > 0) this.doubleTime -= dt;
     for (let i = this.bumpers.length - 1; i >= 0; i--) {
-      this.bumpers[i]!.life -= dt;
-      if (this.bumpers[i]!.life <= 0) { this.bumpers.splice(i, 1); continue; }
       const bmp = this.bumpers[i]!;
+      bmp.life -= dt;
+      if (bmp.life <= 0) { this.bumpers.splice(i, 1); continue; }
       for (const s of this.seats) {
         if (vdist(s.pos, bmp.pos) < s.radius + bmp.radius) {
           const n = vnorm(vsub(s.pos, bmp.pos));
-          s.vel = vadd(s.vel, vmul(n, 500));
+          s.vel = vadd(s.vel, vmul(n, 520));
           s.pos = vadd(bmp.pos, vmul(n, s.radius + bmp.radius + 1));
-          if (s.grabbed) { s.grabbed = false; this.releaseGrab(s); }
-          this.juice.burst(bmp.pos.x, bmp.pos.y, "#ff4444", { count: 6, speed: 100, life: 0.25, gravity: 0 });
+          if (s.grabbed) this.releaseGrab(s);
+          this.juice.burst(bmp.pos.x, bmp.pos.y, "#ff4444", { count: 6, speed: 110, life: 0.25, gravity: 0 });
           this.sfx.hit();
           this.juice.shake(0.2);
         }
@@ -495,95 +555,111 @@ class FlingGame implements GameInstance {
     }
   }
 
+  private shove(s: Seat, dir: Vec2, amount: number): void {
+    s.vel = vadd(s.vel, vmul(dir, amount));
+    if (s.grabbed) this.releaseGrab(s);
+  }
+
   private runEvent(ev: string): void {
+    const centre = v2((this.bounds.x0 + this.bounds.x1) / 2, (this.bounds.y0 + this.bounds.y1) / 2);
     switch (ev) {
       case "COIN RAIN":
-        for (let i = 0; i < (this.frenzy ? 18 : 12); i++) this.spawnCoin(this.rng.next() < 0.2 ? "silver" : "bronze");
+        for (let i = 0; i < (this.heist ? 18 : 12); i++) this.spawnCoin(this.rng.next() < 0.2 ? "silver" : "bronze");
         break;
       case "QUAKE":
         for (const s of this.seats) {
           const a = this.rng.float(0, Math.PI * 2);
-          s.vel = vadd(s.vel, v2(Math.cos(a) * 400, Math.sin(a) * 400));
-          if (s.grabbed) { s.grabbed = false; this.releaseGrab(s); }
+          this.shove(s, v2(Math.cos(a), Math.sin(a)), 420);
         }
         this.juice.shake(0.6);
         break;
       case "JACKPOT":
         this.spawnCoin("diamond");
-        this.callouts.show("JACKPOT!", "#ff66ff");
         break;
       case "SHUFFLE": {
-        const positions = this.seats.map(s => ({ ...s.pos }));
+        const positions = this.seats.map((s) => ({ ...s.pos }));
         for (let i = positions.length - 1; i > 0; i--) {
           const j = this.rng.int(0, i);
           [positions[i], positions[j]] = [positions[j]!, positions[i]!];
         }
-        for (let i = 0; i < this.seats.length; i++) {
-          this.seats[i]!.pos = positions[i]!;
-          this.seats[i]!.vel = v2();
-          if (this.seats[i]!.grabbed) { this.seats[i]!.grabbed = false; this.releaseGrab(this.seats[i]!); }
-        }
+        this.seats.forEach((s, i) => {
+          this.juice.burst(s.pos.x, s.pos.y, s.player.color, { count: 8, speed: 120, life: 0.3, gravity: 0 });
+          s.pos = positions[i]!;
+          s.vel = v2();
+          if (s.grabbed) this.releaseGrab(s);
+        });
         this.juice.shake(0.4);
         break;
       }
-      case "SCATTER": {
-        const cx = this.W / 2; const cy = this.H / 2;
-        for (const s of this.seats) {
-          const d = vnorm(vsub(s.pos, v2(cx, cy)));
-          s.vel = vadd(s.vel, vmul(d, 550));
-          if (s.grabbed) { s.grabbed = false; this.releaseGrab(s); }
-        }
+      case "SCATTER":
+        for (const s of this.seats) this.shove(s, vnorm(vsub(s.pos, centre)), 560);
         this.juice.shake(0.5);
         break;
-      }
-      case "GRAVITY": {
-        const cx = this.W / 2; const cy = this.H / 2;
-        for (const s of this.seats) {
-          const d = vnorm(vsub(v2(cx, cy), s.pos));
-          s.vel = vadd(s.vel, vmul(d, 450));
-          if (s.grabbed) { s.grabbed = false; this.releaseGrab(s); }
-        }
-        for (const c of this.coins) { const d = vnorm(vsub(v2(cx, cy), c.pos)); c.vel = vadd(c.vel, vmul(d, 200)); }
+      case "GRAVITY":
+        for (const s of this.seats) this.shove(s, vnorm(vsub(centre, s.pos)), 460);
+        for (const c of this.coins) c.vel = vadd(c.vel, vmul(vnorm(vsub(centre, c.pos)), 220));
         this.juice.shake(0.3);
         break;
-      }
       case "BONUS TIME":
         this.doubleTime = Math.max(this.doubleTime, 8);
-        this.callouts.show("2X COINS!", "#66ffaa");
         break;
       case "BUMPERS":
         this.bumpers.length = 0;
-        for (let i = 0; i < 5; i++) {
-          this.bumpers.push({
-            pos: v2(60 + this.rng.float(0, this.W - 120), 60 + this.rng.float(0, this.H - 120)),
-            radius: this.ballR * 1.2, life: 10,
-          });
-        }
+        for (let i = 0; i < 5; i++) this.bumpers.push({ pos: this.randomSpot(70), radius: this.ballR * 1.2, life: 10 });
         break;
     }
   }
 
+  private startHeist(): void {
+    this.heist = true;
+    this.callouts.show("FINAL HEIST!", HEIST_PINK, { size: 76, life: 1.6 });
+    this.callouts.show("VAULT BONUS +1x", GOLD, { size: 40, y: 0.44, life: 1.6 });
+    this.sfx.go();
+    this.juice.shake(0.6);
+    this.juice.slowMo(0.5, 0.4);
+    const centre = v2((this.bounds.x0 + this.bounds.x1) / 2, (this.bounds.y0 + this.bounds.y1) / 2);
+    const old = { ...this.vault.pos };
+    this.vault.pos = centre;
+    this.vault.moveTimer = VAULT_MOVE_HEIST_S;
+    this.juice.burst(old.x, old.y, GOLD, { count: 12, speed: 150, life: 0.4, gravity: 0 });
+    this.juice.burst(centre.x, centre.y, [GOLD, HEIST_PINK], { count: 30, speed: 260, life: 0.7, gravity: 0 });
+    for (let i = 0; i < 6; i++) this.spawnCoin(this.rng.next() < 0.3 ? "silver" : "bronze");
+  }
+
   private popup(x: number, y: number, text: string, color: string, size = 14): void {
-    this.popups.push({ x, y, text, color, size, life: 0.9, maxLife: 0.9, vy: -60 });
+    this.popups.push({ x, y, text, color, size, life: 1, maxLife: 1, vy: -55 });
   }
 
   // ── Update ──
   update(realDt: number): void {
     this.callouts.update(realDt);
+    this.clock += realDt;
     const dt = this.juice.update(realDt);
+    if (this.done) return;
     this.timeLeft -= dt;
-    if (!this.frenzy && this.timeLeft <= FRENZY_TIME) {
-      this.frenzy = true;
-      this.callouts.show("FRENZY!", "#FF3D7A", { size: 72 });
-      this.sfx.go();
-      this.juice.shake(0.5);
+    this.elapsed += dt;
+    if (!this.heist && isHeist(this.timeLeft)) this.startHeist();
+    const tick = Math.ceil(this.timeLeft);
+    if (tick <= 5 && tick >= 1 && tick !== this.lastTick) { this.lastTick = tick; this.sfx.tick(); }
+    if (this.timeLeft <= 0) {
+      this.done = true;
+      this.sfx.win();
+      this.callouts.show("TIME!", "#F4F7FB", { size: 72 });
+      return;
     }
-    if (this.timeLeft <= 0) { this.done = true; this.sfx.win(); return; }
+    const standing = crownAndUnderdog(this.seats.map((s) => s.score));
+    if (standing.leader !== this.leader && standing.leader >= 0) {
+      const s = this.seats[standing.leader]!;
+      this.popup(s.pos.x, s.pos.y - s.radius - 34, "CROWN", GOLD, 13);
+    }
+    this.leader = standing.leader;
+    this.underdog = standing.underdog;
     for (const s of this.seats) this.aiUpdate(s, dt);
     this.updatePhysics(dt);
     this.updateCollisions();
     this.updateCoins(dt);
     this.collectCoins(dt);
+    this.updateVault(dt);
     this.updateBoxes(dt);
     this.updateEvents(dt);
     for (let i = this.popups.length - 1; i >= 0; i--) {
@@ -596,13 +672,14 @@ class FlingGame implements GameInstance {
   isFinished(): boolean { return this.done; }
 
   getScores(): { playerId: string; score: number }[] {
-    return this.seats.map(s => ({ playerId: s.player.id, score: s.score }));
+    return this.seats.map((s) => ({ playerId: s.player.id, score: s.score }));
   }
 
   getStats(): GameStat[] {
     const stats: GameStat[] = [];
     for (const s of this.seats) {
-      stats.push({ playerId: s.player.id, label: "Collected", value: String(s.totalCollected) });
+      stats.push({ playerId: s.player.id, label: "Banked", value: String(s.banks) });
+      stats.push({ playerId: s.player.id, label: "Best bank", value: String(s.bestBank) });
       if (s.totalStolen > 0) stats.push({ playerId: s.player.id, label: "Stolen", value: String(s.totalStolen) });
     }
     return stats;
@@ -618,25 +695,29 @@ class FlingGame implements GameInstance {
 
   // ── Render ──
   render(g: CanvasRenderingContext2D): void {
-    const W = this.W; const H = this.H;
+    const W = this.W; const H = this.H; const t = this.clock;
     fillArena(g, W, H);
     this.juice.begin(g);
 
-    // Grid
-    g.strokeStyle = "rgba(255,255,255,0.018)"; g.lineWidth = 1;
+    // Grid and arena frame
+    g.strokeStyle = "rgba(255,255,255,0.025)"; g.lineWidth = 1;
     const step = Math.max(30, W / 20);
-    for (let x = 0; x <= W; x += step) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-    for (let y = 0; y <= H; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-
-    // Border
-    const borderColor = this.frenzy ? `rgba(255,61,122,${0.4 + Math.sin(Date.now() * 0.008) * 0.3})`
-      : this.doubleTime > 0 ? "rgba(102,255,170,0.4)" : "rgba(62,224,255,0.12)";
-    g.strokeStyle = borderColor; g.lineWidth = 2.5;
-    g.strokeRect(0, 0, W, H);
+    for (let x = 0; x <= W; x += step) { g.beginPath(); g.moveTo(x, HUD_H); g.lineTo(x, H); g.stroke(); }
+    for (let y = HUD_H; y <= H; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    if (this.heist) {
+      const pulse = 0.25 + Math.sin(t * 9) * 0.2;
+      const grad = g.createLinearGradient(0, HUD_H, 0, H);
+      grad.addColorStop(0, `rgba(255,61,122,${pulse * 0.35})`); grad.addColorStop(0.5, "rgba(255,61,122,0)"); grad.addColorStop(1, `rgba(255,61,122,${pulse * 0.35})`);
+      g.fillStyle = grad; g.fillRect(0, HUD_H, W, H - HUD_H);
+    }
+    const borderColor = this.heist ? `rgba(255,61,122,${0.5 + Math.sin(t * 8) * 0.3})`
+      : this.doubleTime > 0 ? "rgba(102,255,170,0.45)" : "rgba(62,224,255,0.16)";
+    g.strokeStyle = borderColor; g.lineWidth = 3;
+    g.strokeRect(1.5, HUD_H + 1.5, W - 3, H - HUD_H - 3);
 
     // Bumpers
     for (const b of this.bumpers) {
-      const pulse = 0.8 + Math.sin(Date.now() * 0.006) * 0.2;
+      const pulse = 0.8 + Math.sin(t * 6) * 0.2;
       g.globalAlpha = Math.min(1, b.life / 2) * pulse;
       g.beginPath(); g.arc(b.pos.x, b.pos.y, b.radius, 0, Math.PI * 2);
       g.fillStyle = "rgba(255,50,50,0.3)"; g.fill();
@@ -644,26 +725,28 @@ class FlingGame implements GameInstance {
       g.globalAlpha = 1;
     }
 
+    this.drawVault(g, t);
+
     // Coins
     for (const c of this.coins) {
-      const bob = Math.sin(Date.now() * 0.005 + c.bob) * 1.5;
+      const bob = Math.sin(t * 5 + c.bob) * 1.5;
       const cx = c.pos.x; const cy = c.pos.y + bob;
       const fade = c.life < 2 ? c.life / 2 : 1;
-      g.globalAlpha = fade * (c.type === "dropped" ? 0.75 : 1);
+      g.globalAlpha = fade * (c.type === "dropped" ? 0.8 : 1);
       if (c.type === "gold" || c.type === "diamond") {
         const gr = g.createRadialGradient(cx, cy, 0, cx, cy, c.radius * 2.5);
         gr.addColorStop(0, COIN_COLORS[c.type]!); gr.addColorStop(1, "transparent");
-        g.globalAlpha = fade * 0.15;
+        g.globalAlpha = fade * 0.2;
         g.beginPath(); g.arc(cx, cy, c.radius * 2.5, 0, Math.PI * 2); g.fillStyle = gr; g.fill();
         g.globalAlpha = fade;
       }
       g.beginPath(); g.arc(cx, cy, c.radius, 0, Math.PI * 2);
-      if (c.type === "diamond") { g.fillStyle = `hsl(${(Date.now() * 0.2) % 360},80%,65%)`; }
-      else { g.fillStyle = COIN_COLORS[c.type] ?? "#cd7f32"; }
+      g.fillStyle = c.type === "diamond" ? `hsl(${(t * 200) % 360},80%,65%)` : COIN_COLORS[c.type] ?? "#cd7f32";
       g.fill();
-      const sparkle = Math.sin(Date.now() * 0.01 + c.bob * 3);
+      g.strokeStyle = "rgba(0,0,0,0.35)"; g.lineWidth = 1; g.stroke();
+      const sparkle = Math.sin(t * 10 + c.bob * 3);
       if (sparkle > 0.7) {
-        g.fillStyle = "rgba(255,255,255,0.6)";
+        g.fillStyle = "rgba(255,255,255,0.7)";
         g.beginPath(); g.arc(cx - c.radius * 0.3, cy - c.radius * 0.3, c.radius * 0.25, 0, Math.PI * 2); g.fill();
       }
       g.globalAlpha = 1;
@@ -673,11 +756,11 @@ class FlingGame implements GameInstance {
     for (const b of this.boxes) {
       const fade = b.life < 2 ? b.life / 2 : 1;
       g.globalAlpha = fade;
-      g.save(); g.translate(b.pos.x, b.pos.y); g.rotate(b.spin);
-      const s = b.radius * 1.6;
-      g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(-s, -s, s * 2, s * 2);
-      g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.strokeRect(-s, -s, s * 2, s * 2);
-      g.fillStyle = "#ffb020"; g.font = `${b.radius * 1.5}px sans-serif`;
+      g.save(); g.translate(b.pos.x, b.pos.y + Math.sin(t * 4 + b.bob) * 2); g.rotate(b.spin);
+      const s = b.radius * 1.5;
+      g.fillStyle = "rgba(255,255,255,0.1)"; g.fillRect(-s, -s, s * 2, s * 2);
+      g.strokeStyle = "#fff"; g.lineWidth = 2; g.strokeRect(-s, -s, s * 2, s * 2);
+      g.fillStyle = "#ffb020"; g.font = `700 ${b.radius * 1.6}px Outfit, sans-serif`;
       g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("?", 0, 1);
       g.restore(); g.globalAlpha = 1;
     }
@@ -689,17 +772,17 @@ class FlingGame implements GameInstance {
       const drag = vsub(aim, s.pos); const dist = vlen(drag);
       if (dist < MIN_DRAG * 0.5) continue;
       g.beginPath(); g.moveTo(s.pos.x, s.pos.y); g.lineTo(aim.x, aim.y);
-      g.strokeStyle = "rgba(255,255,255,0.2)"; g.lineWidth = 2; g.stroke();
-      g.beginPath(); g.arc(aim.x, aim.y, 6, 0, Math.PI * 2);
-      g.fillStyle = "rgba(255,255,255,0.15)"; g.fill();
+      g.strokeStyle = "rgba(255,255,255,0.25)"; g.lineWidth = 2; g.setLineDash([6, 6]); g.stroke(); g.setLineDash([]);
+      g.beginPath(); g.arc(aim.x, aim.y, 7, 0, Math.PI * 2);
+      g.fillStyle = "rgba(255,255,255,0.18)"; g.fill();
       if (dist < MIN_DRAG) continue;
       const launchDir = vnorm(vmul(drag, -1));
-      const power = Math.min(dist * POWER_SCALE, MAX_POWER);
-      const arrowLen = 20 + (power / MAX_POWER) * 60;
-      const end = vadd(s.pos, vmul(launchDir, arrowLen));
+      const power = launchPower(s.pos, aim);
+      const arrowLen = 24 + power * 70;
+      const end = vadd(s.pos, vmul(launchDir, arrowLen + s.radius));
       g.beginPath(); g.moveTo(s.pos.x + launchDir.x * s.radius, s.pos.y + launchDir.y * s.radius);
-      g.lineTo(end.x, end.y); g.strokeStyle = s.player.color; g.lineWidth = 3; g.globalAlpha = 0.7; g.stroke(); g.globalAlpha = 1;
-      const angle = Math.atan2(launchDir.y, launchDir.x); const hs = 9;
+      g.lineTo(end.x, end.y); g.strokeStyle = s.player.color; g.lineWidth = 3 + power * 3; g.globalAlpha = 0.8; g.stroke(); g.globalAlpha = 1;
+      const angle = Math.atan2(launchDir.y, launchDir.x); const hs = 10 + power * 6;
       g.beginPath(); g.moveTo(end.x, end.y);
       g.lineTo(end.x - hs * Math.cos(angle - 0.45), end.y - hs * Math.sin(angle - 0.45));
       g.lineTo(end.x - hs * Math.cos(angle + 0.45), end.y - hs * Math.sin(angle + 0.45));
@@ -707,72 +790,173 @@ class FlingGame implements GameInstance {
     }
 
     // Players
-    for (const s of this.seats) {
-      if (s.grabbed) {
-        g.beginPath(); g.arc(s.pos.x, s.pos.y, s.radius + 6, 0, Math.PI * 2);
-        g.strokeStyle = s.player.color; g.lineWidth = 2;
-        g.globalAlpha = 0.4 + Math.sin(Date.now() * 0.008) * 0.2; g.stroke(); g.globalAlpha = 1;
-      }
-      if (s.shielded) {
-        g.beginPath(); g.arc(s.pos.x, s.pos.y, s.radius + 5, 0, Math.PI * 2);
-        g.strokeStyle = "rgba(68,187,255,0.5)"; g.lineWidth = 2; g.setLineDash([5, 5]); g.stroke(); g.setLineDash([]);
-      }
-      if (s.turboReady) {
-        g.beginPath(); g.arc(s.pos.x, s.pos.y, s.radius + 4, 0, Math.PI * 2);
-        g.strokeStyle = "rgba(255,204,0,0.45)"; g.lineWidth = 2.5; g.stroke();
-      }
-      if (s.magnetTimer > 0) {
-        g.beginPath(); g.arc(s.pos.x, s.pos.y, s.radius + 8, 0, Math.PI * 2);
-        g.strokeStyle = "rgba(255,102,136,0.3)"; g.lineWidth = 1; g.setLineDash([3, 6]); g.stroke(); g.setLineDash([]);
-      }
-      drawPlayerOrb(g, s.pos.x, s.pos.y, s.radius, s.player);
-      g.font = "700 14px Outfit, sans-serif"; g.textAlign = "center"; g.fillStyle = s.player.color;
-      g.fillText(String(s.score), s.pos.x, s.pos.y - s.radius - 10);
-      if (s.combo >= 3) {
-        const m = Math.min(4, 1 + Math.floor(s.combo / 3));
-        g.font = "700 11px Outfit, sans-serif"; g.fillStyle = "#FFB020";
-        g.fillText("x" + m, s.pos.x + s.radius + 8, s.pos.y - s.radius - 6);
-      }
-    }
+    this.seats.forEach((s, i) => this.drawSeat(g, s, i, t));
 
     this.juice.end(g);
 
     // Popups (unshaken HUD layer)
     for (const p of this.popups) {
-      g.globalAlpha = Math.max(0, p.life / p.maxLife);
-      g.font = `700 ${p.size}px Outfit, sans-serif`; g.textAlign = "center";
+      const k = 1 - p.life / p.maxLife;
+      const pop = k < 0.15 ? 0.7 + (k / 0.15) * 0.4 : 1.1 - Math.min(0.1, (k - 0.15) * 0.3);
+      g.globalAlpha = Math.max(0, Math.min(1, p.life / (p.maxLife * 0.4)));
+      g.font = `800 ${Math.round(p.size * pop)}px Outfit, sans-serif`; g.textAlign = "center"; g.textBaseline = "middle";
+      g.lineWidth = 4; g.strokeStyle = "rgba(7,11,20,0.85)"; g.strokeText(p.text, p.x, p.y);
       g.fillStyle = p.color; g.fillText(p.text, p.x, p.y);
     }
     g.globalAlpha = 1;
 
-    // Score bar
-    const sorted = [...this.seats].sort((a, b) => b.score - a.score);
-    const leader = sorted[0];
-    g.fillStyle = "rgba(7,11,20,0.55)"; g.fillRect(0, 0, W, 32);
-    const chipW = W / this.seats.length;
-    for (let i = 0; i < this.seats.length; i++) {
-      const s = this.seats[i]!;
-      const cx = chipW * i + chipW / 2;
-      g.beginPath(); g.arc(cx - 30, 16, 5, 0, Math.PI * 2); g.fillStyle = s.player.color; g.fill();
-      g.font = "700 14px Outfit, sans-serif"; g.textAlign = "left";
-      g.fillStyle = s === leader ? "#FFB020" : "#aab";
-      g.fillText(String(s.score), cx - 22, 21);
-    }
-    // Timer
-    const tl = Math.max(0, this.timeLeft); const secs = Math.floor(tl);
-    g.font = "700 14px Outfit, sans-serif"; g.textAlign = "right";
-    g.fillStyle = this.frenzy ? "#FF3D7A" : tl < 15 ? "#FFB020" : "#5a6088";
-    g.fillText(Math.floor(secs / 60) + ":" + String(secs % 60).padStart(2, "0"), W - 12, 21);
-    if (this.frenzy) {
-      g.font = "700 12px Outfit, sans-serif"; g.textAlign = "right";
-      g.fillStyle = `rgba(255,61,122,${0.6 + Math.sin(Date.now() * 0.008) * 0.4})`;
-      g.fillText("FRENZY", W - 60, 21);
-    }
-    if (this.doubleTime > 0) {
-      g.font = "700 12px Outfit, sans-serif"; g.textAlign = "center";
-      g.fillStyle = "rgba(102,255,170,0.7)"; g.fillText("2X COINS", W / 2, 48);
-    }
-
+    this.drawHud(g, t);
     this.callouts.draw(g, W, H);
+  }
+
+  private drawVault(g: CanvasRenderingContext2D, t: number): void {
+    const v = this.vault;
+    const r = v.radius;
+    const col = this.heist ? HEIST_PINK : GOLD;
+    const pulse = 1 + Math.sin(t * (this.heist ? 7 : 3)) * 0.05 + v.flash * 0.4;
+    g.save();
+    g.translate(v.pos.x, v.pos.y);
+    // Glow
+    const gr = g.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 2.6);
+    gr.addColorStop(0, this.heist ? "rgba(255,61,122,0.35)" : "rgba(255,215,0,0.28)");
+    gr.addColorStop(1, "transparent");
+    g.fillStyle = gr; g.beginPath(); g.arc(0, 0, r * 2.6 * pulse, 0, Math.PI * 2); g.fill();
+    // Disc
+    g.beginPath(); g.arc(0, 0, r * pulse, 0, Math.PI * 2);
+    g.fillStyle = this.heist ? "rgba(90,20,45,0.85)" : "rgba(60,45,10,0.85)"; g.fill();
+    g.lineWidth = 4; g.strokeStyle = col; g.stroke();
+    // Spinning dashes
+    g.save(); g.rotate(v.spin);
+    g.beginPath(); g.arc(0, 0, r * pulse + 9, 0, Math.PI * 2);
+    g.setLineDash([10, 8]); g.lineWidth = 3; g.strokeStyle = col; g.globalAlpha = 0.7; g.stroke(); g.setLineDash([]);
+    g.restore();
+    // Move timer arc
+    const limit = this.heist ? VAULT_MOVE_HEIST_S : VAULT_MOVE_S;
+    const frac = Math.max(0, Math.min(1, v.moveTimer / limit));
+    g.globalAlpha = 0.9; g.lineWidth = 5; g.strokeStyle = frac < 0.3 ? "#fff" : col;
+    g.beginPath(); g.arc(0, 0, r * pulse - 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac); g.stroke();
+    g.globalAlpha = 1;
+    // Label
+    g.fillStyle = col; g.textAlign = "center"; g.textBaseline = "middle";
+    g.font = `800 ${Math.round(r * 0.5)}px Outfit, sans-serif`;
+    g.fillText("VAULT", 0, this.heist ? -r * 0.18 : 0);
+    if (this.heist) {
+      g.fillStyle = "#fff"; g.font = `800 ${Math.round(r * 0.42)}px Outfit, sans-serif`;
+      g.fillText("+1x", 0, r * 0.3);
+    }
+    g.restore();
+  }
+
+  private drawSeat(g: CanvasRenderingContext2D, s: Seat, i: number, t: number): void {
+    const { x, y } = s.pos;
+    // Loot halo: everyone can see a fat pouch.
+    if (s.pouch > 0) {
+      const k = Math.min(1, s.pouch / (BANK_STEP * 3));
+      g.beginPath(); g.arc(x, y, s.radius + 6 + k * 10 + Math.sin(t * 6) * 2, 0, Math.PI * 2);
+      g.strokeStyle = GOLD; g.lineWidth = 2 + k * 4; g.globalAlpha = 0.25 + k * 0.5; g.stroke(); g.globalAlpha = 1;
+    }
+    if (s.grabbed) {
+      g.beginPath(); g.arc(x, y, s.radius + 8, 0, Math.PI * 2);
+      g.strokeStyle = s.player.color; g.lineWidth = 2;
+      g.globalAlpha = 0.4 + Math.sin(t * 8) * 0.2; g.stroke(); g.globalAlpha = 1;
+    }
+    if (s.shielded) {
+      g.beginPath(); g.arc(x, y, s.radius + 5, 0, Math.PI * 2);
+      g.strokeStyle = "rgba(68,187,255,0.7)"; g.lineWidth = 2.5; g.setLineDash([5, 5]); g.stroke(); g.setLineDash([]);
+    }
+    if (s.turboReady) {
+      g.beginPath(); g.arc(x, y, s.radius + 4, 0, Math.PI * 2);
+      g.strokeStyle = "rgba(255,204,0,0.6)"; g.lineWidth = 2.5; g.stroke();
+    }
+    if (s.magnetTimer > 0) {
+      g.beginPath(); g.arc(x, y, s.radius + 12, 0, Math.PI * 2);
+      g.strokeStyle = "rgba(255,102,136,0.4)"; g.lineWidth = 1.5; g.setLineDash([3, 6]); g.stroke(); g.setLineDash([]);
+    }
+    // Squash on launch / stretch on hit.
+    g.save();
+    const speed = vlen(s.vel);
+    if (speed > 200) {
+      const a = Math.atan2(s.vel.y, s.vel.x);
+      const k = Math.min(0.18, (speed - 200) / 4000);
+      g.translate(x, y); g.rotate(a); g.scale(1 + k, 1 - k); g.rotate(-a); g.translate(-x, -y);
+    }
+    drawPlayerOrb(g, x, y, s.radius, s.player, { stunned: s.hitFlash > 0 && Math.floor(t * 20) % 2 === 0 });
+    g.restore();
+    if (s.bankFlash > 0) {
+      g.beginPath(); g.arc(x, y, s.radius + 4 + (0.6 - s.bankFlash) * 60, 0, Math.PI * 2);
+      g.strokeStyle = GOLD; g.lineWidth = 3; g.globalAlpha = s.bankFlash / 0.6; g.stroke(); g.globalAlpha = 1;
+    }
+    // Crown on the leader
+    if (i === this.leader) this.drawCrown(g, x, y - s.radius - 11, s.radius * 0.5);
+    // Pouch readout
+    g.textAlign = "center"; g.textBaseline = "middle";
+    const top = y - s.radius - (i === this.leader ? 26 : 13);
+    if (s.pouch > 0) {
+      const mult = bankMultiplier(s.pouch, { underdog: i === this.underdog, heist: this.heist });
+      g.font = "800 15px Outfit, sans-serif";
+      g.lineWidth = 3; g.strokeStyle = "rgba(7,11,20,0.85)";
+      const label = `+${s.pouch}` + (mult > 1 ? ` x${mult}` : "");
+      g.strokeText(label, x, top); g.fillStyle = GOLD; g.fillText(label, x, top);
+    }
+    if (i === this.underdog) {
+      g.font = "800 10px Outfit, sans-serif"; g.fillStyle = "#B8FF3D";
+      g.lineWidth = 3; g.strokeStyle = "rgba(7,11,20,0.85)";
+      g.strokeText("UNDERDOG +1x", x, y + s.radius + 11); g.fillText("UNDERDOG +1x", x, y + s.radius + 11);
+    }
+    if (s.combo >= 3) {
+      g.font = "800 11px Outfit, sans-serif"; g.fillStyle = "#FFB020";
+      g.fillText("x" + comboMultiplier(s.combo), x + s.radius + 12, y - s.radius);
+    }
+  }
+
+  private drawCrown(g: CanvasRenderingContext2D, cx: number, cy: number, w: number): void {
+    const h = w * 0.8;
+    g.save();
+    g.translate(cx, cy);
+    g.beginPath();
+    g.moveTo(-w, h / 2); g.lineTo(-w, -h * 0.2); g.lineTo(-w * 0.5, h * 0.1); g.lineTo(0, -h / 2);
+    g.lineTo(w * 0.5, h * 0.1); g.lineTo(w, -h * 0.2); g.lineTo(w, h / 2); g.closePath();
+    g.fillStyle = GOLD; g.fill();
+    g.lineWidth = 1.5; g.strokeStyle = "rgba(7,11,20,0.8)"; g.stroke();
+    g.restore();
+  }
+
+  private drawHud(g: CanvasRenderingContext2D, t: number): void {
+    const W = this.W;
+    g.fillStyle = "rgba(7,11,20,0.72)"; g.fillRect(0, 0, W, HUD_H);
+    g.fillStyle = this.heist ? HEIST_PINK : "rgba(62,224,255,0.35)"; g.fillRect(0, HUD_H - 2, W, 2);
+    const timerW = Math.min(64, W * 0.12);
+    const chipW = (W - timerW) / this.seats.length;
+    // Shrink the chip text on narrow phones so four seats still fit.
+    const fs = Math.max(0.65, Math.min(1, chipW / 130));
+    const y = HUD_H - 18;
+    g.textBaseline = "middle";
+    this.seats.forEach((s, i) => {
+      const x0 = chipW * i;
+      const cx = x0 + 12 * fs;
+      if (i === this.underdog) {
+        g.fillStyle = "rgba(184,255,61,0.12)"; g.fillRect(x0 + 2, HUD_H - 30, chipW - 4, 26);
+      }
+      g.beginPath(); g.arc(cx, y, 6 * fs, 0, Math.PI * 2); g.fillStyle = s.player.color; g.fill();
+      if (i === this.leader) this.drawCrown(g, cx, y - 11 * fs, 6 * fs);
+      g.font = `800 ${Math.round(18 * fs)}px Outfit, sans-serif`; g.textAlign = "left";
+      g.fillStyle = i === this.leader ? GOLD : "#e6ebf5";
+      g.fillText(String(s.score), cx + 12 * fs, y);
+      const scoreW = g.measureText(String(s.score)).width;
+      if (s.pouch > 0) {
+        g.font = `700 ${Math.round(12 * fs)}px Outfit, sans-serif`; g.fillStyle = GOLD; g.globalAlpha = 0.9;
+        g.fillText(`+${s.pouch}`, cx + 16 * fs + scoreW, y + 1); g.globalAlpha = 1;
+      }
+    });
+    const tl = Math.max(0, this.timeLeft); const secs = Math.ceil(tl);
+    g.font = `800 ${Math.round(18 * fs)}px Outfit, sans-serif`; g.textAlign = "right";
+    g.fillStyle = this.heist ? HEIST_PINK : tl < 25 ? "#FFB020" : "#9aa3c7";
+    g.fillText(String(secs), W - 12, y);
+    const tag = this.heist ? "HEIST +1x" : this.doubleTime > 0 ? "2X COINS" : null;
+    if (tag && fs >= 0.9) {
+      g.font = "800 12px Outfit, sans-serif";
+      g.fillStyle = this.heist ? `rgba(255,61,122,${0.6 + Math.sin(t * 8) * 0.4})` : "rgba(102,255,170,0.9)";
+      g.fillText(tag, W - 44, y);
+    }
   }
 }

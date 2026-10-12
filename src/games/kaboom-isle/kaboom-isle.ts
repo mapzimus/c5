@@ -1,8 +1,12 @@
 import { PLAYER_BINDS } from "../../core/input";
 import type { GameContext, GameDefinition, GameInstance, GameStat } from "../../core/types";
-import { Callouts, Juice } from "../../fx/juice";
+import { Callouts, Juice, saveBest } from "../../fx/juice";
 import {
-  FIGHTER_R, GRAVITY, PERKS, TILE, WEAPONS, World, perkCount, rollWeapon,
+  LAVA_ROUND, MAX_ROUNDS, OVERDRIVE_ROUND, PANEL_H, WINS_NEEDED, botGustDir, botSwatChance, draftOrder, heatFor, inRect, islandWinner,
+  lavaRises, matchResult, maxIslands, panelCards, panelRects, seatAt, type Rect,
+} from "./logic";
+import {
+  FIGHTER_R, GRAVITY, PERKS, SWAT_RANGE, SWAT_WINDOW, TILE, WEAPONS, World, perkCount, rollWeapon,
   type Blast, type CrateKind, type Perk, type PerkId, type Weapon, type WeaponId,
 } from "./world";
 
@@ -40,126 +44,155 @@ const BOT_VALUE: Record<WeaponId, number> = {
   nuke: 10, blackhole: 7, airstrike: 7, cluster: 6, triple: 6, grenade: 5, drill: 5, bomb: 4, glove: 4, teleport: 2, chicken: 0,
 };
 
-type Phase = "chaos" | "pick" | "aim" | "power" | "flight" | "between" | "islandOver" | "draft" | "over";
+const BOT_TAUNTS_HIT = ["heh heh", "BOOM!", "gotcha", "too easy"];
+const BOT_TAUNTS_MISS = ["oops", "wind...", "hmm", "next time"];
+const BOT_TAUNTS_GHOST = ["BOO!", "whoosh", "hehe", "blow!"];
 
-const WINS_NEEDED = 2;
-const MAX_ISLANDS = 5;
-const PICK_TIMEOUT = 6;
-const AIM_TIMEOUT = 7;
-const POWER_TIMEOUT = 5;
-const SUDDEN_DEATH_ROUNDS = 5;
-const LAVA_RISE = 40;
-const MAX_TURNS = 40;
+type Phase = "between" | "chaos" | "volley" | "islandOver" | "draft" | "over";
+type Stage = "idle" | "pick" | "aim" | "power" | "done";
+
+const PICK_TIMEOUT = 5;
+const AIM_TIMEOUT = 5;
+const POWER_TIMEOUT = 3.5;
+const VOLLEY_MAX = 9;
+const LAVA_RISE = 50;
 const AIM_MIN = 0.1;
 const AIM_MAX = Math.PI - 0.1;
+const AIM_SPEED = 2.5;
+const POWER_SPEED = 4.2;
+const GUST_COOLDOWN = 1.1;
+const BEST_VERSION = "v2-volley";
 
 interface Totals {
   damage: number;
   kos: number;
   best: number;
+  haunts: number;
+  returns: number;
+}
+
+/** Everything one seat is doing during a volley. */
+interface Seat {
+  stage: Stage;
+  t: number;
+  aimT: number;
+  powerT: number;
+  angle: number;
+  power: number;
+  weapon: Weapon;
+  choices: Weapon[];
+  shotsLeft: number;
+  botTarget: { angle: number; power: number } | null;
+  botDelay: number;
+  botSwatAt: number;
+  gustCd: number;
+  botGhostT: number;
+  fireFrom: { x: number; y: number };
+  flash: number;
+  taunt: { text: string; life: number } | null;
+}
+
+interface Tap {
+  x: number;
+  y: number;
+  /** Keyboard presses carry the seat and a kind instead of a position. */
+  seat?: number;
+  kind?: "action" | "swat" | "left" | "right";
 }
 
 /**
- * Kaboom Isle: Worms-style artillery played only with taps.
- * A match is several islands; first to win two takes it. Every round draws a chaos card,
- * every turn you pick one of three random weapons, and between islands you draft perks.
- * Skill is timing: tap to stop the swinging aim needle, tap again to stop the power meter.
+ * Kaboom Isle: tap-timed artillery where everybody fires at once.
+ * Each volley every survivor picks a weapon from their own bottom panel, taps to stop the swinging
+ * aim needle and taps again to stop the power meter, all at the same time. The island heats up every
+ * round, ghosts of the fallen blow the wind around, and one SWAT per island bats a bomb back at its owner.
  */
 export class KaboomIsle implements GameInstance {
   world: World;
   phase: Phase = "between";
-  current = -1;
-  turn = 0;
   round = 0;
   island = 1;
   readonly wins: number[];
   readonly perks: PerkId[][];
+  readonly seats: Seat[];
   private readonly totals: Totals[];
-  private phaseT = 0.6;
+  private readonly panels: Rect[];
+  private phaseT = 0.8;
   private clock = 0;
-  private aimT = 0;
-  private powerT = 0;
-  angle = Math.PI / 2;
-  power = 0;
-  weapon: Weapon = WEAPONS[0]!;
-  choices: Weapon[] = [];
+  private volleyT = 0;
   chaos: Chaos | null = null;
-  shotsLeft = 0;
   draftQueue: number[] = [];
   draftOptions: Perk[] = [];
+  heat = 1;
   private shotsPerTurn = 1;
   private jackpot = false;
-  private fireFrom = { x: 0, y: 0 };
-  private botTarget: { angle: number; power: number } | null = null;
   private done = false;
+  private overdrive = false;
   private readonly juice: Juice;
   private readonly callouts = new Callouts();
   private readonly floaters: { text: string; x: number; y: number; life: number; color: string }[] = [];
+  private readonly taps: Tap[] = [];
   private terrainCache: HTMLCanvasElement | null = null;
   private cachedVersion = -1;
-  private suddenDeath = false;
+  private gustPuff = { dir: 0, life: 0, color: "#fff" };
+  private readonly worldH: number;
+  private readonly islandsMax: number;
 
   constructor(private readonly ctx: GameContext) {
     const n = ctx.players.length;
+    this.islandsMax = maxIslands(n);
     this.wins = Array.from({ length: n }, () => 0);
     this.perks = Array.from({ length: n }, () => []);
-    this.totals = Array.from({ length: n }, () => ({ damage: 0, kos: 0, best: 0 }));
-    this.world = new World(ctx.width, ctx.height, ctx.rng, n, this.perks);
+    this.totals = Array.from({ length: n }, () => ({ damage: 0, kos: 0, best: 0, haunts: 0, returns: 0 }));
+    this.seats = Array.from({ length: n }, () => this.freshSeat());
+    this.panels = panelRects(ctx.width, ctx.height, n);
+    this.worldH = ctx.height - PANEL_H;
+    this.world = new World(ctx.width, this.worldH, ctx.rng, n, this.perks);
     this.juice = new Juice(() => ctx.rng.next());
     this.callouts.show("ISLAND 1", "#F4F7FB", { size: 72 });
+    ctx.canvas.style.touchAction = "none";
+    ctx.canvas.addEventListener("pointerdown", this.onDown, { passive: false });
+  }
+
+  private freshSeat(): Seat {
+    return {
+      stage: "idle", t: 0, aimT: 0, powerT: 0, angle: Math.PI / 2, power: 0, weapon: WEAPONS[0]!, choices: [], shotsLeft: 0,
+      botTarget: null, botDelay: 0, botSwatAt: -1, gustCd: 0, botGhostT: 1, fireFrom: { x: 0, y: 0 }, flash: 0, taunt: null,
+    };
   }
 
   // ---------- flow ----------
 
-  private nextTurn(): void {
-    const alive = this.world.alive();
-    if (alive.length <= 1 || this.turn >= MAX_TURNS) {
+  private startRound(): void {
+    const w = this.world;
+    if (w.alive().length <= 1 || this.round >= MAX_ROUNDS) {
       this.endIsland();
       return;
     }
-    const n = this.world.fighters.length;
-    let next = this.current;
-    for (let i = 0; i < n; i++) {
-      next = (next + 1) % n;
-      if (this.world.fighters[next]!.alive) break;
-    }
-    const newRound = this.current < 0 || next <= this.current;
-    this.current = next;
-    this.turn++;
-    this.world.rollWind();
-    if (newRound) {
-      this.startRound();
-      if (this.phase === "islandOver" || this.phase === "over") return;
-      if (!this.world.fighters[this.current]!.alive) {
-        this.nextTurn();
-        return;
-      }
-      if (this.chaos) {
-        this.phase = "chaos";
-        this.phaseT = 0;
-        this.ctx.sfx.streak(2);
-        return;
-      }
-    }
-    this.startTurn();
-  }
-
-  private startRound(): void {
     this.round++;
-    const w = this.world;
-    // Reset last round's chaos.
     w.gravity = GRAVITY;
     w.windMul = 1;
     w.bouncy = false;
     this.shotsPerTurn = 1;
     this.jackpot = false;
     this.chaos = null;
+    w.rollWind();
+    const final = this.island >= this.islandsMax;
+    this.heat = heatFor(this.round, final);
+    w.damageMul = this.heat;
     if (w.crates.length < 3 && this.ctx.rng.next() < 0.6) w.spawnCrate();
-    if (this.round > SUDDEN_DEATH_ROUNDS) {
-      if (!this.suddenDeath) this.callouts.show("SUDDEN DEATH", "#FF5A1F", { size: 72 });
-      this.suddenDeath = true;
+    if (lavaRises(this.round, final)) {
       w.lava -= LAVA_RISE;
       this.lavaCheck();
+      if (!this.overdrive && this.round >= OVERDRIVE_ROUND) {
+        this.overdrive = true;
+        this.callouts.show("OVERDRIVE", "#FF5A1F", { size: 76, life: 1.6 });
+        this.juice.shake(0.5);
+      } else this.callouts.show("LAVA RISING", "#FF5A1F", { size: 48, life: 1, y: 0.2 });
+    }
+    const dog = w.markUnderdog();
+    if (dog !== null) {
+      const f = w.fighters[dog]!;
+      this.floaters.push({ text: "UNDERDOG +30%", x: f.x, y: f.y - 56, life: 1.6, color: "#FFE14D" });
     }
     if (this.round >= 2) {
       const chaos = this.ctx.rng.pick(CHAOS);
@@ -170,13 +203,21 @@ export class KaboomIsle implements GameInstance {
         case "meteors": for (let i = 0; i < 6; i++) w.meteor(this.ctx.rng.float(60, this.ctx.width - 60)); break;
         case "craterain": for (let i = 0; i < 3; i++) w.spawnCrate(); break;
         case "bouncy": w.bouncy = true; break;
-        case "quake": w.quake(this.turn); this.juice.shake(1); break;
+        case "quake": w.quake(this.round); this.juice.shake(1); break;
         case "surge": w.lava -= 45; this.lavaCheck(); break;
         case "double": this.shotsPerTurn = 2; break;
         case "jackpot": this.jackpot = true; break;
       }
+      if (w.alive().length <= 1) {
+        this.endIsland();
+        return;
+      }
+      this.phase = "chaos";
+      this.phaseT = 0;
+      this.ctx.sfx.streak(2);
+      return;
     }
-    if (w.alive().length <= 1) this.endIsland();
+    this.startVolley();
   }
 
   private lavaCheck(): void {
@@ -186,89 +227,128 @@ export class KaboomIsle implements GameInstance {
           f.fireproofLeft--;
           f.y = this.world.lava - 60;
           f.vy = -700;
-        } else this.world.kill(f, this.turn, null);
+        } else this.world.kill(f, this.round, null);
       }
     }
   }
 
-  private startTurn(): void {
-    this.shotsLeft = this.shotsPerTurn;
-    this.startPick();
+  private startVolley(): void {
+    this.phase = "volley";
+    this.phaseT = 0;
+    this.volleyT = 0;
+    this.world.fighters.forEach((f, i) => {
+      const s = this.seats[i]!;
+      if (!f.alive) {
+        s.stage = "idle";
+        return;
+      }
+      s.shotsLeft = this.shotsPerTurn;
+      this.startPick(i);
+    });
+    this.ctx.sfx.select();
   }
 
-  private startPick(): void {
-    const me = this.world.fighters[this.current]!;
-    const count = 3 + Math.min(1, perkCount(me, "lucky"));
+  private startPick(i: number): void {
+    const me = this.world.fighters[i]!;
+    const s = this.seats[i]!;
+    const count = 3 + Math.min(1, perkCount(me, "lucky") + (me.underdog ? 1 : 0));
     const lucky = perkCount(me, "lucky") > 0;
     const pool = this.jackpot ? WEAPONS.filter((w) => RARES.includes(w.id)) : WEAPONS;
     const choices: Weapon[] = [];
     for (let tries = 0; choices.length < count && tries < 60; tries++) {
       let w = this.jackpot ? this.ctx.rng.pick(pool) : rollWeapon(this.ctx.rng);
-      // Lucky: one reroll toward a rare.
       if (lucky && !RARES.includes(w.id)) w = rollWeapon(this.ctx.rng);
       if (!choices.some((c) => c.id === w.id)) choices.push(w);
     }
-    this.choices = choices;
-    this.phase = "pick";
-    this.phaseT = 0;
-    this.botTarget = null;
-    this.angle = Math.PI / 2;
-    this.power = 0;
-    this.ctx.sfx.select();
+    s.choices = choices;
+    s.stage = "pick";
+    s.t = 0;
+    s.botTarget = null;
+    s.botDelay = this.ctx.rng.float(0.35, 1.1);
+    s.angle = Math.PI / 2;
+    s.power = 0;
   }
 
-  private choose(index: number): void {
-    const w = this.choices[index];
+  private choose(i: number, index: number): void {
+    const s = this.seats[i]!;
+    const w = s.choices[index];
     if (!w) return;
-    this.weapon = w;
-    this.phase = "aim";
-    this.aimT = this.ctx.rng.float(0, 6);
-    this.phaseT = 0;
-    if (w.id === "nuke") this.callouts.show("MEGA NUKE", "#FF5A1F", { size: 60 });
+    s.weapon = w;
+    s.stage = "aim";
+    s.aimT = this.ctx.rng.float(0, 6);
+    s.t = 0;
+    s.flash = 0.3;
+    if (w.id === "nuke") this.callouts.show(`${this.ctx.players[i]!.name.toUpperCase()} HAS THE NUKE`, "#FF5A1F", { size: 54, life: 1.1 });
     else this.ctx.sfx.tick();
-    if (!this.isHumanTurn) this.botTarget = this.planBot();
+    if (!this.isHuman(i)) s.botTarget = this.planBot(i, w);
+  }
+
+  private lockAim(i: number): void {
+    const s = this.seats[i]!;
+    s.stage = "power";
+    s.t = 0;
+    s.powerT = 0;
+    s.flash = 0.3;
+    this.ctx.sfx.tick();
+  }
+
+  private fire(i: number): void {
+    const s = this.seats[i]!;
+    const me = this.world.fighters[i]!;
+    s.fireFrom = { x: me.x, y: me.y };
+    this.world.fire(i, s.angle, s.power, s.weapon);
+    s.shotsLeft--;
+    s.stage = "done";
+    s.t = 0;
+    s.flash = 0.4;
+    this.ctx.sfx.whoosh();
+    this.juice.burst(me.x + Math.cos(s.angle) * 20, me.y - Math.sin(s.angle) * 20, ["#F4F7FB", s.weapon.color], { count: 8, speed: 200, size: 4, angle: -s.angle, spread: 0.8, gravity: 0 });
+  }
+
+  private volleyDone(): boolean {
+    return this.world.fighters.every((f, i) => {
+      const s = this.seats[i]!;
+      return !f.alive || (s.stage === "done" && s.shotsLeft <= 0) || s.stage === "idle";
+    });
   }
 
   private endIsland(): void {
-    const alive = this.world.alive();
-    let winner: number | null = null;
-    if (alive.length === 1) winner = alive[0]!.index;
-    else if (alive.length > 1) {
-      const top = Math.max(...alive.map((f) => f.hp));
-      const leaders = alive.filter((f) => f.hp === top);
-      if (leaders.length === 1) winner = leaders[0]!.index;
-    }
+    const winner = islandWinner(this.world.fighters);
     for (const f of this.world.fighters) {
       const t = this.totals[f.index]!;
       t.damage += f.damageDealt;
       t.kos += f.kos;
       t.best = Math.max(t.best, f.bestHit);
+      t.haunts += f.haunts;
+      t.returns += f.returns;
     }
     if (winner !== null) {
       this.wins[winner]!++;
       const p = this.ctx.players[winner]!;
-      this.callouts.show(`${p.name.toUpperCase()} TAKES ISLAND ${this.island}`, p.color, { size: 64, life: 2.6 });
+      this.callouts.show(`${p.name.toUpperCase()} TAKES ISLAND ${this.island}`, p.color, { size: 64, life: 2.4 });
+      const f = this.world.fighters[winner]!;
+      if (f.alive) this.juice.burst(f.x, f.y, [p.color, "#F4F7FB", "#FFE14D"], { count: 40, speed: 380, size: 6, gravity: 300 });
     } else {
-      this.callouts.show(`ISLAND ${this.island}: NO SURVIVORS`, "#F4F7FB", { size: 60, life: 2.6 });
+      this.callouts.show(`ISLAND ${this.island}: NO SURVIVORS`, "#F4F7FB", { size: 60, life: 2.4 });
     }
     this.ctx.sfx.win();
     this.chaos = null;
+    for (const s of this.seats) s.stage = "idle";
     this.phase = "islandOver";
-    this.phaseT = 2.8;
+    this.phaseT = 2;
   }
 
   private afterIsland(): void {
-    const best = Math.max(...this.wins);
-    if (best >= WINS_NEEDED || this.island >= MAX_ISLANDS) {
+    const result = matchResult(this.wins, this.island, this.islandsMax, this.totals.map((t) => t.damage));
+    if (result) {
       this.phase = "over";
-      this.phaseT = 4.5;
-      const leaders = this.wins.map((w, i) => (w === best ? i : -1)).filter((i) => i >= 0);
-      const text = leaders.length === 1 ? `${this.ctx.players[leaders[0]!]!.name.toUpperCase()} WINS THE MATCH` : "IT'S A TIE";
-      this.callouts.show(text, leaders.length === 1 ? this.ctx.players[leaders[0]!]!.color : "#F4F7FB", { size: 72, life: 4 });
+      this.phaseT = 3.2;
+      const one = result.winners.length === 1 ? this.ctx.players[result.winners[0]!]! : null;
+      const text = one ? `${one.name.toUpperCase()} WINS${result.onDamage ? " ON DAMAGE" : " THE MATCH"}` : "IT'S A TIE";
+      this.callouts.show(text, one ? one.color : "#F4F7FB", { size: 72, life: 4 });
       return;
     }
-    // Losers draft first.
-    this.draftQueue = this.ctx.players.map((_, i) => i).sort((a, b) => this.wins[a]! - this.wins[b]! || a - b);
+    this.draftQueue = draftOrder(this.wins);
     this.startDraftFor();
   }
 
@@ -299,142 +379,181 @@ export class KaboomIsle implements GameInstance {
 
   private newIsland(): void {
     this.island++;
-    this.world = new World(this.ctx.width, this.ctx.height, this.ctx.rng, this.ctx.players.length, this.perks);
+    this.world = new World(this.ctx.width, this.worldH, this.ctx.rng, this.ctx.players.length, this.perks);
     this.cachedVersion = -1;
-    this.current = -1;
-    this.turn = 0;
     this.round = 0;
-    this.suddenDeath = false;
+    this.overdrive = false;
     this.chaos = null;
+    this.heat = 1;
+    for (let i = 0; i < this.seats.length; i++) this.seats[i] = this.freshSeat();
     this.phase = "between";
-    this.phaseT = 1;
-    this.callouts.show(`ISLAND ${this.island}`, "#F4F7FB", { size: 72 });
+    this.phaseT = 0.9;
+    const final = this.island >= this.islandsMax;
+    this.callouts.show(final ? "FINAL ISLAND" : `ISLAND ${this.island}`, final ? "#FF5A1F" : "#F4F7FB", { size: 72 });
   }
 
-  private get isHumanTurn(): boolean {
-    return this.ctx.players[this.current]?.kind === "human";
+  private isHuman(i: number): boolean {
+    return this.ctx.players[i]?.kind === "human";
   }
 
-  /** Tap position (null for a key press) or false when nothing was pressed. */
-  private readInput(): { x: number; y: number } | null | false {
+  // ---------- input ----------
+
+  private toLogical(e: PointerEvent): { x: number; y: number } {
+    const r = this.ctx.canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) / (r.width || 1)) * this.ctx.width,
+      y: ((e.clientY - r.top) / (r.height || 1)) * this.ctx.height,
+    };
+  }
+
+  private readonly onDown = (e: PointerEvent): void => {
+    if (e.cancelable) e.preventDefault();
+    const p = this.toLogical(e);
+    this.taps.push({ x: p.x, y: p.y });
+  };
+
+  /** Collect this frame's taps: pointer taps carry a position, key presses a seat and a kind. */
+  private readTaps(): Tap[] {
+    const taps = this.taps.splice(0);
     const click = this.ctx.input.consumeClick();
-    if (click) return click;
-    if (this.ctx.input.justPressed("Space")) return null;
-    for (const bind of PLAYER_BINDS) if (this.ctx.input.justPressed(bind.action)) return null;
-    return false;
+    void click; // our own pointerdown listener already queued it
+    this.ctx.players.forEach((pl, i) => {
+      if (pl.kind !== "human") return;
+      const bind = PLAYER_BINDS[pl.slot] ?? PLAYER_BINDS[i]!;
+      if (this.ctx.input.justPressed(bind.action)) taps.push({ x: -1, y: -1, seat: i, kind: "action" });
+      if (this.ctx.input.justPressed(bind.up)) taps.push({ x: -1, y: -1, seat: i, kind: "swat" });
+      if (this.ctx.input.justPressed(bind.left)) taps.push({ x: -1, y: -1, seat: i, kind: "left" });
+      if (this.ctx.input.justPressed(bind.right)) taps.push({ x: -1, y: -1, seat: i, kind: "right" });
+    });
+    return taps;
   }
 
-  private cardAt(pt: { x: number; y: number } | null, count: number): number {
-    if (!pt) return 0;
-    return this.cardRects(count).findIndex((r) => pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h);
+  /** Route a tap to a seat action during a volley. */
+  private handleVolleyTap(tap: Tap): void {
+    // Tap on (or near) your own blob while the SWAT ring is up: bat the bomb away.
+    if (tap.seat === undefined) {
+      for (const f of this.world.fighters) {
+        if (!f.alive || !this.isHuman(f.index) || f.swatWindow <= 0) continue;
+        if (Math.hypot(f.x - tap.x, f.y - tap.y) < SWAT_RANGE) {
+          this.trySwat(f.index);
+          return;
+        }
+      }
+    }
+    const i = tap.seat ?? seatAt(this.panels, tap.x, tap.y);
+    if (i < 0 || !this.isHuman(i)) return;
+    const f = this.world.fighters[i]!;
+    const s = this.seats[i]!;
+    const panel = this.panels[i]!;
+    if (!f.alive) {
+      // Ghost: left half blows left, right half blows right.
+      const dir = tap.kind === "left" ? -1 : tap.kind === "right" ? 1 : tap.kind ? 0 : tap.x < panel.x + panel.w / 2 ? -1 : 1;
+      if (dir !== 0) this.tryGust(i, dir);
+      return;
+    }
+    if (tap.kind === "swat") {
+      this.trySwat(i);
+      return;
+    }
+    if (tap.kind === "left" || tap.kind === "right") return;
+    switch (s.stage) {
+      case "pick": {
+        if (s.t < 0.15) return;
+        const idx = tap.seat !== undefined ? 0 : panelCards(panel, s.choices.length).findIndex((r) => inRect(r, tap.x, tap.y));
+        if (idx >= 0) this.choose(i, idx);
+        break;
+      }
+      case "aim":
+        if (s.t > 0.12) this.lockAim(i);
+        break;
+      case "power":
+        if (s.t > 0.12) this.fire(i);
+        break;
+      default:
+        // Not aiming: the panel doubles as the SWAT button.
+        if (f.swatWindow > 0) this.trySwat(i);
+    }
   }
+
+  private trySwat(i: number): void {
+    const f = this.world.fighters[i]!;
+    if (f.swatWindow <= 0 || f.swats <= 0) return;
+    const shot = this.world.swat(i);
+    if (!shot) return;
+    const p = this.ctx.players[i]!;
+    this.callouts.show("SWAT!", p.color, { size: 64, life: 0.9, y: 0.25 });
+    this.juice.hitStop(0.07);
+    this.juice.shake(0.35);
+    this.juice.burst(f.x, f.y, [p.color, "#F4F7FB", "#FFE14D"], { count: 26, speed: 380, size: 6, gravity: 200 });
+    this.seats[i]!.flash = 0.5;
+    this.ctx.sfx.streak(4);
+  }
+
+  private tryGust(i: number, dir: number): void {
+    const s = this.seats[i]!;
+    if (s.gustCd > 0) return;
+    if (!this.world.gust(i, dir)) return;
+    s.gustCd = GUST_COOLDOWN;
+    s.flash = 0.35;
+    const p = this.ctx.players[i]!;
+    this.gustPuff = { dir, life: 0.8, color: p.color };
+    this.ctx.sfx.whoosh();
+    const panel = this.panels[i]!;
+    this.juice.burst(panel.x + panel.w / 2, panel.y - 10, [p.color, "#F4F7FB"], { count: 14, speed: 420, size: 5, angle: dir > 0 ? 0 : Math.PI, spread: 0.5, gravity: -40 });
+  }
+
+  // ---------- update ----------
 
   update(dt: number): void {
     const realDt = dt;
     dt = this.juice.update(dt);
     this.callouts.update(realDt);
     this.clock += realDt;
+    this.gustPuff.life = Math.max(0, this.gustPuff.life - realDt);
     for (const f of this.floaters) {
       f.life -= realDt;
       f.y -= 40 * realDt;
     }
     for (let i = this.floaters.length - 1; i >= 0; i--) if (this.floaters[i]!.life <= 0) this.floaters.splice(i, 1);
-
-    const input = this.readInput();
-    const tap = input !== false;
-    const human = this.isHumanTurn;
-
-    // Physics always runs so knockback settles between turns too.
-    const before = this.world.fighters.map((f) => f.alive);
-    const blasts = this.world.step(dt, this.turn);
-    for (const b of blasts) this.onBlast(b);
-    for (const e of this.world.events.splice(0)) {
-      if (e.type === "crate") {
-        const label = CRATE_LABEL[e.kind];
-        this.floaters.push({ text: label.text, x: e.x, y: e.y - 20, life: 1.6, color: label.color });
-        this.juice.burst(e.x, e.y, [label.color, "#F4F7FB"], { count: 20, speed: 240, size: 5 });
-        this.ctx.sfx.collect();
-      } else if (e.type === "teleport") {
-        this.juice.burst(e.x, e.y, ["#22d3ee", "#F4F7FB"], { count: 24, speed: 260, size: 5, gravity: 0 });
-        this.ctx.sfx.go();
-      } else if (e.type === "fireproof") {
-        this.floaters.push({ text: "FIREPROOF!", x: e.x, y: e.y - 30, life: 1.4, color: "#FFB020" });
-        this.juice.burst(e.x, e.y, ["#FF5A1F", "#FFB020"], { count: 24, speed: 300, size: 6, angle: -Math.PI / 2, spread: 1.4 });
-      } else {
-        const f = this.world.fighters[e.index]!;
-        this.floaters.push({ text: "BLOCKED", x: f.x, y: f.y - 50, life: 1.1, color: "#3EE0FF" });
+    for (const s of this.seats) {
+      s.flash = Math.max(0, s.flash - realDt);
+      s.gustCd = Math.max(0, s.gustCd - realDt);
+      if (s.taunt) {
+        s.taunt.life -= realDt;
+        if (s.taunt.life <= 0) s.taunt = null;
       }
     }
+
+    const taps = this.readTaps();
+    const anyTap = taps.length > 0;
+
+    // Physics always runs so knockback settles between volleys too.
+    const before = this.world.fighters.map((f) => f.alive);
+    const blasts = this.world.step(dt, this.round);
+    for (const b of blasts) this.onBlast(b);
+    this.drainEvents();
     this.world.fighters.forEach((f, i) => {
       if (before[i] && !f.alive) this.onKo(i);
     });
 
     switch (this.phase) {
       case "between":
-        this.phaseT -= dt;
-        if (this.phaseT <= 0) this.nextTurn();
+        this.phaseT -= realDt;
+        if (this.phaseT <= 0) this.startRound();
         break;
       case "chaos":
         this.phaseT += realDt;
-        if (this.phaseT > 1.8 || (tap && this.phaseT > 0.4)) this.startTurn();
+        if (this.phaseT > 1.4 || (anyTap && this.phaseT > 0.3)) this.startVolley();
         break;
-      case "pick": {
+      case "volley":
         this.phaseT += realDt;
-        if (human) {
-          if (tap && this.phaseT > 0.25) {
-            const i = this.cardAt(input, this.choices.length);
-            if (i >= 0) this.choose(i);
-          } else if (this.phaseT > PICK_TIMEOUT) this.choose(0);
-        } else if (this.phaseT > 0.7) {
-          let best = 0;
-          this.choices.forEach((c, i) => {
-            if (BOT_VALUE[c.id] + this.ctx.rng.float(0, 2.5) > BOT_VALUE[this.choices[best]!.id]) best = i;
-          });
-          this.choose(best);
-        }
-        break;
-      }
-      case "aim": {
-        this.phaseT += dt;
-        this.aimT += dt;
-        this.angle = Math.PI / 2 + (AIM_MAX - Math.PI / 2) * Math.sin(this.aimT * 1.9);
-        const lock = human
-          ? (tap && this.phaseT > 0.12) || this.phaseT > AIM_TIMEOUT
-          : this.phaseT > 0.35 && (Math.abs(this.angle - this.botTarget!.angle) < 0.05 || this.phaseT > AIM_TIMEOUT);
-        if (lock) {
-          this.phase = "power";
-          this.phaseT = 0;
-          this.powerT = 0;
-          this.ctx.sfx.tick();
-        }
-        break;
-      }
-      case "power": {
-        this.phaseT += dt;
-        this.powerT += dt;
-        this.power = 0.5 - 0.5 * Math.cos(this.powerT * 3.4);
-        const fire = human
-          ? (tap && this.phaseT > 0.12) || this.phaseT > POWER_TIMEOUT
-          : this.phaseT > 0.25 && (Math.abs(this.power - this.botTarget!.power) < 0.03 || this.phaseT > POWER_TIMEOUT);
-        if (fire) {
-          const me = this.world.fighters[this.current]!;
-          this.fireFrom = { x: me.x, y: me.y };
-          this.world.fire(this.current, this.angle, this.power, this.weapon);
-          this.shotsLeft--;
-          this.ctx.sfx.whoosh();
-          this.phase = "flight";
-          this.phaseT = 0;
-        }
-        break;
-      }
-      case "flight":
-        this.phaseT += dt;
-        if ((this.world.settled() && this.phaseT > 0.35) || this.phaseT > 14) {
-          const me = this.world.fighters[this.current]!;
-          if (this.shotsLeft > 0 && me.alive && this.world.alive().length > 1) this.startPick();
-          else {
+        for (const tap of taps) this.handleVolleyTap(tap);
+        this.world.fighters.forEach((f, i) => this.stepSeat(i, f.alive, dt, realDt));
+        if (this.volleyDone() || this.world.alive().length <= 1) {
+          this.volleyT += realDt;
+          if ((this.world.settled() && this.volleyT > 0.45) || this.volleyT > VOLLEY_MAX) {
             this.phase = "between";
-            this.phaseT = 0.5;
+            this.phaseT = 0.35;
           }
         }
         break;
@@ -445,20 +564,142 @@ export class KaboomIsle implements GameInstance {
       case "draft": {
         this.phaseT += realDt;
         const who = this.draftQueue[0]!;
-        if (this.ctx.players[who]!.kind === "human") {
+        if (this.isHuman(who)) {
+          const tap = taps.find((t) => t.seat === undefined || t.seat === who);
           if (tap && this.phaseT > 0.3) {
-            const i = this.cardAt(input, this.draftOptions.length);
+            const i = tap.seat !== undefined ? 0 : this.cardAt(tap, this.draftOptions.length);
             if (i >= 0) this.draft(i);
-          } else if (this.phaseT > 12) this.draft(0);
-        } else if (this.phaseT > 0.9) {
+          } else if (this.phaseT > 8) this.draft(0);
+        } else if (this.phaseT > 0.55) {
           this.draft(this.ctx.rng.int(0, this.draftOptions.length - 1));
         }
         break;
       }
       case "over":
         this.phaseT -= realDt;
-        if (this.phaseT <= 0 || (tap && this.phaseT < 3)) this.done = true;
+        if (this.phaseT <= 0 || (anyTap && this.phaseT < 3)) this.done = true;
         break;
+    }
+  }
+
+  /** Advance one seat's pick/aim/power machine (or its ghost/bot timers). */
+  private stepSeat(i: number, alive: boolean, dt: number, realDt: number): void {
+    const s = this.seats[i]!;
+    const f = this.world.fighters[i]!;
+    const human = this.isHuman(i);
+    if (!alive) {
+      s.stage = "idle";
+      if (!human) {
+        s.botGhostT -= realDt;
+        if (s.botGhostT <= 0 && this.world.shots.length > 0) {
+          this.tryGust(i, botGustDir(this.world.wind, this.ctx.rng.next()));
+          s.taunt = { text: this.ctx.rng.pick(BOT_TAUNTS_GHOST), life: 1 };
+          s.botGhostT = this.ctx.rng.float(1.1, 2.4);
+        }
+      }
+      return;
+    }
+    // Bot swat: decide when the window opens, then react a beat later (sometimes too late).
+    if (!human && s.botSwatAt >= 0) {
+      s.botSwatAt -= dt;
+      if (s.botSwatAt <= 0) {
+        s.botSwatAt = -1;
+        this.trySwat(i);
+      }
+    }
+    s.t += dt;
+    switch (s.stage) {
+      case "pick":
+        if (human) {
+          if (s.t > PICK_TIMEOUT) this.choose(i, 0);
+        } else if (s.t > s.botDelay) {
+          let best = 0;
+          s.choices.forEach((c, k) => {
+            if (BOT_VALUE[c.id] + this.ctx.rng.float(0, 2.5) > BOT_VALUE[s.choices[best]!.id]) best = k;
+          });
+          this.choose(i, best);
+        }
+        break;
+      case "aim": {
+        s.aimT += dt;
+        s.angle = Math.PI / 2 + (AIM_MAX - Math.PI / 2) * Math.sin(s.aimT * AIM_SPEED);
+        const lock = human
+          ? s.t > AIM_TIMEOUT
+          : s.t > 0.25 && (Math.abs(s.angle - s.botTarget!.angle) < 0.05 || s.t > AIM_TIMEOUT);
+        if (lock) this.lockAim(i);
+        break;
+      }
+      case "power": {
+        s.powerT += dt;
+        s.power = 0.5 - 0.5 * Math.cos(s.powerT * POWER_SPEED);
+        const fire = human
+          ? s.t > POWER_TIMEOUT
+          : s.t > 0.2 && (Math.abs(s.power - s.botTarget!.power) < 0.03 || s.t > POWER_TIMEOUT);
+        if (fire) this.fire(i);
+        break;
+      }
+      case "done":
+        if (s.shotsLeft > 0 && s.t > 0.35 && f.alive) {
+          if (this.world.alive().length > 1) this.startPick(i);
+          else s.shotsLeft = 0;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  private drainEvents(): void {
+    for (const e of this.world.events.splice(0)) {
+      switch (e.type) {
+        case "crate": {
+          const label = CRATE_LABEL[e.kind];
+          this.floaters.push({ text: label.text, x: e.x, y: e.y - 20, life: 1.6, color: label.color });
+          this.juice.burst(e.x, e.y, [label.color, "#F4F7FB"], { count: 20, speed: 240, size: 5 });
+          this.ctx.sfx.collect();
+          break;
+        }
+        case "teleport":
+          this.juice.burst(e.x, e.y, ["#22d3ee", "#F4F7FB"], { count: 24, speed: 260, size: 5, gravity: 0 });
+          this.ctx.sfx.go();
+          break;
+        case "fireproof":
+          this.floaters.push({ text: "FIREPROOF!", x: e.x, y: e.y - 30, life: 1.4, color: "#FFB020" });
+          this.juice.burst(e.x, e.y, ["#FF5A1F", "#FFB020"], { count: 24, speed: 300, size: 6, angle: -Math.PI / 2, spread: 1.4 });
+          break;
+        case "shielded": {
+          const f = this.world.fighters[e.index]!;
+          this.floaters.push({ text: "BLOCKED", x: f.x, y: f.y - 50, life: 1.1, color: "#3EE0FF" });
+          break;
+        }
+        case "swatWindow": {
+          const s = this.seats[e.index]!;
+          if (this.isHuman(e.index)) {
+            this.juice.slowMo(0.55, 0.35);
+            this.ctx.sfx.tick();
+            s.flash = 0.6;
+          } else {
+            const shot = this.world.swatTarget(e.index);
+            const chance = botSwatChance(shot?.weapon.damage ?? 0, shot?.dmgMul ?? 1, this.world.fighters[e.index]!.swats);
+            if (this.ctx.rng.next() < chance) s.botSwatAt = this.ctx.rng.float(0.08, 0.6);
+          }
+          break;
+        }
+        case "swat": {
+          const p = this.ctx.players[e.index]!;
+          const victim = e.owner >= 0 ? this.ctx.players[e.owner] : undefined;
+          this.floaters.push({ text: victim ? `RETURN TO ${victim.name.toUpperCase()}` : "RETURNED!", x: e.x, y: e.y - 50, life: 1.3, color: p.color });
+          break;
+        }
+        case "gust":
+          break;
+        case "haunt": {
+          const p = this.ctx.players[e.index]!;
+          this.floaters.push({ text: `HAUNTED BY ${p.name.toUpperCase()}`, x: e.x, y: e.y - 62, life: 1.4, color: p.color });
+          this.ctx.sfx.streak(2);
+          break;
+        }
+      }
     }
   }
 
@@ -470,24 +711,40 @@ export class KaboomIsle implements GameInstance {
     if (b.weapon.id === "chicken") {
       this.ctx.sfx.miss();
       this.floaters.push({ text: "SQUEAK", x: b.x, y: b.y - 20, life: 1.2, color: "#FFE14D" });
-      if (b.hits.length === 0) this.callouts.show("DUD!", "#FFE14D");
     } else {
       this.ctx.sfx.hit();
       this.juice.shake(Math.min(1, b.radius / 110));
-      if (b.radius > 90) this.juice.hitStop(0.08);
+      const big = b.hits.some((h) => h.damage >= 40);
+      if (b.radius > 90 || big) this.juice.hitStop(b.radius > 90 ? 0.08 : 0.05);
       this.juice.burst(b.x, b.y, ["#FFB020", "#FF5A1F", "#F4F7FB", b.weapon.color], { count: Math.round(b.radius / 2), speed: b.radius * 6, size: 6 });
       this.juice.burst(b.x, b.y, ["#5b3a22", "#3d6b2a"], { count: 12, speed: 320, size: 5 });
     }
     for (const hit of b.hits) {
       const f = this.world.fighters[hit.index]!;
-      this.floaters.push({ text: `-${hit.damage}`, x: f.x, y: f.y - 34, life: 1.1, color: "#FF3D7A" });
+      this.floaters.push({ text: `-${hit.damage}`, x: f.x, y: f.y - 34, life: 1.1, color: b.swatted ? "#FFE14D" : "#FF3D7A" });
     }
-    // Trick-shot callouts for the shooter.
-    const enemies = b.hits.filter((h) => h.index !== this.current);
-    if (this.phase === "flight" && enemies.length >= 2) this.callouts.show("MULTI-HIT!", "#FFE14D", { size: 52 });
-    else if (this.phase === "flight" && enemies.length > 0 && Math.hypot(b.x - this.fireFrom.x, b.y - this.fireFrom.y) > 650) {
-      this.callouts.show("SNIPE!", "#3EE0FF", { size: 52 });
-    } else if (this.phase === "flight" && enemies.some((h) => h.damage >= 45)) this.callouts.show("CRUSHED!", "#FF3D7A", { size: 52 });
+    const shooter = b.owner >= 0 && b.owner < this.seats.length ? b.owner : null;
+    if (shooter === null) return;
+    const s = this.seats[shooter]!;
+    const p = this.ctx.players[shooter]!;
+    const enemies = b.hits.filter((h) => h.index !== shooter);
+    if (b.swatted && enemies.length > 0) this.callouts.show("RETURN TO SENDER!", "#FFE14D", { size: 56, life: 1.2 });
+    else if (enemies.length >= 2) this.callouts.show("MULTI-HIT!", "#FFE14D", { size: 52 });
+    else if (enemies.length > 0 && Math.hypot(b.x - s.fireFrom.x, b.y - s.fireFrom.y) > 650) this.callouts.show("SNIPE!", "#3EE0FF", { size: 52 });
+    else if (enemies.some((h) => h.damage >= 45)) this.callouts.show("CRUSHED!", "#FF3D7A", { size: 52 });
+    const bestEnemyHit = Math.max(0, ...enemies.map((h) => h.damage));
+    if (bestEnemyHit > 0 && this.isHuman(shooter) && saveBest(kaboomIsle.id, bestEnemyHit, BEST_VERSION)) {
+      this.callouts.show(`NEW RECORD ${bestEnemyHit} HIT`, p.color, { size: 50, life: 1.4, y: 0.42 });
+      this.ctx.sfx.collect();
+    }
+    if (enemies.length === 0 && b.weapon.id !== "chicken") {
+      // Near miss: an enemy just outside the blast.
+      const near = this.world.alive().filter((f) => f.index !== shooter && Math.hypot(f.x - b.x, f.y - b.y) < b.radius + FIGHTER_R + 45);
+      if (near.length > 0) this.floaters.push({ text: "SO CLOSE", x: b.x, y: b.y - 40, life: 1.1, color: "#F4F7FB" });
+      if (!this.isHuman(shooter) && this.ctx.rng.next() < 0.5) s.taunt = { text: this.ctx.rng.pick(BOT_TAUNTS_MISS), life: 1.3 };
+    } else if (!this.isHuman(shooter) && bestEnemyHit >= 25 && this.ctx.rng.next() < 0.6) {
+      s.taunt = { text: this.ctx.rng.pick(BOT_TAUNTS_HIT), life: 1.3 };
+    }
   }
 
   private onKo(index: number): void {
@@ -496,26 +753,31 @@ export class KaboomIsle implements GameInstance {
     this.callouts.show(f.hp > 0 ? `${p.name.toUpperCase()} GOT LAVA'D` : `${p.name.toUpperCase()} IS OUT`, p.color);
     this.juice.burst(f.x, Math.min(f.y, this.world.lava), [p.color, "#FF5A1F", "#FFB020"], { count: 40, speed: 420, size: 7 });
     this.juice.shake(0.5);
-    this.juice.slowMo(0.6);
+    this.juice.slowMo(0.5);
     this.ctx.sfx.streak(3);
+    const s = this.seats[index]!;
+    s.stage = "idle";
+    s.botGhostT = this.ctx.rng.float(0.8, 1.6);
+    if (this.world.alive().length > 1) this.floaters.push({ text: "GHOST: BLOW THE WIND", x: f.x, y: f.y - 60, life: 1.6, color: p.color });
   }
 
   /** Search angles/powers for a landing spot near an enemy, then fumble it a bit. */
-  private planBot(): { angle: number; power: number } {
-    const me = this.world.fighters[this.current]!;
+  private planBot(i: number, weapon: Weapon): { angle: number; power: number } {
+    const me = this.world.fighters[i]!;
     const enemies = this.world.alive().filter((f) => f.index !== me.index);
     let best = { angle: Math.PI / 2, power: 0.5, score: Infinity };
-    for (let a = AIM_MIN + 0.05; a < AIM_MAX - 0.05; a += 0.06) {
-      for (let p = 0.2; p <= 1; p += 0.05) {
+    for (let a = AIM_MIN + 0.05; a < AIM_MAX - 0.05; a += 0.07) {
+      for (let p = 0.2; p <= 1; p += 0.06) {
         const land = this.world.predict(me.index, a, p);
         let score = Math.min(...enemies.map((e) => Math.hypot(e.x - land.x, e.y - land.y)));
-        if (Math.hypot(me.x - land.x, me.y - land.y) < this.weapon.radius + 10) score += 400;
+        if (Math.hypot(me.x - land.x, me.y - land.y) < weapon.radius + 10) score += 400;
         if (score < best.score) best = { angle: a, power: p, score };
       }
     }
     const rng = this.ctx.rng;
+    const wobble = this.ctx.players.length > 2 ? 0.08 : 0.07;
     return {
-      angle: Math.min(AIM_MAX, Math.max(AIM_MIN, best.angle + rng.float(-0.07, 0.07))),
+      angle: Math.min(AIM_MAX, Math.max(AIM_MIN, best.angle + rng.float(-wobble, wobble))),
       power: Math.min(1, Math.max(0.02, best.power + rng.float(-0.06, 0.06))),
     };
   }
@@ -525,8 +787,9 @@ export class KaboomIsle implements GameInstance {
   render(g: CanvasRenderingContext2D): void {
     const { width: w, height: h } = this.ctx;
     const sky = g.createLinearGradient(0, 0, 0, h);
-    sky.addColorStop(0, "#1a0f2e");
-    sky.addColorStop(0.6, "#3a1530");
+    const hot = Math.min(1, (this.heat - 1) / 1.2);
+    sky.addColorStop(0, hot > 0.6 ? "#2a0f1e" : "#1a0f2e");
+    sky.addColorStop(0.6, `rgb(${58 + hot * 60},${21},${48 - hot * 20})`);
     sky.addColorStop(1, "#6b1d1d");
     g.fillStyle = sky;
     g.fillRect(0, 0, w, h);
@@ -534,12 +797,13 @@ export class KaboomIsle implements GameInstance {
     this.juice.begin(g);
     this.drawTerrain(g);
     this.drawLava(g);
-    this.drawGhost(g);
+    this.drawGhostPaths(g);
     this.drawCrates(g);
     this.drawVortices(g);
-    this.drawAim(g);
+    this.drawAims(g);
     for (const f of this.world.fighters) this.drawFighter(g, f.index);
     this.drawShots(g);
+    this.drawSwatRings(g);
     for (const f of this.floaters) {
       g.globalAlpha = Math.min(1, f.life * 2);
       g.font = "700 26px Bebas Neue, Impact, sans-serif";
@@ -553,11 +817,11 @@ export class KaboomIsle implements GameInstance {
     g.globalAlpha = 1;
     this.juice.end(g);
 
+    this.drawPanels(g);
     this.drawHud(g);
-    if (this.phase === "pick") this.drawPick(g);
     if (this.phase === "draft") this.drawDraft(g);
     if (this.phase === "chaos") this.drawChaos(g);
-    this.callouts.draw(g, w, h);
+    this.callouts.draw(g, w, h - PANEL_H);
   }
 
   private drawTerrain(g: CanvasRenderingContext2D): void {
@@ -588,6 +852,11 @@ export class KaboomIsle implements GameInstance {
   private drawLava(g: CanvasRenderingContext2D): void {
     const { width: w, height: h } = this.ctx;
     const top = this.world.lava;
+    const glow = this.overdrive ? 0.35 + 0.15 * Math.sin(this.clock * 6) : 0;
+    if (glow > 0) {
+      g.fillStyle = `rgba(255,90,31,${glow * 0.35})`;
+      g.fillRect(0, top - 40, w, 40);
+    }
     g.fillStyle = "#c2260f";
     g.beginPath();
     g.moveTo(0, h);
@@ -603,20 +872,20 @@ export class KaboomIsle implements GameInstance {
     const f = this.world.fighters[index]!;
     if (!f.alive) return;
     const p = this.ctx.players[index]!;
-    const active = index === this.current && this.phase !== "over" && this.phase !== "islandOver" && this.phase !== "draft";
+    const s = this.seats[index]!;
+    const aiming = this.phase === "volley" && (s.stage === "aim" || s.stage === "power");
     g.save();
     g.translate(f.x, f.y);
     const squash = f.grounded ? 1 + Math.sin(this.clock * 6 + index) * 0.04 : 1;
     g.scale(1 / squash, squash);
     g.fillStyle = f.hurt > 0 && Math.floor(this.clock * 20) % 2 === 0 ? "#ffffff" : p.color;
     g.shadowColor = p.color;
-    g.shadowBlur = active ? 20 : 8;
+    g.shadowBlur = aiming ? 20 : 8;
     g.beginPath();
     g.arc(0, 0, FIGHTER_R, 0, Math.PI * 2);
     g.fill();
     g.shadowBlur = 0;
-    // Eyes look along the aim on your turn, toward the middle otherwise.
-    const look = active && (this.phase === "aim" || this.phase === "power") ? this.angle : f.x < this.ctx.width / 2 ? 0.2 : Math.PI - 0.2;
+    const look = aiming ? s.angle : f.x < this.ctx.width / 2 ? 0.2 : Math.PI - 0.2;
     for (const ex of [-5, 5]) {
       g.fillStyle = "#fff";
       g.beginPath();
@@ -629,7 +898,6 @@ export class KaboomIsle implements GameInstance {
     }
     g.restore();
 
-    // HP bar + name
     const bw = 40;
     g.fillStyle = "rgba(7,11,20,0.7)";
     g.fillRect(f.x - bw / 2, f.y - FIGHTER_R - 14, bw, 6);
@@ -646,17 +914,20 @@ export class KaboomIsle implements GameInstance {
       g.arc(f.x, f.y, FIGHTER_R + 5, 0, Math.PI * 2);
       g.stroke();
     }
+    g.font = "700 12px Outfit, sans-serif";
+    g.textAlign = "center";
     if (f.doubleDamage) {
       g.fillStyle = "#FF3D7A";
-      g.font = "700 12px Outfit, sans-serif";
-      g.textAlign = "center";
       g.fillText("2x", f.x + bw / 2 + 10, f.y - FIGHTER_R - 8);
     }
+    if (f.underdog) {
+      g.fillStyle = "#FFE14D";
+      g.fillText("UNDERDOG", f.x, f.y + FIGHTER_R + 14);
+    }
     g.font = "600 14px Outfit, sans-serif";
-    g.textAlign = "center";
     g.fillStyle = "#F4F7FB";
     g.fillText(p.name, f.x, f.y - FIGHTER_R - 20);
-    if (active) {
+    if (aiming) {
       const bob = Math.sin(this.clock * 6) * 4;
       g.fillStyle = p.color;
       g.beginPath();
@@ -668,34 +939,56 @@ export class KaboomIsle implements GameInstance {
     }
   }
 
-  private drawGhost(g: CanvasRenderingContext2D): void {
-    if (this.phase !== "aim" && this.phase !== "power") return;
-    const path = this.world.ghosts[this.current];
-    if (!path || path.length < 2) return;
-    g.save();
-    g.setLineDash([6, 8]);
-    g.strokeStyle = "rgba(244,247,251,0.35)";
-    g.lineWidth = 2;
-    g.beginPath();
-    path.forEach((pt, i) => (i === 0 ? g.moveTo(pt.x, pt.y) : g.lineTo(pt.x, pt.y)));
-    g.stroke();
-    const end = path[path.length - 1]!;
-    g.setLineDash([]);
-    g.strokeStyle = "rgba(244,247,251,0.5)";
-    g.beginPath();
-    g.moveTo(end.x - 6, end.y - 6);
-    g.lineTo(end.x + 6, end.y + 6);
-    g.moveTo(end.x + 6, end.y - 6);
-    g.lineTo(end.x - 6, end.y + 6);
-    g.stroke();
-    g.restore();
+  private drawSwatRings(g: CanvasRenderingContext2D): void {
+    for (const f of this.world.fighters) {
+      if (!f.alive || f.swatWindow <= 0 || f.swats <= 0) continue;
+      const p = this.ctx.players[f.index]!;
+      const t = f.swatWindow / SWAT_WINDOW;
+      g.save();
+      g.strokeStyle = p.color;
+      g.lineWidth = 4;
+      g.globalAlpha = 0.5 + 0.5 * t;
+      g.setLineDash([10, 8]);
+      g.lineDashOffset = -this.clock * 60;
+      g.beginPath();
+      g.arc(f.x, f.y, SWAT_RANGE * (0.55 + 0.45 * t), 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      if (this.isHuman(f.index)) {
+        g.font = "700 30px Bebas Neue, Impact, sans-serif";
+        g.textAlign = "center";
+        g.lineWidth = 6;
+        g.strokeStyle = "rgba(7,11,20,0.85)";
+        g.strokeText("SWAT!", f.x, f.y - 62);
+        g.fillStyle = "#FFE14D";
+        g.fillText("SWAT!", f.x, f.y - 62);
+      }
+      g.restore();
+    }
+  }
+
+  private drawGhostPaths(g: CanvasRenderingContext2D): void {
+    if (this.phase !== "volley") return;
+    for (const f of this.world.fighters) {
+      const s = this.seats[f.index]!;
+      if (!f.alive || (s.stage !== "aim" && s.stage !== "power")) continue;
+      const path = this.world.ghosts[f.index];
+      if (!path || path.length < 2) continue;
+      g.save();
+      g.setLineDash([6, 8]);
+      g.strokeStyle = "rgba(244,247,251,0.3)";
+      g.lineWidth = 2;
+      g.beginPath();
+      path.forEach((pt, i) => (i === 0 ? g.moveTo(pt.x, pt.y) : g.lineTo(pt.x, pt.y)));
+      g.stroke();
+      g.restore();
+    }
   }
 
   private drawCrates(g: CanvasRenderingContext2D): void {
     for (const c of this.world.crates) {
       const label = CRATE_LABEL[c.kind];
       if (!c.landed) {
-        // Parachute
         g.strokeStyle = "rgba(244,247,251,0.6)";
         g.lineWidth = 1;
         g.beginPath();
@@ -743,44 +1036,45 @@ export class KaboomIsle implements GameInstance {
     }
   }
 
-  private drawAim(g: CanvasRenderingContext2D): void {
-    if (this.phase !== "aim" && this.phase !== "power") return;
-    const f = this.world.fighters[this.current]!;
-    const p = this.ctx.players[this.current]!;
-    const len = this.phase === "power" ? 40 + this.power * 90 : 90;
-    const ex = f.x + Math.cos(this.angle) * len;
-    const ey = f.y - Math.sin(this.angle) * len;
-    // Swing arc
-    g.strokeStyle = "rgba(244,247,251,0.15)";
-    g.lineWidth = 2;
-    g.beginPath();
-    g.arc(f.x, f.y, 90, -AIM_MAX, -AIM_MIN);
-    g.stroke();
-    g.strokeStyle = this.phase === "power" ? powerColor(this.power) : p.color;
-    g.lineWidth = 5;
-    g.lineCap = "round";
-    g.beginPath();
-    g.moveTo(f.x, f.y);
-    g.lineTo(ex, ey);
-    g.stroke();
-    g.fillStyle = g.strokeStyle;
-    g.beginPath();
-    g.arc(ex, ey, 7, 0, Math.PI * 2);
-    g.fill();
-    if (this.phase === "power") {
-      // Power meter beside the fighter
-      const bx = f.x + (f.x < this.ctx.width - 80 ? 34 : -46);
-      const by = f.y - 60;
-      g.fillStyle = "rgba(7,11,20,0.75)";
-      g.fillRect(bx, by, 12, 70);
-      g.fillStyle = powerColor(this.power);
-      g.fillRect(bx, by + 70 * (1 - this.power), 12, 70 * this.power);
+  private drawAims(g: CanvasRenderingContext2D): void {
+    if (this.phase !== "volley") return;
+    for (const f of this.world.fighters) {
+      const s = this.seats[f.index]!;
+      if (!f.alive || (s.stage !== "aim" && s.stage !== "power")) continue;
+      const p = this.ctx.players[f.index]!;
+      const len = s.stage === "power" ? 40 + s.power * 90 : 90;
+      const ex = f.x + Math.cos(s.angle) * len;
+      const ey = f.y - Math.sin(s.angle) * len;
+      g.strokeStyle = "rgba(244,247,251,0.15)";
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(f.x, f.y, 90, -AIM_MAX, -AIM_MIN);
+      g.stroke();
+      g.strokeStyle = s.stage === "power" ? powerColor(s.power) : p.color;
+      g.lineWidth = 5;
+      g.lineCap = "round";
+      g.beginPath();
+      g.moveTo(f.x, f.y);
+      g.lineTo(ex, ey);
+      g.stroke();
+      g.fillStyle = g.strokeStyle;
+      g.beginPath();
+      g.arc(ex, ey, 7, 0, Math.PI * 2);
+      g.fill();
+      if (s.stage === "power") {
+        const bx = f.x + (f.x < this.ctx.width - 80 ? 34 : -46);
+        const by = f.y - 60;
+        g.fillStyle = "rgba(7,11,20,0.75)";
+        g.fillRect(bx, by, 12, 70);
+        g.fillStyle = powerColor(s.power);
+        g.fillRect(bx, by + 70 * (1 - s.power), 12, 70 * s.power);
+      }
     }
   }
 
   private drawShots(g: CanvasRenderingContext2D): void {
     for (const s of this.world.shots) {
-      g.strokeStyle = "rgba(244,247,251,0.25)";
+      g.strokeStyle = s.swatted ? "rgba(255,225,77,0.5)" : "rgba(244,247,251,0.25)";
       g.lineWidth = 2;
       g.beginPath();
       s.trail.forEach((pt, i) => (i === 0 ? g.moveTo(pt.x, pt.y) : g.lineTo(pt.x, pt.y)));
@@ -799,16 +1093,23 @@ export class KaboomIsle implements GameInstance {
         g.closePath();
         g.fill();
         g.restore();
-        if (s.drilling > 0 && Math.random() < 0.5) this.juice.burst(s.x, s.y, ["#8b5a2b", "#5b3a22"], { count: 2, speed: 160, size: 4 });
+        if (s.drilling > 0 && this.ctx.rng.next() < 0.5) this.juice.burst(s.x, s.y, ["#8b5a2b", "#5b3a22"], { count: 2, speed: 160, size: 4 });
         continue;
       }
       g.fillStyle = s.weapon.id === "bomb" ? "#1f2937" : s.weapon.color;
       g.beginPath();
       g.arc(s.x, s.y, r, 0, Math.PI * 2);
       g.fill();
-      g.strokeStyle = s.weapon.color;
-      g.lineWidth = 2;
+      g.strokeStyle = s.swatted ? "#FFE14D" : s.weapon.color;
+      g.lineWidth = s.swatted ? 3 : 2;
       g.stroke();
+      if (s.gusted !== undefined) {
+        g.strokeStyle = this.ctx.players[s.gusted]?.color ?? "#fff";
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.arc(s.x, s.y, r + 5, 0, Math.PI * 2);
+        g.stroke();
+      }
       if (s.fuse !== undefined) {
         g.fillStyle = "#F4F7FB";
         g.font = "700 14px Outfit, sans-serif";
@@ -818,27 +1119,205 @@ export class KaboomIsle implements GameInstance {
     }
   }
 
-  private cardRects(count: number): { x: number; y: number; w: number; h: number }[] {
+  // ---------- seat panels ----------
+
+  private drawPanels(g: CanvasRenderingContext2D): void {
+    g.save();
+    g.textBaseline = "middle";
+    this.panels.forEach((panel, i) => {
+      const p = this.ctx.players[i]!;
+      const f = this.world.fighters[i]!;
+      const s = this.seats[i]!;
+      const human = this.isHuman(i);
+      const needsTap = human && this.phase === "volley" && f.alive && (s.stage === "pick" || s.stage === "aim" || s.stage === "power");
+      g.fillStyle = f.alive ? "rgba(7,11,20,0.88)" : "rgba(20,16,36,0.88)";
+      g.fillRect(panel.x, panel.y, panel.w, panel.h);
+      if (s.flash > 0) {
+        g.globalAlpha = s.flash;
+        g.fillStyle = p.color;
+        g.fillRect(panel.x, panel.y, panel.w, panel.h);
+        g.globalAlpha = 1;
+      }
+      const pulse = needsTap ? 0.6 + 0.4 * Math.sin(this.clock * 7) : 0.35;
+      g.strokeStyle = p.color;
+      g.globalAlpha = f.alive ? pulse : 0.4;
+      g.lineWidth = needsTap ? 4 : 2;
+      g.strokeRect(panel.x + 2, panel.y + 2, panel.w - 4, panel.h - 4);
+      g.globalAlpha = 1;
+
+      // Header row: name, HP, swat charge, wins.
+      g.textAlign = "left";
+      g.font = "700 18px Bebas Neue, Impact, sans-serif";
+      g.fillStyle = p.color;
+      g.fillText(f.alive ? p.name.toUpperCase() : `${p.name.toUpperCase()} (GHOST)`, panel.x + 10, panel.y + 16);
+      let x = panel.x + 10 + g.measureText(f.alive ? p.name.toUpperCase() : `${p.name.toUpperCase()} (GHOST)`).width + 10;
+      if (f.alive) {
+        g.fillStyle = f.hp > 50 ? "#B8FF3D" : f.hp > 25 ? "#FFB020" : "#FF3D7A";
+        g.font = "700 16px Outfit, sans-serif";
+        g.fillText(`${Math.max(0, Math.round(f.hp))} HP`, x, panel.y + 16);
+        x += g.measureText(`${Math.max(0, Math.round(f.hp))} HP`).width + 10;
+        g.fillStyle = f.swats > 0 ? "#FFE14D" : "rgba(244,247,251,0.3)";
+        g.font = "700 13px Outfit, sans-serif";
+        g.fillText(f.swats > 0 ? "SWAT ●" : "SWAT ○", x, panel.y + 16);
+      }
+      g.textAlign = "right";
+      for (let k = 0; k < WINS_NEEDED; k++) {
+        g.beginPath();
+        g.arc(panel.x + panel.w - 14 - k * 16, panel.y + 16, 5, 0, Math.PI * 2);
+        g.fillStyle = p.color;
+        if (k < this.wins[i]!) g.fill();
+        else {
+          g.strokeStyle = p.color;
+          g.lineWidth = 1.5;
+          g.stroke();
+        }
+      }
+      if (s.taunt) {
+        g.fillStyle = "#F4F7FB";
+        g.font = "italic 600 14px Outfit, sans-serif";
+        g.textAlign = "right";
+        g.globalAlpha = Math.min(1, s.taunt.life * 2);
+        g.fillText(`"${s.taunt.text}"`, panel.x + panel.w - 14 - WINS_NEEDED * 16 - 6, panel.y + 16);
+        g.globalAlpha = 1;
+      }
+
+      // Body
+      const cx = panel.x + panel.w / 2;
+      const cy = panel.y + 30 + (panel.h - 36) / 2;
+      g.textAlign = "center";
+      if (!f.alive) {
+        this.drawGhostPanel(g, panel, i);
+      } else if (this.phase === "volley" && s.stage === "pick") {
+        this.drawPanelCards(g, panel, s);
+      } else if (this.phase === "volley" && (s.stage === "aim" || s.stage === "power")) {
+        g.fillStyle = s.weapon.color;
+        g.font = "700 22px Bebas Neue, Impact, sans-serif";
+        g.fillText(s.weapon.name, cx, panel.y + 42, panel.w - 16);
+        if (human) {
+          g.globalAlpha = 0.7 + 0.3 * Math.sin(this.clock * 9);
+          g.fillStyle = "#F4F7FB";
+          g.font = "700 30px Bebas Neue, Impact, sans-serif";
+          g.fillText(s.stage === "aim" ? "TAP: LOCK AIM" : "TAP: FIRE!", cx, panel.y + 74, panel.w - 16);
+          g.globalAlpha = 1;
+        } else {
+          g.fillStyle = "#94a3b8";
+          g.font = "600 15px Outfit, sans-serif";
+          g.fillText(s.stage === "aim" ? "aiming..." : "charging...", cx, panel.y + 74);
+        }
+        if (s.stage === "power") {
+          g.fillStyle = "rgba(244,247,251,0.15)";
+          g.fillRect(panel.x + 10, panel.y + panel.h - 10, panel.w - 20, 5);
+          g.fillStyle = powerColor(s.power);
+          g.fillRect(panel.x + 10, panel.y + panel.h - 10, (panel.w - 20) * s.power, 5);
+        }
+      } else if (this.phase === "volley" && s.stage === "done") {
+        g.fillStyle = s.weapon.color;
+        g.font = "700 22px Bebas Neue, Impact, sans-serif";
+        g.fillText(`${s.weapon.name} AWAY`, cx, panel.y + 42, panel.w - 16);
+        g.fillStyle = f.swatWindow > 0 && f.swats > 0 ? "#FFE14D" : "#94a3b8";
+        g.font = f.swatWindow > 0 && f.swats > 0 ? "700 28px Bebas Neue, Impact, sans-serif" : "600 15px Outfit, sans-serif";
+        g.fillText(f.swatWindow > 0 && f.swats > 0 ? "TAP: SWAT!" : s.shotsLeft > 0 ? "one more shot..." : human ? "tap your blob to SWAT a bomb" : "watching", cx, panel.y + 74, panel.w - 16);
+      } else {
+        g.fillStyle = "#94a3b8";
+        g.font = "600 15px Outfit, sans-serif";
+        const perks = this.perks[i]!.map((id) => PERKS.find((k) => k.id === id)!.name).join(" · ");
+        g.fillText(perks || (this.phase === "between" || this.phase === "chaos" ? "get ready" : ""), cx, cy, panel.w - 16);
+      }
+    });
+    g.restore();
+    g.textBaseline = "alphabetic";
+  }
+
+  private drawPanelCards(g: CanvasRenderingContext2D, panel: Rect, s: Seat): void {
+    const rects = panelCards(panel, s.choices.length);
+    const pop = Math.min(1, s.t * 6);
+    rects.forEach((r, k) => {
+      const c = s.choices[k]!;
+      g.save();
+      g.translate(r.x + r.w / 2, r.y + r.h / 2);
+      g.scale(pop, pop);
+      g.fillStyle = "#0f1626";
+      g.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
+      g.strokeStyle = c.color;
+      g.lineWidth = 3;
+      g.strokeRect(-r.w / 2, -r.h / 2, r.w, r.h);
+      g.fillStyle = c.color;
+      g.font = `700 ${r.w < 110 ? 18 : 24}px Bebas Neue, Impact, sans-serif`;
+      g.textAlign = "center";
+      g.fillText(c.name, 0, -r.h / 2 + 18, r.w - 8);
+      g.fillStyle = "#cbd5e1";
+      g.font = `500 ${r.w < 110 ? 11 : 13}px Outfit, sans-serif`;
+      wrap(g, c.blurb, 0, 8, r.w - 10, r.w < 110 ? 12 : 15);
+      if (c.weight <= 6) {
+        g.fillStyle = c.color;
+        g.font = "700 11px Outfit, sans-serif";
+        g.fillText("RARE", 0, r.h / 2 - 9);
+      }
+      g.restore();
+    });
+  }
+
+  private drawGhostPanel(g: CanvasRenderingContext2D, panel: Rect, i: number): void {
+    const p = this.ctx.players[i]!;
+    const s = this.seats[i]!;
+    const human = this.isHuman(i);
+    const cy = panel.y + 30 + (panel.h - 36) / 2;
+    const ready = s.gustCd <= 0;
+    if (this.phase !== "volley" || this.world.alive().length <= 1) {
+      g.fillStyle = "#94a3b8";
+      g.font = "600 15px Outfit, sans-serif";
+      g.fillText(this.totals[i]!.haunts + this.world.fighters[i]!.haunts > 0 ? `haunts: ${this.totals[i]!.haunts + this.world.fighters[i]!.haunts}` : "ghost", panel.x + panel.w / 2, cy);
+      return;
+    }
+    for (const dir of [-1, 1]) {
+      const x = panel.x + (dir < 0 ? panel.w * 0.25 : panel.w * 0.75);
+      g.globalAlpha = ready ? 0.9 : 0.35;
+      g.fillStyle = p.color;
+      g.font = "700 34px Bebas Neue, Impact, sans-serif";
+      g.fillText(dir < 0 ? "◀ BLOW" : "BLOW ▶", x, cy - 6, panel.w / 2 - 10);
+      g.globalAlpha = 1;
+    }
+    g.fillStyle = "#94a3b8";
+    g.font = "600 12px Outfit, sans-serif";
+    g.fillText(human ? "ghost: tap to gust the wind" : "ghost bot", panel.x + panel.w / 2, panel.y + panel.h - 14);
+    if (!ready) {
+      g.fillStyle = p.color;
+      g.fillRect(panel.x + 10, panel.y + panel.h - 7, (panel.w - 20) * (1 - s.gustCd / GUST_COOLDOWN), 3);
+    }
+  }
+
+  // ---------- overlays ----------
+
+  private cardRects(count: number): Rect[] {
     const { width: w, height: h } = this.ctx;
     const cw = count > 3 ? 210 : 240;
     const ch = 150;
     const gap = 18;
     const total = count * cw + (count - 1) * gap;
-    return Array.from({ length: count }, (_, i) => ({ x: w / 2 - total / 2 + i * (cw + gap), y: h * 0.36, w: cw, h: ch }));
+    return Array.from({ length: count }, (_, i) => ({ x: w / 2 - total / 2 + i * (cw + gap), y: (h - PANEL_H) * 0.36, w: cw, h: ch }));
   }
 
-  private drawCards(g: CanvasRenderingContext2D, title: string, titleColor: string, cards: { name: string; blurb: string; color: string; tag?: string }[]): void {
+  private cardAt(pt: { x: number; y: number }, count: number): number {
+    return this.cardRects(count).findIndex((r) => inRect(r, pt.x, pt.y));
+  }
+
+  private drawDraft(g: CanvasRenderingContext2D): void {
+    const who = this.draftQueue[0];
+    if (who === undefined) return;
+    const p = this.ctx.players[who]!;
     const { width: w, height: h } = this.ctx;
+    const cards = this.draftOptions.map((k) => ({ name: k.name, blurb: k.blurb, color: k.color, tag: this.perks[who]!.includes(k.id) ? "STACKS" : "" }));
     g.fillStyle = "rgba(7,11,20,0.55)";
-    g.fillRect(0, 0, w, h);
+    g.fillRect(0, 0, w, h - PANEL_H);
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.font = "700 46px Bebas Neue, Impact, sans-serif";
     g.lineWidth = 6;
     g.strokeStyle = "rgba(7,11,20,0.9)";
-    g.strokeText(title, w / 2, h * 0.27);
-    g.fillStyle = titleColor;
-    g.fillText(title, w / 2, h * 0.27);
+    const title = `${p.name.toUpperCase()}: PICK A PERK`;
+    g.strokeText(title, w / 2, (h - PANEL_H) * 0.25);
+    g.fillStyle = p.color;
+    g.fillText(title, w / 2, (h - PANEL_H) * 0.25);
     const pop = Math.min(1, this.phaseT * 5);
     this.cardRects(cards.length).forEach((r, i) => {
       const c = cards[i]!;
@@ -866,28 +1345,12 @@ export class KaboomIsle implements GameInstance {
     g.textBaseline = "alphabetic";
   }
 
-  private drawPick(g: CanvasRenderingContext2D): void {
-    const p = this.ctx.players[this.current]!;
-    this.drawCards(g, `${p.name.toUpperCase()}: PICK YOUR WEAPON`, p.color, this.choices.map((c) => ({
-      name: c.name, blurb: c.blurb, color: c.color, tag: c.weight <= 6 ? "RARE" : "",
-    })));
-  }
-
-  private drawDraft(g: CanvasRenderingContext2D): void {
-    const who = this.draftQueue[0];
-    if (who === undefined) return;
-    const p = this.ctx.players[who]!;
-    this.drawCards(g, `${p.name.toUpperCase()}: PICK A PERK`, p.color, this.draftOptions.map((k) => ({
-      name: k.name, blurb: k.blurb, color: k.color, tag: this.perks[who]!.includes(k.id) ? "STACKS" : "",
-    })));
-  }
-
   private drawChaos(g: CanvasRenderingContext2D): void {
     if (!this.chaos) return;
     const { width: w, height: h } = this.ctx;
     const t = Math.min(1, this.phaseT * 4);
     g.save();
-    g.translate(w / 2, h * 0.45);
+    g.translate(w / 2, (h - PANEL_H) * 0.45);
     g.rotate((1 - t) * 0.6);
     g.scale(t, t);
     g.fillStyle = "#0f1626";
@@ -911,88 +1374,57 @@ export class KaboomIsle implements GameInstance {
   }
 
   private drawHud(g: CanvasRenderingContext2D): void {
-    const { width: w, height: h } = this.ctx;
+    const { width: w } = this.ctx;
     g.textBaseline = "middle";
-    // Wind
+    // Wind + gust puff
     const wind = this.world.wind;
     g.fillStyle = "rgba(7,11,20,0.6)";
-    g.fillRect(w - 200, 14, 180, 40);
+    g.fillRect(w - 220, 14, 200, 40);
     g.fillStyle = "#F4F7FB";
     g.font = "600 16px Outfit, sans-serif";
     g.textAlign = "left";
-    g.fillText("WIND", w - 190, 34);
-    g.fillStyle = "#3EE0FF";
-    const cx = w - 90;
-    g.fillRect(wind < 0 ? cx + wind * 60 : cx, 30, Math.abs(wind) * 60, 8);
+    g.fillText("WIND", w - 210, 34);
+    const cx = w - 100;
+    g.fillStyle = Math.abs(wind) > 1 ? "#FF3D7A" : "#3EE0FF";
+    const len = Math.min(1.6, Math.abs(wind)) * 50;
+    g.fillRect(wind < 0 ? cx - len : cx, 30, len, 8);
     g.fillStyle = "#F4F7FB";
     g.fillRect(cx - 1, 24, 2, 20);
-
-    // Turn + weapon card
-    // Island wins
-    g.textAlign = "left";
-    this.ctx.players.forEach((pl, i) => {
-      const y = 92 + i * 22;
-      g.fillStyle = pl.color;
-      g.font = "600 14px Outfit, sans-serif";
-      g.fillText(pl.name, 24, y);
-      for (let k = 0; k < WINS_NEEDED; k++) {
-        g.beginPath();
-        g.arc(100 + k * 16, y, 5, 0, Math.PI * 2);
-        if (k < this.wins[i]!) g.fill();
-        else {
-          g.strokeStyle = pl.color;
-          g.lineWidth = 1.5;
-          g.stroke();
-        }
-      }
-    });
+    if (this.gustPuff.life > 0) {
+      g.globalAlpha = this.gustPuff.life;
+      g.fillStyle = this.gustPuff.color;
+      g.font = "700 22px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "center";
+      g.fillText(this.gustPuff.dir < 0 ? "◀ GUST" : "GUST ▶", cx, 34 - (0.8 - this.gustPuff.life) * 20);
+      g.globalAlpha = 1;
+    }
     if (this.chaos) {
       g.fillStyle = "rgba(7,11,20,0.6)";
-      g.fillRect(w - 200, 60, 180, 30);
+      g.fillRect(w - 220, 60, 200, 30);
       g.fillStyle = this.chaos.color;
       g.font = "700 18px Bebas Neue, Impact, sans-serif";
       g.textAlign = "center";
-      g.fillText(this.chaos.name, w - 110, 76);
+      g.fillText(this.chaos.name, w - 120, 76);
     }
-    if (this.current >= 0 && this.phase !== "over" && this.phase !== "draft" && this.phase !== "islandOver") {
-      const p = this.ctx.players[this.current]!;
-      g.textAlign = "left";
-      g.font = "700 30px Bebas Neue, Impact, sans-serif";
-      g.fillStyle = p.color;
-      g.fillText(`${p.name.toUpperCase()}'S TURN`, 24, 34);
-      g.font = "700 20px Bebas Neue, Impact, sans-serif";
-      g.fillStyle = this.suddenDeath ? "#FF5A1F" : "#cbd5e1";
-      g.fillText(`ISLAND ${this.island} · ROUND ${this.round}${this.suddenDeath ? " · LAVA RISING" : ""}`, 24, 62);
-      if (this.phase === "aim" || this.phase === "power" || this.phase === "flight") {
-        const shown = this.weapon;
-        const cardW = 300;
-        const x = w / 2 - cardW / 2;
-        g.fillStyle = "rgba(7,11,20,0.75)";
-        g.fillRect(x, 12, cardW, 58);
-        g.strokeStyle = shown.color;
-        g.lineWidth = 3;
-        g.strokeRect(x, 12, cardW, 58);
-        g.textAlign = "center";
-        g.fillStyle = shown.color;
-        g.font = "700 30px Bebas Neue, Impact, sans-serif";
-        g.fillText(shown.name, w / 2, 34);
-        g.fillStyle = "#cbd5e1";
-        g.font = "500 14px Outfit, sans-serif";
-        g.fillText(this.shotsLeft > 1 ? `${shown.blurb} · ${this.shotsLeft} shots left` : shown.blurb, w / 2, 56);
-      }
-      if (this.isHumanTurn && (this.phase === "aim" || this.phase === "power")) {
-        const msg = this.phase === "aim" ? "TAP TO LOCK AIM" : "TAP TO FIRE";
-        const pulse = 0.75 + 0.25 * Math.sin(this.clock * 8);
-        g.globalAlpha = pulse;
-        g.font = "700 40px Bebas Neue, Impact, sans-serif";
-        g.lineWidth = 6;
-        g.strokeStyle = "rgba(7,11,20,0.8)";
-        g.strokeText(msg, w / 2, h - 30);
-        g.fillStyle = "#F4F7FB";
-        g.fillText(msg, w / 2, h - 30);
-        g.globalAlpha = 1;
-      }
-    }
+    // Island / round / heat
+    g.textAlign = "left";
+    g.font = "700 30px Bebas Neue, Impact, sans-serif";
+    g.fillStyle = "#F4F7FB";
+    g.fillText(`ISLAND ${this.island}`, 24, 34);
+    g.font = "700 20px Bebas Neue, Impact, sans-serif";
+    g.fillStyle = this.overdrive ? "#FF5A1F" : "#cbd5e1";
+    g.fillText(this.round > 0 ? `ROUND ${this.round}${this.overdrive ? " · OVERDRIVE" : this.round >= LAVA_ROUND ? " · LAVA RISING" : ""}` : "", 24, 62);
+    // Heat meter
+    const hx = 24;
+    const hy = 82;
+    g.fillStyle = "rgba(7,11,20,0.6)";
+    g.fillRect(hx, hy, 150, 14);
+    const hot = Math.min(1, (this.heat - 1) / 1.2);
+    g.fillStyle = hot > 0.6 ? "#FF5A1F" : hot > 0.3 ? "#FFB020" : "#B8FF3D";
+    g.fillRect(hx, hy, 150 * Math.max(0.04, hot), 14);
+    g.fillStyle = "#F4F7FB";
+    g.font = "700 13px Outfit, sans-serif";
+    g.fillText(`HEAT x${this.heat.toFixed(1)}`, hx + 156, hy + 7);
     g.textBaseline = "alphabetic";
   }
 
@@ -1014,6 +1446,8 @@ export class KaboomIsle implements GameInstance {
       stats.push({ playerId: player.id, label: "Damage", value: String(t.damage) });
       stats.push({ playerId: player.id, label: "KOs", value: String(t.kos) });
       if (t.best > 0) stats.push({ playerId: player.id, label: "Best hit", value: String(t.best) });
+      if (t.returns > 0) stats.push({ playerId: player.id, label: "Swats landed", value: String(t.returns) });
+      if (t.haunts > 0) stats.push({ playerId: player.id, label: "Haunts", value: String(t.haunts) });
       if (this.perks[i]!.length > 0) {
         stats.push({ playerId: player.id, label: "Perks", value: this.perks[i]!.map((id) => PERKS.find((k) => k.id === id)!.name).join(", ") });
       }
@@ -1022,6 +1456,7 @@ export class KaboomIsle implements GameInstance {
   }
 
   destroy(): void {
+    this.ctx.canvas.removeEventListener("pointerdown", this.onDown);
     this.terrainCache = null;
   }
 }
@@ -1048,10 +1483,10 @@ function wrap(g: CanvasRenderingContext2D, text: string, x: number, y: number, m
 export const kaboomIsle: GameDefinition = {
   id: "kaboom-isle",
   name: "Kaboom Isle",
-  tagline: "Tap-timed artillery. Chaos cards. Perk drafts. Lava below.",
+  tagline: "Everybody fires at once. Ghosts blow the wind. One SWAT each.",
   description:
-    "Blobs on crumbling floating islands over lava. First to win two islands takes the match. Every turn pick one of three random weapons (bomb, bouncer, cluster, triple, airstrike, drill, black hole, teleporter, boxing glove, the rare Mega Nuke, or a rubber chicken), then tap to stop the swinging aim needle and tap again to stop the power meter. Every round flips a chaos card: low gravity, hurricane, meteor shower, crate rain, bouncy world, earthquake, lava surge, double trouble or a jackpot round. Between islands everyone drafts a perk (losers first) and perks stack. Crates give HP, double damage or a shield. 0 HP or lava and you're out; after five rounds the lava rises.",
+    "Tap-timed artillery on crumbling islands over lava, but every survivor shoots in the same volley from their own panel: pick one of three random weapons, tap to stop the swinging aim needle, tap again to stop the power meter. The island heats up every round (damage x1.2, x1.4...) until OVERDRIVE and rising lava. Get knocked out and you come back as a ghost who blows the wind around mid-flight. Once per island you can SWAT: when a bomb gets close, time slows and a tap bats it back at its owner at 1.5x. Chaos cards every round, perk drafts between islands (losers first), underdog bonus for whoever is lowest. First to two islands.",
   durationMs: 0,
-  controls: "Tap a card to pick · tap to lock aim · tap again to fire",
+  controls: "Your bottom panel: tap a card · tap to lock aim · tap to fire · tap your blob to SWAT · ghosts tap ◀ ▶ to gust",
   create: (ctx) => new KaboomIsle(ctx),
 };

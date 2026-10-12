@@ -75,12 +75,12 @@ export function colorDistance(a: string, b: string): number {
 export const MIN_COLOR_GAP = 215;
 
 export const RACER_COUNT = 6;
-/** Decoration only. The odds have no effect on anything. */
+/** Decoration only, kept for the cup's cards. The odds have no effect on anything. */
 export const FAKE_ODDS = ["EVENS", "2-1", "3-1", "5-1", "7-2", "8-1", "11-4", "13-1", "20-1", "33-1", "50-1", "100-1"] as const;
 
 /**
- * Hidden, re-rolled every race and unrelated to the racer's look,
- * so there is no form to read.
+ * Re-rolled every race and unrelated to the racer's look. Two of them show up on the
+ * betting card as traits (see logic.ts), the rest stay hidden.
  */
 export interface RacerStats {
   /** Cruising speed in px/s. */
@@ -104,15 +104,39 @@ export interface RacerEntry {
   stats: RacerStats;
 }
 
+/** The range every stat is rolled in. Traits on the betting cards are read off these. */
+export const STAT_RANGE: Readonly<Record<keyof RacerStats, readonly [number, number]>> = {
+  topSpeed: [235, 285],
+  accel: [2.2, 4.5],
+  jumpSkill: [0.35, 0.92],
+  balance: [0.55, 1],
+  getUp: [0.5, 1.8],
+  fatigue: [0.004, 0.014],
+};
+
 export function rollStats(rng: Rng): RacerStats {
+  const roll = (key: keyof RacerStats): number => rng.float(STAT_RANGE[key][0], STAT_RANGE[key][1]);
   return {
-    topSpeed: rng.float(235, 285),
-    accel: rng.float(2.2, 4.5),
-    jumpSkill: rng.float(0.35, 0.92),
-    balance: rng.float(0.55, 1),
-    getUp: rng.float(0.5, 1.8),
-    fatigue: rng.float(0.004, 0.014),
+    topSpeed: roll("topSpeed"),
+    accel: roll("accel"),
+    jumpSkill: roll("jumpSkill"),
+    balance: roll("balance"),
+    getUp: roll("getUp"),
+    fatigue: roll("fatigue"),
   };
+}
+
+/**
+ * The same runner, slightly different day: stats nudged by up to `amount` (fraction of
+ * the roll range) and kept inside it, so a cup runner's tendencies carry from heat to heat.
+ */
+export function jitterStats(stats: RacerStats, rng: Rng, amount = 0.12): RacerStats {
+  const out = { ...stats };
+  for (const key of Object.keys(STAT_RANGE) as (keyof RacerStats)[]) {
+    const [lo, hi] = STAT_RANGE[key];
+    out[key] = Math.min(hi, Math.max(lo, stats[key] + rng.float(-amount, amount) * (hi - lo)));
+  }
+  return out;
 }
 
 /**

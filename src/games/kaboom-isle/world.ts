@@ -89,6 +89,15 @@ export interface Fighter {
   maxHp: number;
   perks: PerkId[];
   fireproofLeft: number;
+  /** SWAT charges left this island (bat an incoming bomb back at its owner). */
+  swats: number;
+  /** Seconds left in which a tap swats the bomb that just came into range. */
+  swatWindow: number;
+  /** Lowest-HP fighter by a margin: hits 30% harder until someone else is the underdog. */
+  underdog: boolean;
+  /** Ghost stats: shots your gusts helped land / your swats that hurt someone. */
+  haunts: number;
+  returns: number;
 }
 
 export function perkCount(f: Fighter, id: PerkId): number {
@@ -111,10 +120,15 @@ export interface Vortex {
   life: number;
   owner: number;
   dmgMul: number;
+  gusted?: number | undefined;
 }
 
 export type WorldEvent =
   | { type: "crate"; index: number; kind: CrateKind; x: number; y: number }
+  | { type: "swatWindow"; index: number }
+  | { type: "swat"; index: number; x: number; y: number; owner: number }
+  | { type: "gust"; index: number; dir: number }
+  | { type: "haunt"; index: number; x: number; y: number }
   | { type: "teleport"; index: number; x: number; y: number }
   | { type: "shielded"; index: number }
   | { type: "fireproof"; index: number; x: number; y: number };
@@ -139,6 +153,12 @@ export interface Shot {
   fuse?: number | undefined;
   /** Full flight path of the lead shot, kept as next turn's ghost. */
   path?: { x: number; y: number }[] | undefined;
+  /** Bitmask of fighters whose swat window this shot already opened. */
+  warned?: number;
+  /** Ghost whose gust last touched this shot in flight (gets haunt credit on a hit). */
+  gusted?: number | undefined;
+  /** Set once a fighter batted this shot back. */
+  swatted?: boolean | undefined;
 }
 
 export interface Blast {
@@ -148,8 +168,21 @@ export interface Blast {
   weapon: Weapon;
   /** Fighters this blast hit, with damage dealt. */
   hits: { index: number; damage: number }[];
+  /** Fighter whose shot this was (-1 for meteors). */
+  owner: number;
   splash?: boolean;
+  /** Ghost that gusted the shot that caused this blast. */
+  gusted?: number | undefined;
+  swatted?: boolean | undefined;
 }
+
+export const SWAT_RANGE = 118;
+export const SWAT_WINDOW = 0.55;
+export const SWAT_MUL = 1.5;
+export const GUST_STEP = 0.45;
+export const WIND_MAX = 1.6;
+export const UNDERDOG_MUL = 1.3;
+export const UNDERDOG_MARGIN = 25;
 
 export class World {
   readonly cols: number;
@@ -168,6 +201,8 @@ export class World {
   gravity = GRAVITY;
   windMul = 1;
   bouncy = false;
+  /** HEAT: every round the whole island hits harder. */
+  damageMul = 1;
   /** Bumped whenever tiles change so the renderer can re-cache. */
   version = 0;
 
@@ -228,16 +263,17 @@ export class World {
   private goodSpawn(x: number): boolean {
     const y = this.surfaceY(x);
     if (y === null) return false;
-    for (const dx of [-16, -8, 8, 16]) {
+    for (const dx of [-26, -16, -8, 8, 16, 26]) {
       const yy = this.surfaceY(x + dx);
-      if (yy === null || Math.abs(yy - y) > 10) return false;
+      if (yy === null || Math.abs(yy - y) > 12) return false;
     }
     return this.solidAt(x, y + 48);
   }
 
   private spawn(players: number): void {
     const slots: number[] = [];
-    for (let i = 0; i < players; i++) slots.push((i + 0.5) / players);
+    // Two players start mid-island; (i + 0.5) / 2 would put them right beside the gaps.
+    for (let i = 0; i < players; i++) slots.push(players === 2 ? (i === 0 ? 0.16 : 0.84) : (i + 0.5) / players);
     // Shuffle so seat 1 isn't always far left.
     for (let i = slots.length - 1; i > 0; i--) {
       const j = this.rng.int(0, i);
@@ -252,6 +288,7 @@ export class World {
       return {
         index, x, y: sy - FIGHTER_R - 1, vx: 0, vy: 0, hp: 100, alive: true, grounded: true,
         maxHp: 100, perks: [...(this.perks[index] ?? [])], fireproofLeft: 0,
+        swats: 1, swatWindow: 0, underdog: false, haunts: 0, returns: 0,
         diedOnTurn: -1, damageDealt: 0, kos: 0, bestHit: 0, hurt: 0, doubleDamage: false, shield: false,
       };
     });
@@ -271,6 +308,96 @@ export class World {
 
   windAccel(): number {
     return this.wind * 140 * this.windMul;
+  }
+
+  /** A ghost blows: the wind shifts and every bomb in the air now carries that ghost's mark. */
+  gust(index: number, dir: number): boolean {
+    const g = this.fighters[index];
+    if (!g || g.alive) return false;
+    const d = dir < 0 ? -1 : 1;
+    this.wind = Math.round(Math.max(-WIND_MAX, Math.min(WIND_MAX, this.wind + d * GUST_STEP)) * 100) / 100;
+    for (const s of this.shots) if (!s.dead && s.owner !== index) s.gusted = index;
+    this.events.push({ type: "gust", index, dir: d });
+    return true;
+  }
+
+  /** Mark the lowest-HP survivor (by a clear margin) as the underdog. */
+  markUnderdog(): number | null {
+    const alive = this.alive();
+    for (const f of this.fighters) f.underdog = false;
+    if (alive.length < 2) return null;
+    const sorted = [...alive].sort((a, b) => a.hp - b.hp);
+    const low = sorted[0]!;
+    const next = sorted[1]!;
+    if (next.hp - low.hp < UNDERDOG_MARGIN) return null;
+    low.underdog = true;
+    return low.index;
+  }
+
+  /** Nearest live enemy shot within swat range of a fighter, if any. */
+  swatTarget(index: number, range = SWAT_RANGE): Shot | null {
+    const f = this.fighters[index];
+    if (!f || !f.alive) return null;
+    let best: Shot | null = null;
+    let bestD = Infinity;
+    for (const s of this.shots) {
+      if (s.dead || s.owner === index || s.weapon.id === "teleport" || s.drilling > 0) continue;
+      const d = Math.hypot(s.x - f.x, s.y - f.y);
+      if (d < range && d < bestD) {
+        best = s;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /** Bat the nearest incoming bomb back where it came from, harder. Spends a swat charge. */
+  swat(index: number): Shot | null {
+    const f = this.fighters[index];
+    if (!f || !f.alive || f.swats <= 0) return null;
+    const shot = this.swatTarget(index, SWAT_RANGE + 30);
+    if (!shot) return null;
+    f.swats--;
+    f.swatWindow = 0;
+    const from = this.fighters[shot.owner];
+    // Aim back at the shooter when there is one, else just away from us.
+    let ax = from && from.alive ? from.x - f.x : shot.x - f.x;
+    let ay = from && from.alive ? from.y - f.y - 120 : -160;
+    const len = Math.hypot(ax, ay) || 1;
+    ax /= len;
+    ay /= len;
+    const speed = Math.max(520, Math.hypot(shot.vx, shot.vy) * 0.95);
+    shot.vx = ax * speed;
+    shot.vy = ay * speed;
+    shot.x = f.x + ax * (FIGHTER_R + 14);
+    shot.y = f.y + ay * (FIGHTER_R + 14);
+    shot.owner = index;
+    shot.age = 0;
+    shot.dmgMul *= SWAT_MUL;
+    shot.swatted = true;
+    shot.gusted = undefined;
+    shot.trail = [];
+    this.events.push({ type: "swat", index, x: f.x, y: f.y, owner: from ? from.index : -1 });
+    return shot;
+  }
+
+  /** Open swat windows for fighters a bomb just came close to. */
+  private stepSwatWindows(dt: number): void {
+    for (const f of this.fighters) {
+      if (!f.alive) continue;
+      f.swatWindow = Math.max(0, f.swatWindow - dt);
+      if (f.swats <= 0) continue;
+      const bit = 1 << f.index;
+      for (const s of this.shots) {
+        if (s.dead || s.owner === f.index || s.weapon.id === "teleport" || s.drilling > 0) continue;
+        if ((s.warned ?? 0) & bit) continue;
+        if (Math.hypot(s.x - f.x, s.y - f.y) < SWAT_RANGE) {
+          s.warned = (s.warned ?? 0) | bit;
+          f.swatWindow = SWAT_WINDOW;
+          this.events.push({ type: "swatWindow", index: f.index });
+        }
+      }
+    }
   }
 
   fire(owner: number, angle: number, power: number, weapon: Weapon): void {
@@ -301,16 +428,18 @@ export class World {
       for (const shot of this.shots) if (!shot.dead) this.stepShot(shot, h, blasts, turn);
       for (const v of this.vortices) this.pull(v, h);
       for (const f of this.fighters) if (f.alive) this.stepFighter(f, h, turn);
+      this.separate();
     }
     for (const v of this.vortices) {
       v.life -= dt;
       if (v.life <= 0) {
         const w = WEAPONS.find((x) => x.id === "blackhole")!;
-        blasts.push(this.blast(v.x, v.y, w.radius, w.damage * v.dmgMul, w.knock, w, v.owner, turn));
+        blasts.push(this.blast(v.x, v.y, w.radius, w.damage * v.dmgMul, w.knock, w, v.owner, turn, { gusted: v.gusted }));
       }
     }
     this.vortices = this.vortices.filter((v) => v.life > 0);
     for (const shot of this.shots) if (shot.dead && shot.path) this.ghosts[shot.owner] = shot.path;
+    this.stepSwatWindows(dt);
     this.shots = this.shots.filter((s) => !s.dead);
     this.stepCrates(dt);
     return blasts;
@@ -344,7 +473,7 @@ export class World {
     if (nx < -200 || nx > this.width + 200 || ny > this.lava || shot.age > 9) {
       shot.dead = true;
       if (ny > this.lava && nx > 0 && nx < this.width) {
-        blasts.push({ x: nx, y: this.lava, radius: 24, weapon: shot.weapon, hits: [], splash: true });
+        blasts.push({ x: nx, y: this.lava, radius: 24, weapon: shot.weapon, hits: [], owner: shot.owner, splash: true });
       }
       return;
     }
@@ -384,7 +513,7 @@ export class World {
     shot.dead = true;
     const w = shot.weapon;
     const mini = (x: number, y: number, vx: number, vy: number): void => {
-      this.shots.push({ x, y, vx, vy, weapon: w, owner: shot.owner, age: 0.3, mini: true, dead: false, trail: [], dmgMul: shot.dmgMul, drilling: 0 });
+      this.shots.push({ x, y, vx, vy, weapon: w, owner: shot.owner, age: 0.3, mini: true, dead: false, trail: [], dmgMul: shot.dmgMul, drilling: 0, gusted: shot.gusted, swatted: shot.swatted });
     };
     if (w.id === "cluster" && !shot.mini) {
       for (let i = 0; i < 5; i++) {
@@ -395,7 +524,7 @@ export class World {
     if (w.id === "airstrike" && !shot.mini) {
       // Just a flare: the bombs come from above.
       for (let i = 0; i < 5; i++) mini(shot.x + (i - 2) * 46 + this.rng.float(-10, 10), -30 - i * 40, 0, 260);
-      blasts.push({ x: shot.x, y: shot.y, radius: 18, weapon: w, hits: [], splash: true });
+      blasts.push({ x: shot.x, y: shot.y, radius: 18, weapon: w, hits: [], owner: shot.owner, splash: true });
       return;
     }
     if (w.id === "teleport") {
@@ -403,19 +532,22 @@ export class World {
       return;
     }
     if (w.id === "blackhole") {
-      this.vortices.push({ x: shot.x, y: shot.y, life: 1.6, owner: shot.owner, dmgMul: shot.dmgMul });
+      this.vortices.push({ x: shot.x, y: shot.y, life: 1.6, owner: shot.owner, dmgMul: shot.dmgMul, gusted: shot.gusted });
       return;
     }
     const scale = shot.mini ? 1 : w.id === "cluster" ? 0.8 : 1;
-    blasts.push(this.blast(shot.x, shot.y, w.radius * scale, w.damage * scale * shot.dmgMul, w.knock * scale, w, shot.owner, turn));
+    blasts.push(this.blast(shot.x, shot.y, w.radius * scale, w.damage * scale * shot.dmgMul, w.knock * scale, w, shot.owner, turn, { gusted: shot.gusted, swatted: shot.swatted }));
   }
 
-  blast(x: number, y: number, radius: number, damage: number, knock: number, weapon: Weapon, owner: number, turn: number): Blast {
+  blast(x: number, y: number, radius: number, damage: number, knock: number, weapon: Weapon, owner: number, turn: number, tags: { gusted?: number | undefined; swatted?: boolean | undefined } = {}): Blast {
     const shooterPerks = this.fighters[owner];
     if (shooterPerks) radius *= Math.pow(1.3, perkCount(shooterPerks, "blast"));
     if (weapon.carves) this.carve(x, y, radius * 0.8);
     const hits: Blast["hits"] = [];
     const shooter = this.fighters[owner];
+    damage *= this.damageMul;
+    if (shooter?.underdog) damage *= UNDERDOG_MUL;
+    const ghost = tags.gusted !== undefined ? this.fighters[tags.gusted] : undefined;
     for (const f of this.fighters) {
       if (!f.alive) continue;
       const dx = f.x - x;
@@ -443,8 +575,13 @@ export class World {
         if (shooter && shooter.index !== f.index) {
           shooter.damageDealt += dmg;
           shooter.bestHit = Math.max(shooter.bestHit, dmg);
+          if (tags.swatted) shooter.returns++;
           const vamp = perkCount(shooter, "vampire");
           if (vamp > 0 && shooter.alive) shooter.hp = Math.min(shooter.maxHp, shooter.hp + Math.round(dmg * 0.35 * vamp));
+        }
+        if (ghost && !ghost.alive && ghost.index !== f.index) {
+          ghost.haunts++;
+          this.events.push({ type: "haunt", index: ghost.index, x: f.x, y: f.y });
         }
       }
       if (f.hp <= 0) this.kill(f, turn, owner);
@@ -452,7 +589,7 @@ export class World {
     for (const c of this.crates) {
       if (!c.dead && Math.hypot(c.x - x, c.y - y) < radius + 12 && shooter?.alive) this.grab(c, shooter);
     }
-    return { x, y, radius, weapon, hits };
+    return { x, y, radius, weapon, hits, owner, gusted: tags.gusted, swatted: tags.swatted };
   }
 
   private carve(x: number, y: number, radius: number): void {
@@ -497,7 +634,9 @@ export class World {
         f.y -= 1;
         pushes++;
       }
-      if (pushes > 0 || this.solidAt(f.x, f.y + r + 1)) {
+      // A foot on a ledge counts as standing too, so edge-sitters don't flicker between grounded and falling.
+      const resting = pushes > 0 || this.solidAt(f.x, f.y + r + 1) || this.solidAt(f.x - r * 0.6, f.y + r * 0.8 + 1) || this.solidAt(f.x + r * 0.6, f.y + r * 0.8 + 1);
+      if (resting) {
         if (pushes >= 12) {
           // Too deep, it's a wall; bounce off sideways.
           f.y += pushes;
@@ -533,6 +672,26 @@ export class World {
     }
     if (f.y - r > this.lava || f.x < -60 || f.x > this.width + 60 || f.y > this.height + 60) {
       this.kill(f, turn, this.lastHitBy[f.index] ?? null);
+    }
+  }
+
+  /** Blobs don't stack: overlapping fighters get nudged apart sideways. */
+  private separate(): void {
+    const alive = this.alive();
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i]!;
+        const b = alive[j]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        const min = FIGHTER_R * 2 - 2;
+        if (d >= min) continue;
+        const push = (min - d) / 2;
+        const dir = dx !== 0 ? Math.sign(dx) : a.index < b.index ? -1 : 1;
+        if (!this.solidAt(a.x - dir * push - FIGHTER_R, a.y)) a.x -= dir * push;
+        if (!this.solidAt(b.x + dir * push + FIGHTER_R, b.y)) b.x += dir * push;
+      }
     }
   }
 

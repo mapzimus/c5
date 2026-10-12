@@ -133,7 +133,7 @@ describe("Lucky Drop physics", () => {
       return { score: world.score, balls: world.balls, drops: world.drops };
     };
     expect(simulate()).toEqual(simulate());
-  });
+  }, 20_000); // two full bot runs; slow when the sprint and versus bot tests run alongside
 
   it("merges 128s up to 256 and pays the doubled 2,000 bonus", () => {
     const world = new DropWorld(() => 0.1);

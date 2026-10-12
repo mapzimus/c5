@@ -16,6 +16,19 @@ import {
   GOLDEN_FACTOR,
   SHAKE_COUNT,
   SHAKE_EVERY,
+  MAX_RUN,
+  LAST_CALL_PAIRS,
+  SNAP_POINTS,
+  SNAP_PENALTY,
+  BOT_BLUFF_CHANCE,
+  applyPenalty,
+  hatTrick,
+  isUnderdog,
+  lastCall,
+  pickBotSnap,
+  pickDownIndices,
+  scoreSnap,
+  stakes,
   forgetCards,
   missesUntilShake,
   pickShakeIndices,
@@ -31,7 +44,8 @@ import {
 } from "./pairs-logic";
 
 describe("flag pool", () => {
-  it("is large enough to randomize a 6x6 round", () => {
+  it("is large enough to randomize a 12-pair round", () => {
+    expect(PAIR_COUNT).toBe(12);
     expect(PAIR_FACES.length).toBe(FLAGS.length);
     expect(FLAGS.length).toBeGreaterThan(PAIR_COUNT);
     expect(new Set(PAIR_FACES).size).toBe(PAIR_FACES.length);
@@ -69,6 +83,15 @@ describe("matching turns", () => {
   it("passes the turn after a miss", () => {
     expect(nextTurnIndex(0, 2, false)).toBe(1);
     expect(nextTurnIndex(1, 2, false)).toBe(0);
+  });
+
+  it("passes the turn after a hat-trick so nobody runs the table", () => {
+    expect(MAX_RUN).toBe(3);
+    expect(nextTurnIndex(0, 3, true, 2)).toBe(0);
+    expect(nextTurnIndex(0, 3, true, 3)).toBe(1);
+    expect(nextTurnIndex(0, 1, true, 3)).toBe(0);
+    expect(hatTrick(2)).toBe(false);
+    expect(hatTrick(3)).toBe(true);
   });
 
   it("only flips face-down cards", () => {
@@ -182,12 +205,86 @@ describe("fever and golden scoring", () => {
     expect(scoreMatch(1, 10, false)).toBe(1);
     expect(scoreMatch(3, 8, false)).toBe(3 * 2);
     expect(scoreMatch(5, 6, false)).toBe(5 * 3);
-    expect(scoreMatch(3, 0, false)).toBe((3 + CLOSER_BONUS) * 2);
+    expect(scoreMatch(3, 0, false)).toBe((3 + CLOSER_BONUS) * 2 * 2);
   });
 
   it("triples the golden pair on top of fever", () => {
     expect(scoreMatch(1, 10, true)).toBe(GOLDEN_FACTOR);
     expect(scoreMatch(5, 6, true)).toBe(5 * 3 * GOLDEN_FACTOR);
+  });
+
+  it("doubles the stakes for the last three pairs", () => {
+    expect(LAST_CALL_PAIRS).toBe(3);
+    expect([4, 3, 2, 1, 0].map(lastCall)).toEqual([false, true, true, true, false]);
+    // remaining after the match: 3 left means 4 were on the board, so no last call yet
+    expect([3, 2, 1, 0].map(stakes)).toEqual([1, 2, 2, 2]);
+    expect(scoreMatch(1, 2, false)).toBe(2);
+    expect(scoreMatch(1, 0, true)).toBe((1 + CLOSER_BONUS) * 2 * GOLDEN_FACTOR);
+  });
+});
+
+describe("snaps", () => {
+  it("pays a flat steal, scaled by stakes, golden and the closer bonus", () => {
+    expect(SNAP_POINTS).toBe(2);
+    expect(scoreSnap(8, false)).toBe(2);
+    expect(scoreSnap(8, true)).toBe(2 * GOLDEN_FACTOR);
+    expect(scoreSnap(1, false)).toBe(4);
+    expect(scoreSnap(0, false)).toBe((2 + CLOSER_BONUS) * 2);
+  });
+
+  it("charges a failed snap without going below zero", () => {
+    expect(SNAP_PENALTY).toBe(1);
+    expect(applyPenalty(5)).toBe(4);
+    expect(applyPenalty(0)).toBe(0);
+  });
+
+  it("lets a sideline bot snap the mate it remembers", () => {
+    const cards: PairCard[] = [
+      { id: 0, face: "a", state: "up" },
+      { id: 1, face: "b", state: "down" },
+      { id: 2, face: "a", state: "down" },
+      { id: 3, face: "b", state: "down" },
+    ];
+    const memory = new Map<string, number[]>();
+    remember(memory, 2, "a");
+    remember(memory, 1, "b");
+    expect(pickBotSnap(cards, memory, 0, 0.99, () => 0)).toBe(2);
+  });
+
+  it("stays quiet without the mate, except for a rare bluff on a card it knows", () => {
+    const cards: PairCard[] = [
+      { id: 0, face: "a", state: "up" },
+      { id: 1, face: "b", state: "down" },
+      { id: 2, face: "a", state: "down" },
+      { id: 3, face: "b", state: "matched" },
+    ];
+    const memory = new Map<string, number[]>();
+    remember(memory, 1, "b");
+    remember(memory, 3, "b");
+    expect(pickBotSnap(cards, memory, 0, BOT_BLUFF_CHANCE, () => 0)).toBe(-1);
+    expect(pickBotSnap(cards, memory, 0, 0, () => 0)).toBe(1);
+    expect(pickBotSnap(cards, new Map(), 0, 0, () => 0)).toBe(-1);
+  });
+});
+
+describe("underdog peek", () => {
+  it("only helps a seat that is clearly last", () => {
+    expect(isUnderdog([0, 2], 0)).toBe(true);
+    expect(isUnderdog([1, 2], 0)).toBe(false);
+    expect(isUnderdog([0, 2, 5], 1)).toBe(false);
+    expect(isUnderdog([3, 1, 5], 1)).toBe(true);
+    expect(isUnderdog([0], 0)).toBe(false);
+    expect(isUnderdog([0, 2], 5)).toBe(false);
+  });
+
+  it("picks face-down cards only", () => {
+    const cards = dealPairs(["a", "b"], (max) => max - 1);
+    cards[0]!.state = "matched";
+    cards[1]!.state = "up";
+    const picked = pickDownIndices(cards, 2, (max) => max - 1);
+    expect(picked).toHaveLength(2);
+    for (const index of picked) expect(cards[index]!.state).toBe("down");
+    expect(pickDownIndices(cards, 5, (max) => max - 1)).toHaveLength(2);
   });
 
   it("finds the best human score", () => {

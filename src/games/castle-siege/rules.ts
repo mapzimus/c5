@@ -22,12 +22,24 @@ export const PIECE_SPECS: Record<PieceKind, PieceSpec> = {
 
 export const PIECE_KINDS = Object.keys(PIECE_SPECS) as PieceKind[];
 
-export const BUILD_SECONDS = 25;
-export const QUEUE_LENGTH = 12;
+export const BUILD_SECONDS = 16;
+export const QUEUE_LENGTH = 10;
 export const ROUNDS_TO_WIN = 2;
 export const KING_HP = 3;
 /** After this many shots each in a round, every shot is a bomb. */
-export const SUDDEN_DEATH_AFTER = 5;
+export const SUDDEN_DEATH_AFTER = 4;
+/** The deciding round goes to bombs sooner. */
+export const FINAL_SUDDEN_DEATH_AFTER = 3;
+/** Seconds a human shooter gets to pick ammo and fire before the cannon fires itself. */
+export const TURN_CLOCK_S = 10;
+
+export function isFinalRound(round: number): boolean {
+  return round >= ROUNDS_TO_WIN * 2 - 1;
+}
+
+export function suddenDeathAfter(round: number): number {
+  return isFinalRound(round) ? FINAL_SUDDEN_DEATH_AFTER : SUDDEN_DEATH_AFTER;
+}
 
 function weightedPick<T extends string>(rng: Rng, weights: Record<T, number>): T {
   const keys = Object.keys(weights) as T[];
@@ -41,9 +53,52 @@ function weightedPick<T extends string>(rng: Rng, weights: Record<T, number>): T
 }
 
 /** The drop order for a round. Both sides get the same queue. */
-export function dealQueue(rng: Rng, length = QUEUE_LENGTH): PieceKind[] {
-  const weights = Object.fromEntries(PIECE_KINDS.map((kind) => [kind, PIECE_SPECS[kind].weight])) as Record<PieceKind, number>;
+export function dealQueue(rng: Rng, length = QUEUE_LENGTH, kinds: readonly PieceKind[] = PIECE_KINDS): PieceKind[] {
+  const weights = Object.fromEntries(kinds.map((kind) => [kind, PIECE_SPECS[kind].weight])) as Record<PieceKind, number>;
   return Array.from({ length }, () => weightedPick(rng, weights));
+}
+
+// ---- Build decrees: a symmetric building condition announced before each round after the first ----
+
+export type Decree = "none" | "brittle" | "narrow" | "tall" | "bulk";
+
+export interface DecreeSpec {
+  title: string;
+  line: string;
+  /** Which kinds the queue is dealt from. */
+  kinds: readonly PieceKind[];
+  /** Queue length. */
+  length: number;
+  /** HP override for every piece but the big block (null keeps the spec). */
+  hp: number | null;
+  /** Fraction of the zone width you may build in. */
+  lot: number;
+  buildSeconds: number;
+}
+
+export const DECREES: Record<Decree, DecreeSpec> = {
+  none: { title: "", line: "Place your king, then stack a fortress!", kinds: PIECE_KINDS, length: QUEUE_LENGTH, hp: null, lot: 1, buildSeconds: BUILD_SECONDS },
+  brittle: { title: "BRITTLE", line: "Every piece shatters in one hit", kinds: PIECE_KINDS, length: QUEUE_LENGTH, hp: 1, lot: 1, buildSeconds: BUILD_SECONDS - 2 },
+  narrow: { title: "NARROW LOT", line: "Half the ground to build on", kinds: PIECE_KINDS, length: QUEUE_LENGTH, hp: null, lot: 0.5, buildSeconds: BUILD_SECONDS - 2 },
+  tall: { title: "TALL ORDER", line: "Pillars and planks only", kinds: ["pillar", "plank", "wedge"], length: QUEUE_LENGTH, hp: null, lot: 1, buildSeconds: BUILD_SECONDS - 2 },
+  bulk: { title: "BIG BLOCKS", line: "Six heavy pieces, nothing else", kinds: ["block", "cube", "wedge"], length: 6, hp: null, lot: 1, buildSeconds: BUILD_SECONDS - 4 },
+};
+
+const DECREE_POOL: readonly Decree[] = ["brittle", "narrow", "tall", "bulk"];
+
+/** Round 1 is always classic; later rounds draw a decree that hasn't come up yet this match. */
+export function rollDecree(rng: Rng, round: number, used: readonly Decree[]): Decree {
+  if (round <= 1) return "none";
+  const fresh = DECREE_POOL.filter((d) => !used.includes(d));
+  return rng.pick(fresh.length ? fresh : DECREE_POOL);
+}
+
+/** HP a piece starts with under a decree. The big block always keeps at least 2. */
+export function pieceHp(kind: PieceKind, decree: Decree): number {
+  const base = PIECE_SPECS[kind].hp;
+  const override = DECREES[decree].hp;
+  if (override === null) return base;
+  return kind === "block" ? Math.max(override + 1, 2) : override;
 }
 
 export type Ammo = "ball" | "bomb" | "triple" | "boulder" | "golden";
@@ -79,9 +134,75 @@ export function isHeavy(ammo: Ammo | undefined): boolean {
   return ammo === "boulder" || ammo === "golden";
 }
 
-export function rollAmmo(rng: Rng, shotsThisRound: number): Ammo {
-  if (shotsThisRound >= SUDDEN_DEATH_AFTER) return "bomb";
+export function rollAmmo(rng: Rng, shotsThisRound: number, suddenAfter = SUDDEN_DEATH_AFTER): Ammo {
+  if (shotsThisRound >= suddenAfter) return "bomb";
   return weightedPick(rng, AMMO_WEIGHTS);
+}
+
+/**
+ * Two public ammo offers for an exchange; both shooters pick from the same pair.
+ * Distinct unless it's sudden death (then it's bombs and the pick is skipped).
+ */
+export function dealOffers(rng: Rng, shotsThisRound: number, suddenAfter = SUDDEN_DEATH_AFTER): [Ammo, Ammo] {
+  if (shotsThisRound >= suddenAfter) return ["bomb", "bomb"];
+  const first = weightedPick(rng, AMMO_WEIGHTS);
+  for (let i = 0; i < 20; i += 1) {
+    const second = weightedPick(rng, AMMO_WEIGHTS);
+    if (second !== first) return rng.next() < 0.5 ? [first, second] : [second, first];
+  }
+  return [first, first === "ball" ? "bomb" : "ball"];
+}
+
+export interface BotPickContext {
+  /** Enemy blocks still standing. */
+  blocks: number;
+  /** Enemy king HP. */
+  kingHp: number;
+  /** Absolute wind. */
+  wind: number;
+  /** Defender's breath, 0..1: full lungs mean a light shot may get blown off. */
+  breath: number;
+}
+
+/** Ammo value for a bot: heavy when the defender has breath or the wind is up, bombs for finishing, triple for clearing. */
+export function ammoValue(ammo: Ammo, c: BotPickContext): number {
+  switch (ammo) {
+    case "golden":
+      return 10;
+    case "boulder":
+      return 3 + c.breath * 3 + c.wind / 10;
+    case "bomb":
+      return 3.5 + (c.kingHp <= 2 ? 1.5 : 0) + (c.blocks >= 4 ? 1 : 0) - c.breath * 1.5;
+    case "triple":
+      return 2.5 + Math.min(3, c.blocks) * 0.5 - c.breath;
+    default:
+      return 2 + (c.blocks <= 2 ? 1 : 0);
+  }
+}
+
+export function botPick(offers: readonly [Ammo, Ammo], c: BotPickContext): 0 | 1 {
+  return ammoValue(offers[1], c) > ammoValue(offers[0], c) ? 1 : 0;
+}
+
+// ---- Bellows: the defending king blows at incoming shots ----
+
+/** Seconds of gust one full breath buys. */
+export const BREATH_MAX = 1;
+/** Breath regained each time your turn to defend comes around. */
+export const BREATH_REGAIN = 0.5;
+/** Headwind the bellows adds for a light ball, in wind units (natural wind tops out at WIND_MAX). */
+export const GUST_STRENGTH = 38;
+/** A ball passing within this many px of the king without touching it is a near miss. */
+export const NEAR_MISS_PX = 48;
+
+/** Heavy ammo shrugs off the gust: scale by the cannonball's relative density. */
+export function gustFactor(ammo: Ammo): number {
+  return ammo === "golden" ? 0.35 : ammo === "boulder" ? 0.55 : ammo === "bomb" ? 1.15 : 1;
+}
+
+/** Breath for the next defence: regain some, a full tank when you're behind in rounds (underdog lungs). */
+export function refillBreath(breath: number, underdog: boolean): number {
+  return underdog ? BREATH_MAX : Math.min(BREATH_MAX, breath + BREATH_REGAIN);
 }
 
 /** Standard normal via Box-Muller. */
