@@ -36,9 +36,17 @@ export function canFlip(card: PairCard | undefined): boolean {
   return card?.state === "down";
 }
 
-export function nextTurnIndex(current: number, playerCount: number, matched: boolean): number {
-  if (matched || playerCount <= 1) return current;
+export const MAX_RUN = 3;
+
+/** A match keeps the turn, unless the run just hit MAX_RUN (a hat-trick passes it on). */
+export function nextTurnIndex(current: number, playerCount: number, matched: boolean, streak = 0): number {
+  if (playerCount <= 1) return current;
+  if (matched && streak < MAX_RUN) return current;
   return (current + 1) % playerCount;
+}
+
+export function hatTrick(streak: number): boolean {
+  return streak >= MAX_RUN;
 }
 
 export function remember(memory: Map<string, number[]>, index: number, face: string): void {
@@ -156,10 +164,71 @@ export function inFever(streak: number): boolean {
   return streak >= FEVER_STREAK;
 }
 
-/** Full match score: combo points (with closer bonus) × fever multiplier, tripled for the golden pair. */
+export const LAST_CALL_PAIRS = 3;
+
+/** The final LAST_CALL_PAIRS pairs of the board pay double. */
+export function lastCall(remainingPairsBefore: number): boolean {
+  return remainingPairsBefore > 0 && remainingPairsBefore <= LAST_CALL_PAIRS;
+}
+
+export function stakes(remainingPairsAfter: number): number {
+  return lastCall(remainingPairsAfter + 1) ? 2 : 1;
+}
+
+/** Full match score: combo points (with closer bonus) × fever × stakes, tripled for the golden pair. */
 export function scoreMatch(streak: number, remainingPairsAfter: number, golden: boolean): number {
-  const base = pointsForMatch(streak, remainingPairsAfter) * feverMultiplier(streak);
+  const base = pointsForMatch(streak, remainingPairsAfter) * feverMultiplier(streak) * stakes(remainingPairsAfter);
   return golden ? base * GOLDEN_FACTOR : base;
+}
+
+export const SNAP_POINTS = 2;
+export const SNAP_PENALTY = 1;
+
+/** A sideline steal: flat SNAP_POINTS (+ closer bonus) × stakes, tripled for the golden pair. */
+export function scoreSnap(remainingPairsAfter: number, golden: boolean): number {
+  const base = (SNAP_POINTS + (remainingPairsAfter === 0 ? CLOSER_BONUS : 0)) * stakes(remainingPairsAfter);
+  return golden ? base * GOLDEN_FACTOR : base;
+}
+
+export function applyPenalty(score: number, penalty = SNAP_PENALTY): number {
+  return Math.max(0, score - penalty);
+}
+
+export const UNDERDOG_GAP = 2;
+
+/** Strictly last by at least UNDERDOG_GAP against every other seat (needs two or more seats). */
+export function isUnderdog(scores: readonly number[], seat: number, gap = UNDERDOG_GAP): boolean {
+  if (scores.length < 2) return false;
+  const mine = scores[seat];
+  if (mine === undefined) return false;
+  return scores.every((score, index) => index === seat || score >= mine + gap);
+}
+
+export const BOT_BLUFF_CHANCE = 0.07;
+
+/**
+ * What a sideline bot snaps while `firstIndex` is face up: the remembered mate, or (rarely, on a
+ * low `roll`) a card it remembers but that is NOT the mate, which is how bots get SNAP FAIL too.
+ * Returns -1 to stay quiet.
+ */
+export function pickBotSnap(
+  cards: readonly PairCard[],
+  memory: Map<string, number[]>,
+  firstIndex: number,
+  roll: number,
+  pickIndex: (maxExclusive: number) => number,
+): number {
+  const mate = pickKnownIndex(cards, memory, firstIndex);
+  if (mate >= 0) return mate;
+  if (roll >= BOT_BLUFF_CHANCE) return -1;
+  const face = cards[firstIndex]?.face;
+  const wrong: number[] = [];
+  for (const [known, indices] of memory) {
+    if (known === face) continue;
+    for (const index of indices) if (cards[index]?.state === "down") wrong.push(index);
+  }
+  if (wrong.length === 0) return -1;
+  return wrong[pickIndex(wrong.length)] ?? -1;
 }
 
 /** Best score among human seats, or null when no human is playing. */
@@ -189,15 +258,25 @@ export function missesUntilShake(totalMisses: number, every = SHAKE_EVERY): numb
   return every - (Math.max(0, totalMisses) % every);
 }
 
+/** Up to `take` random face-down tiles (for a shake-up or an underdog peek). */
+export function pickDownIndices(
+  cards: readonly PairCard[],
+  take: number,
+  pickIndex: (maxExclusive: number) => number,
+): number[] {
+  const open = cards.flatMap((card, index) => (card.state === "down" ? [index] : []));
+  return shuffleInPlace(open, pickIndex).slice(0, Math.min(take, open.length));
+}
+
 /** Up to `take` random face-down tiles to shuffle. Fewer than 2 candidates means no shake-up. */
 export function pickShakeIndices(
   cards: readonly PairCard[],
   take: number,
   pickIndex: (maxExclusive: number) => number,
 ): number[] {
-  const open = cards.flatMap((card, index) => (card.state === "down" ? [index] : []));
-  if (open.length < 2) return [];
-  return shuffleInPlace(open, pickIndex).slice(0, Math.min(take, open.length));
+  const open = cards.filter((card) => card.state === "down").length;
+  if (open < 2) return [];
+  return pickDownIndices(cards, take, pickIndex);
 }
 
 export interface ShakeMove {

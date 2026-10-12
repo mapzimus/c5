@@ -87,5 +87,5 @@ export const FLAGS: readonly Flag[] = [
   { id: "hn", name: "Honduras", file: "hn.png" },
 ];
 
-export const PAIR_COUNT = 18;
+export const PAIR_COUNT = 12;
 export const PAIR_FACES = FLAGS.map((flag) => flag.id);

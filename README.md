@@ -28,7 +28,7 @@ After a game, the results screen offers **Play again** or back to the menu.
 
 | Game | How it plays |
 | --- | --- |
-| **Flag Snap** | A 5s peek (tap to skip), then 18 flags on a 6×6 board sized for the phone. Match two to stay on streak (bigger points). One secret golden pair pays triple. Every 4 misses, a shake-up slides 4 hidden cards to new spots. Miss and the turn moves on. |
+| **Flag Snap** | A 5s peek (tap to skip), then 12 pairs of flags on a 6×4 board (4×6 on a phone). On your turn flip two (8s shot clock): match and go again, three in a row is a HAT-TRICK for double points and then the turn passes. **Snap:** while someone else has one card up, hold your badge and tap its mate to steal the pair for yourself; a wrong snap costs a point and benches you for 5s. One secret golden pair pays triple, the last three pairs pay double (LAST CALL), and whoever is clearly last gets a flash of two hidden cards at the start of their turn. Every 4 misses, a shake-up slides 4 hidden cards to new spots. Inspired by classic Concentration/Pelmanism and the slap-the-pile rule of Snap. |
 | **Bonk** | Tap critters in your zone before they hide. 8 hits in a row fills the meter and triggers 5s of FEVER (double points, more targets). Rare gold targets pay +10; bombs cost 5 and wipe your combo. |
 | **Sky Dash** | Tap your lane to climb and thread neon gates. Coins in the gaps, +3 for skimming an edge, shield and ghost pickups, and the speed keeps climbing. Last jet flying wins. |
 | **Drop Zone** | Get four in a row. Each round you also get one Bomb (clears a 3×3) and one Anvil (smashes down a column). Pieces fall after every blast, so lines can appear for anyone. First to 2 rounds. |
