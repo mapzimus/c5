@@ -14,8 +14,36 @@ export const MAX_BUGS = 8;
 export const START_BUGS_PER_TILE = 3;
 /** Reinforcements that don't fit on the board wait in the nest, up to this many. */
 export const STASH_MAX = 12;
+/** Classic round cap; party matches use `roundsFor(playerCount)` instead. */
 export const MAX_ROUNDS = 8;
 export const NO_OWNER = -1;
+/** Actions per turn for every seat, human or bot: an attack or a march costs one. */
+export const AP_PER_TURN = 3;
+/** The final round is a frenzy: one extra action for everyone. */
+export const FINAL_ROUND_AP = 4;
+/** How many times a swarm may press on after a capture before it must dig in. */
+export const SURGE_MAX = 3;
+/** A swarm needs this many bugs on the captured tile to press on. */
+export const SURGE_MIN_BUGS = 3;
+/** Human turn clock in seconds; the turn ends on its own when it runs out. */
+export const TURN_SECONDS = 15;
+/** Seconds a human ghost gets to pick a tile to stomp. */
+export const STOMP_SECONDS = 6;
+/** Extra income for the seat with the fewest tiles. */
+export const UNDERDOG_INCOME = 2;
+
+/** Round cap by table size so a party match stays near a minute. */
+export function roundsFor(playerCount: number): number {
+  return playerCount <= 2 ? 4 : 3;
+}
+
+export function isFinalRound(round: number, maxRounds: number): boolean {
+  return round >= maxRounds;
+}
+
+export function apFor(round: number, maxRounds: number): number {
+  return isFinalRound(round, maxRounds) ? FINAL_ROUND_AP : AP_PER_TURN;
+}
 
 export type Species = "ants" | "bees" | "beetles" | "spiders";
 export const SPECIES: readonly Species[] = ["ants", "bees", "beetles", "spiders"];
@@ -55,6 +83,18 @@ export interface Battle {
   attackSum: number;
   defendSum: number;
   captured: boolean;
+  /** Extra dice the attacker rolled (surge momentum). */
+  bonusDice: number;
+  /** Underdog privilege: an equal sum counts as a win for the attacker. */
+  tiesWin: boolean;
+  /** 0 for a normal attack, 1..SURGE_MAX for a press-on after a capture. */
+  surge: number;
+}
+
+export interface BattleOptions {
+  bonusDice?: number;
+  tiesWin?: boolean;
+  surge?: number;
 }
 
 export function cellKey(col: number, row: number): string {
@@ -221,12 +261,17 @@ export function rollDice(rng: Rng, count: number): number[] {
   return Array.from({ length: count }, () => rng.int(1, 6));
 }
 
-/** Roll a fight without touching the board. Attacker needs strictly more; ties go to the defender. */
-export function rollBattle(board: Board, from: number, to: number, rng: Rng): Battle {
+/**
+ * Roll a fight without touching the board. Attacker needs strictly more; ties go to the defender,
+ * unless the attacker is the underdog (`tiesWin`). Surge momentum adds bonus dice.
+ */
+export function rollBattle(board: Board, from: number, to: number, rng: Rng, options: BattleOptions = {}): Battle {
   const source = board.tiles[from]!;
   const target = board.tiles[to]!;
   if (!canAttack(board, from, to, source.owner)) throw new Error(`Illegal attack ${from} -> ${to}`);
-  const attackRolls = rollDice(rng, source.bugs);
+  const bonusDice = Math.max(0, options.bonusDice ?? 0);
+  const tiesWin = options.tiesWin ?? false;
+  const attackRolls = rollDice(rng, source.bugs + bonusDice);
   const defendRolls = rollDice(rng, target.bugs);
   const attackSum = attackRolls.reduce((a, b) => a + b, 0);
   const defendSum = defendRolls.reduce((a, b) => a + b, 0);
@@ -239,8 +284,145 @@ export function rollBattle(board: Board, from: number, to: number, rng: Rng): Ba
     defendRolls,
     attackSum,
     defendSum,
-    captured: attackSum > defendSum,
+    captured: attackSum > defendSum || (tiesWin && attackSum === defendSum),
+    bonusDice,
+    tiesWin,
+    surge: options.surge ?? 0,
   };
+}
+
+const sumCache = new Map<number, number[]>();
+
+/** Probability mass of the sum of `dice` six-sided dice, indexed by sum. */
+export function sumDistribution(dice: number): number[] {
+  const count = Math.max(0, Math.floor(dice));
+  const cached = sumCache.get(count);
+  if (cached) return cached;
+  let dist = [1];
+  for (let i = 0; i < count; i += 1) {
+    const next = new Array<number>(dist.length + 6).fill(0);
+    for (let sum = 0; sum < dist.length; sum += 1) {
+      const p = dist[sum]!;
+      if (p === 0) continue;
+      for (let face = 1; face <= 6; face += 1) next[sum + face] = (next[sum + face] ?? 0) + p / 6;
+    }
+    dist = next;
+  }
+  sumCache.set(count, dist);
+  return dist;
+}
+
+/** Exact chance that `attackDice` d6 beat `defendDice` d6 under the real fight rules. */
+export function winChance(attackDice: number, defendDice: number, tiesWin = false): number {
+  if (attackDice <= 0) return 0;
+  const attack = sumDistribution(attackDice);
+  const defend = sumDistribution(defendDice);
+  const below: number[] = [];
+  let run = 0;
+  for (let sum = 0; sum < defend.length; sum += 1) {
+    below[sum] = run;
+    run += defend[sum]!;
+  }
+  let total = 0;
+  for (let sum = 0; sum < attack.length; sum += 1) {
+    const p = attack[sum]!;
+    if (p === 0) continue;
+    const lower = sum >= below.length ? 1 : below[sum]!;
+    const equal = defend[sum] ?? 0;
+    total += p * (lower + (tiesWin ? equal : 0));
+  }
+  return Math.min(1, total);
+}
+
+/** Win chance of a concrete attack on the board (0 when it is not legal). */
+export function attackChance(board: Board, from: number, to: number, options: BattleOptions = {}): number {
+  const source = board.tiles[from];
+  const target = board.tiles[to];
+  if (!source || !target || !canAttack(board, from, to, source.owner)) return 0;
+  return winChance(source.bugs + (options.bonusDice ?? 0), target.bugs, options.tiesWin ?? false);
+}
+
+/** A routed surge: the tile the swarm pressed from goes back to who held it, with a single bug. */
+export function revertTile(board: Board, id: number, owner: number): void {
+  const tile = board.tiles[id];
+  if (!tile) return;
+  tile.owner = owner;
+  tile.bugs = 1;
+}
+
+/** Friendly neighbours a stack of 2+ could march into (tiles with room). */
+export function marchTargets(board: Board, from: number): number[] {
+  const source = board.tiles[from];
+  if (!source || source.bugs < 2 || source.owner === NO_OWNER) return [];
+  return board.adjacency[from]!.filter((id) => {
+    const tile = board.tiles[id]!;
+    return tile.owner === source.owner && tile.bugs < MAX_BUGS;
+  });
+}
+
+export function canMarch(board: Board, from: number, to: number, seat: number): boolean {
+  const source = board.tiles[from];
+  if (!source || source.owner !== seat) return false;
+  return marchTargets(board, from).includes(to);
+}
+
+/** Move every bug but one into a neighbouring friendly tile (up to its cap). Returns how many moved. */
+export function applyMarch(board: Board, from: number, to: number): number {
+  const source = board.tiles[from]!;
+  const target = board.tiles[to]!;
+  const moved = Math.max(0, Math.min(source.bugs - 1, MAX_BUGS - target.bugs));
+  source.bugs -= moved;
+  target.bugs += moved;
+  return moved;
+}
+
+/** Tiles this seat can act from: attack or march. */
+export function hasAnyAction(board: Board, seat: number): boolean {
+  return board.tiles.some((tile) => tile.owner === seat && tile.bugs >= 2 && (targetsFrom(board, tile.id).length > 0 || marchTargets(board, tile.id).length > 0));
+}
+
+/** A ghost's boot: the stack loses half its bugs (at least one always survives). Returns bugs lost. */
+export function stompTile(board: Board, id: number): number {
+  const tile = board.tiles[id];
+  if (!tile) return 0;
+  const after = Math.max(1, Math.floor(tile.bugs / 2));
+  const lost = tile.bugs - after;
+  tile.bugs = after;
+  return lost;
+}
+
+/** Seat with the most tiles (first on ties), or -1 when nobody is alive. */
+export function leaderSeat(board: Board, playerCount: number): number {
+  let best = -1;
+  let bestTiles = 0;
+  for (let seat = 0; seat < playerCount; seat += 1) {
+    const tiles = tilesOwned(board, seat);
+    if (tiles > bestTiles) {
+      bestTiles = tiles;
+      best = seat;
+    }
+  }
+  return best;
+}
+
+/** The living seat with strictly the fewest tiles, or -1 when there is a tie or fewer than two seats left. */
+export function underdogSeat(board: Board, playerCount: number): number {
+  const alive = aliveSeats(board, playerCount);
+  if (alive.length < 2) return -1;
+  let best = -1;
+  let bestTiles = Number.POSITIVE_INFINITY;
+  let tied = false;
+  for (const seat of alive) {
+    const tiles = tilesOwned(board, seat);
+    if (tiles < bestTiles) {
+      bestTiles = tiles;
+      best = seat;
+      tied = false;
+    } else if (tiles === bestTiles) {
+      tied = true;
+    }
+  }
+  return tied ? -1 : best;
 }
 
 /** Move the swarm on a win (one bug stays home); a loss leaves the attacker with one bug. */
@@ -293,8 +475,8 @@ export function reinforce(board: Board, seat: number, amount: number, rng: Rng):
 }
 
 /** End of turn: income (biggest patch + stash) lands on the board, the rest waits in the nest. */
-export function endTurnIncome(board: Board, seat: number, stash: number, rng: Rng): { income: number; placed: number[]; stash: number } {
-  const income = largestRegion(board, seat) + stash;
+export function endTurnIncome(board: Board, seat: number, stash: number, rng: Rng, bonus = 0): { income: number; placed: number[]; stash: number } {
+  const income = largestRegion(board, seat) + stash + Math.max(0, bonus);
   const result = reinforce(board, seat, income, rng);
   return { income, placed: result.placed, stash: Math.min(STASH_MAX, result.leftover) };
 }
@@ -314,30 +496,80 @@ export interface AttackChoice {
   to: number;
 }
 
+export interface BotOptions {
+  /** Chance the bot takes its second-best option instead of the best (a human-like slip). */
+  mistakeChance?: number;
+  /** The bot is the underdog this turn: ties go to it. */
+  tiesWin?: boolean;
+  /** Lowest win chance it will attack at. Full stacks gamble a little lower. */
+  minChance?: number;
+}
+
 /**
- * Bot: attack when it has more bugs than the target, biggest edge first (bigger prize on ties).
- * A full stack will also gamble on an equal fight, which keeps late games moving.
+ * Bot: attack where the real win chance is good, best odds first (bigger prize on ties).
+ * A full stack will also gamble on a coin flip, which keeps late games moving.
  */
-export function botPickAttack(board: Board, seat: number, rng: Rng): AttackChoice | null {
-  const options: { choice: AttackChoice; score: number }[] = [];
+export function botPickAttack(board: Board, seat: number, rng: Rng, options: BotOptions = {}): AttackChoice | null {
+  const minChance = options.minChance ?? 0.55;
+  const scored: { choice: AttackChoice; score: number }[] = [];
   for (const from of attackers(board, seat)) {
     const source = board.tiles[from]!;
     for (const to of targetsFrom(board, from)) {
       const target = board.tiles[to]!;
-      const edge = source.bugs - target.bugs;
-      if (edge <= 0 && !(edge === 0 && source.bugs >= MAX_BUGS - 1)) continue;
-      options.push({ choice: { from, to }, score: edge * 10 + target.bugs + rng.float(0, 0.5) });
+      const chance = winChance(source.bugs, target.bugs, options.tiesWin ?? false);
+      const floor = source.bugs >= MAX_BUGS - 1 ? Math.min(minChance, 0.45) : minChance;
+      if (chance < floor) continue;
+      scored.push({ choice: { from, to }, score: chance * 100 + target.bugs * 2 + rng.float(0, 6) });
     }
   }
-  if (options.length === 0) return null;
-  options.sort((a, b) => b.score - a.score);
-  return options[0]!.choice;
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.score - a.score);
+  const slip = options.mistakeChance ?? 0;
+  if (scored.length > 1 && slip > 0 && rng.next() < slip) return scored[1]!.choice;
+  return scored[0]!.choice;
+}
+
+/** Bot surge: press on from a fresh capture when the odds (with momentum dice) clear `threshold`. */
+export function botPickSurge(board: Board, from: number, bonusDice: number, tiesWin: boolean, threshold: number): { to: number; chance: number } | null {
+  let best: { to: number; chance: number } | null = null;
+  for (const to of targetsFrom(board, from)) {
+    const chance = attackChance(board, from, to, { bonusDice, tiesWin });
+    if (!best || chance > best.chance) best = { to, chance };
+  }
+  return best && best.chance >= threshold ? best : null;
+}
+
+/** Bot march: shove an idle interior stack toward a border tile that has room. */
+export function botPickMarch(board: Board, seat: number): AttackChoice | null {
+  let best: { choice: AttackChoice; score: number } | null = null;
+  for (const tile of board.tiles) {
+    if (tile.owner !== seat || tile.bugs < 3) continue;
+    if (targetsFrom(board, tile.id).length > 0) continue;
+    for (const to of marchTargets(board, tile.id)) {
+      const target = board.tiles[to]!;
+      const frontline = board.adjacency[to]!.some((id) => board.tiles[id]!.owner !== seat);
+      if (!frontline) continue;
+      const score = tile.bugs * 2 + (MAX_BUGS - target.bugs);
+      if (!best || score > best.score) best = { choice: { from: tile.id, to }, score };
+    }
+  }
+  return best?.choice ?? null;
+}
+
+/** Ghost bot: stomp the leader's fattest stack (any big stack if the leader has none). */
+export function botPickStomp(board: Board, playerCount: number, rng: Rng): number | null {
+  const leader = leaderSeat(board, playerCount);
+  const pool = board.tiles.filter((tile) => tile.owner === leader && tile.bugs >= 2);
+  const candidates = pool.length > 0 ? pool : board.tiles.filter((tile) => tile.owner !== NO_OWNER && tile.bugs >= 2);
+  if (candidates.length === 0) return null;
+  const most = Math.max(...candidates.map((tile) => tile.bugs));
+  return rng.pick(candidates.filter((tile) => tile.bugs === most)).id;
 }
 
 /** Game over when one seat holds the whole garden or the round cap has passed. */
-export function gameOver(board: Board, playerCount: number, round: number): "conquered" | "rounds" | null {
+export function gameOver(board: Board, playerCount: number, round: number, maxRounds = MAX_ROUNDS): "conquered" | "rounds" | null {
   if (aliveSeats(board, playerCount).length <= 1) return "conquered";
-  if (round > MAX_ROUNDS) return "rounds";
+  if (round > maxRounds) return "rounds";
   return null;
 }
 
