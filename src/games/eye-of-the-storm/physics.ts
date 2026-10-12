@@ -1,4 +1,4 @@
-/** Tiny top-down puck physics: sliding discs, static pegs, walls, and a swirl that curves paths. */
+/** Tiny top-down puck physics: sliding discs, static pegs, walls, a swirl that curves paths, and lightning blasts. */
 
 export interface Puck {
   id: number;
@@ -8,6 +8,8 @@ export interface Puck {
   vx: number;
   vy: number;
   r: number;
+  /** 1 for a light puck, more for a heavy one: it hits harder, is shoved less and the swirl bends it less. */
+  mass: number;
 }
 
 export interface Peg {
@@ -87,10 +89,11 @@ function integrate(world: World, p: Puck, h: number): void {
   if (v === 0) return;
 
   // Swirl rotates the velocity (no energy added) so it bends shots without keeping pucks alive.
+  // Heavy pucks carry more momentum, so the storm turns them less.
   const { swirl } = world;
   const d = Math.hypot(p.x - swirl.x, p.y - swirl.y);
   if (d < swirl.radius) {
-    const angle = swirl.spin * (1 - d / swirl.radius) * h;
+    const angle = (swirl.spin / Math.max(1, p.mass)) * (1 - d / swirl.radius) * h;
     const c = Math.cos(angle);
     const s = Math.sin(angle);
     const vx = p.vx * c - p.vy * s;
@@ -118,18 +121,20 @@ export function collidePucks(a: Puck, b: Puck): boolean {
   if (dist >= min || dist === 0) return false;
   const nx = dx / dist;
   const ny = dy / dist;
-  const overlap = (min - dist) / 2;
-  a.x -= nx * overlap;
-  a.y -= ny * overlap;
-  b.x += nx * overlap;
-  b.y += ny * overlap;
+  const ia = 1 / Math.max(0.01, a.mass);
+  const ib = 1 / Math.max(0.01, b.mass);
+  const overlap = min - dist;
+  a.x -= nx * overlap * (ia / (ia + ib));
+  a.y -= ny * overlap * (ia / (ia + ib));
+  b.x += nx * overlap * (ib / (ia + ib));
+  b.y += ny * overlap * (ib / (ia + ib));
   const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny;
   if (rel <= 0) return false;
-  const impulse = (rel * (1 + PUCK_BOUNCE)) / 2;
-  a.vx -= impulse * nx;
-  a.vy -= impulse * ny;
-  b.vx += impulse * nx;
-  b.vy += impulse * ny;
+  const impulse = (rel * (1 + PUCK_BOUNCE)) / (ia + ib);
+  a.vx -= impulse * ia * nx;
+  a.vy -= impulse * ia * ny;
+  b.vx += impulse * ib * nx;
+  b.vy += impulse * ib * ny;
   return rel > 40;
 }
 
@@ -182,4 +187,83 @@ function collideWalls(p: Puck, w: number, h: number): boolean {
     }
   }
   return hit;
+}
+
+/**
+ * Lightning: every puck within `radius` of the strike is shoved straight away from it.
+ * The shove is strongest at the centre and heavy pucks resist it. `jitter` breaks the tie
+ * for a puck sitting exactly on the strike point. Returns the pucks that were moved.
+ */
+export function applyBlast(
+  world: World,
+  x: number,
+  y: number,
+  radius: number,
+  power: number,
+  jitter: () => number = () => 0,
+): Puck[] {
+  const hit: Puck[] = [];
+  for (const p of world.pucks) {
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const d = Math.hypot(dx, dy);
+    if (d > radius + p.r) continue;
+    const falloff = 1 - Math.min(1, d / (radius + p.r)) * 0.6;
+    const push = (power * falloff) / Math.max(1, p.mass);
+    let nx: number;
+    let ny: number;
+    if (d < 1) {
+      const a = jitter() * Math.PI;
+      nx = Math.cos(a);
+      ny = Math.sin(a);
+    } else {
+      nx = dx / d;
+      ny = dy / d;
+    }
+    p.vx += nx * push;
+    p.vy += ny * push;
+    hit.push(p);
+  }
+  return hit;
+}
+
+export interface Preview {
+  /** Sampled positions along the predicted path, start first. */
+  points: { x: number; y: number }[];
+  /** True when the path ran into a peg (the rest is a guess) or ran out of time. */
+  uncertain: boolean;
+}
+
+/**
+ * Approximate flight of a lone puck through the current swirl, drag and pegs, with no jitter and
+ * no other pucks. Stops early at the first peg hit because after that the real shot is anyone's guess.
+ */
+export function previewPath(world: World, start: Puck, seconds = 3, sampleEvery = 0.05): Preview {
+  const p: Puck = { ...start };
+  const ghost: World = { ...world, pucks: [p] };
+  const h = 1 / 240;
+  const points: { x: number; y: number }[] = [{ x: p.x, y: p.y }];
+  let since = 0;
+  const steps = Math.ceil(seconds / h);
+  for (let i = 0; i < steps; i += 1) {
+    integrate(ghost, p, h);
+    for (const peg of world.pegs) {
+      const touching = Math.hypot(p.x - peg.x, p.y - peg.y) < p.r + peg.r;
+      if (touching) {
+        points.push({ x: p.x, y: p.y });
+        return { points, uncertain: true };
+      }
+    }
+    collideWalls(p, world.width, world.height);
+    since += h;
+    if (since >= sampleEvery) {
+      since = 0;
+      points.push({ x: p.x, y: p.y });
+    }
+    if (isResting(p)) {
+      points.push({ x: p.x, y: p.y });
+      return { points, uncertain: false };
+    }
+  }
+  return { points, uncertain: true };
 }
