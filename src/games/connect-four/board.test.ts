@@ -8,8 +8,18 @@ import {
   canDrop,
   createGrid,
   findWins,
+  lineCells,
+  lineScore,
   pickWinner,
   playMove,
+  previewTilt,
+  scoreLines,
+  seedGrid,
+  settle,
+  simulateMove,
+  tallyTilt,
+  tiltSlide,
+  underdogs,
   winningColumns,
   type Grid,
 } from "./board";
@@ -124,6 +134,138 @@ describe("Drop Zone board", () => {
   });
 });
 
+describe("Drop Zone scoring and chains", () => {
+  it("pays 100 for four, more for longer lines, times the chain link", () => {
+    expect(lineScore(4, 1)).toBe(100);
+    expect(lineScore(5, 1)).toBe(150);
+    expect(lineScore(4, 2)).toBe(200);
+    expect(lineScore(6, 3)).toBe(600);
+  });
+
+  it("counts crossing cells once but pays every line", () => {
+    const grid = parse([
+      "..A....",
+      "..A....",
+      "AAAA...",
+      "..A....",
+    ]);
+    const lines = findWins(grid);
+    expect(lines).toHaveLength(2);
+    expect(lineCells(lines)).toHaveLength(7);
+    expect(scoreLines(lines, 1)).toEqual({ A: 200 });
+  });
+
+  it("clears a line, drops what was above, and chains the next line for double", () => {
+    const grid = parse([
+      ".......",
+      "B......",
+      "B......",
+      "B...A..",
+      "AAAA...",
+      "BBBABBB",
+    ]);
+    const steps = settle(grid);
+    expect(steps).toHaveLength(2);
+    expect(steps[0]!.chain).toBe(1);
+    expect(steps[0]!.points).toEqual({ A: 100 });
+    // After the A line bursts the B column drops onto the bottom B and four B stack up.
+    expect(steps[1]!.chain).toBe(2);
+    expect(steps[1]!.points).toEqual({ B: 200 });
+    expect(show(grid)).toEqual([".......", ".......", ".......", ".......", "....A..", ".BBABBB"]);
+  });
+
+  it("settle leaves a board with nothing lined up alone", () => {
+    const grid = parse(["AB", "BA"]);
+    expect(settle(grid)).toEqual([]);
+    expect(show(grid)).toEqual(["AB", "BA"]);
+  });
+});
+
+describe("Drop Zone tilt", () => {
+  it("packs every row toward the tilted side keeping disc order", () => {
+    const grid = parse([".A.B...", "..C...D"]);
+    const slides = tiltSlide(grid, "left");
+    expect(show(grid)).toEqual(["AB.....", "CD....."]);
+    expect(slides).toEqual([
+      { r: 0, fromC: 1, toC: 0, owner: "A" },
+      { r: 0, fromC: 3, toC: 1, owner: "B" },
+      { r: 1, fromC: 2, toC: 0, owner: "C" },
+      { r: 1, fromC: 6, toC: 1, owner: "D" },
+    ]);
+    const right = parse([".A.B...", "..C...D"]);
+    tiltSlide(right, "right");
+    expect(show(right)).toEqual([".....AB", ".....CD"]);
+  });
+
+  it("a tilt can slide scattered discs into a scoring line", () => {
+    const grid = parse([
+      ".......",
+      ".......",
+      ".......",
+      "A..B...",
+      "A.B.B..",
+      "ABBB.B.",
+    ]);
+    expect(findWins(grid)).toHaveLength(0);
+    const left = previewTilt(grid, "left");
+    expect(left.slides.length).toBeGreaterThan(0);
+    expect(left.points).toEqual({ B: 100 });
+    expect(show(left.grid)).toEqual([".......", ".......", ".......", "A......", "AB.....", "ABB...."]);
+    // Tilting the other way packs B B B B on the right instead; A stays scattered.
+    const right = previewTilt(grid, "right");
+    expect(right.points).toEqual({ B: 100 });
+  });
+
+  it("previewTilt never touches the input grid", () => {
+    const grid = parse([".A.", "B.."]);
+    previewTilt(grid, "right");
+    expect(show(grid)).toEqual([".A.", "B.."]);
+  });
+
+  it("tallies votes by weight, breaks ties with the latest vote, falls back otherwise", () => {
+    expect(tallyTilt([{ dir: "left", weight: 1 }, { dir: "right", weight: 2 }], "left", "left")).toBe("right");
+    expect(tallyTilt([{ dir: "left", weight: 1 }, { dir: "right", weight: 1 }], "left", "right")).toBe("left");
+    expect(tallyTilt([], null, "right")).toBe("right");
+  });
+
+  it("seeds a fair scatter with nothing lined up", () => {
+    const rng = new Rng(3);
+    for (let round = 0; round < 20; round++) {
+      const grid = createGrid();
+      const placed = seedGrid(grid, ["A", "B", "C"], 5, () => rng.next(), 3);
+      expect(placed).toHaveLength(15);
+      const flat = grid.flat();
+      expect(flat.filter((c) => c === "A")).toHaveLength(5);
+      expect(flat.filter((c) => c === "C")).toHaveLength(5);
+      expect(findWins(grid, 3)).toHaveLength(0);
+      // Everything sits on something: gravity would move nothing.
+      expect(applyGravity(grid)).toEqual([]);
+    }
+  });
+
+  it("names the underdogs only when somebody is ahead", () => {
+    expect(underdogs({ a: 0, b: 100, c: 0 })).toEqual(["a", "c"]);
+    expect(underdogs({ a: 0, b: 0 })).toEqual([]);
+    expect(underdogs({ a: 300 })).toEqual([]);
+  });
+
+  it("simulateMove scores the drop and the tilt that follows it", () => {
+    const grid = parse([
+      ".......",
+      ".......",
+      ".......",
+      ".......",
+      "B......",
+      "A.A.A..",
+    ]);
+    // Column 6 does nothing on its own, but a tilt left packs A A A A together.
+    expect(simulateMove(grid, 6, "normal", "A")!.points).toEqual({});
+    expect(simulateMove(grid, 6, "normal", "A", "left")!.points).toEqual({ A: 100 });
+    expect(simulateMove(grid, 6, "normal", "A", "right")!.points).toEqual({ A: 100 });
+    expect(simulateMove(parse(["A"]), 0, "normal", "A")).toBeNull();
+  });
+});
+
 function context(kinds: ("human" | "bot")[]): GameContext {
   return {
     width: 1280, height: 720, rng: new Rng(7), minTap: 44,
@@ -142,14 +284,41 @@ describe("Drop Zone match", () => {
   });
 
   for (const n of [2, 3, 4]) {
-    it(`bots finish a ${n}-player match`, () => {
+    it(`bots finish a ${n}-player match inside 45-100 seconds and somebody scores`, () => {
       const game = connectFour.create(context(Array.from({ length: n }, () => "bot")));
-      for (let f = 0; f < 60 * 60 * 20 && !game.isFinished(); f++) game.update(1 / 60);
+      let frames = 0;
+      for (; frames < 60 * 120 && !game.isFinished(); frames++) game.update(1 / 60);
       expect(game.isFinished()).toBe(true);
+      expect(frames / 60).toBeGreaterThanOrEqual(45);
+      expect(frames / 60).toBeLessThanOrEqual(100);
       expect(Math.max(...game.getScores().map((s) => s.score))).toBeGreaterThan(0);
+      const stats = game.getStats!();
+      expect(stats.some((s) => s.label === "Lines" && Number(s.value) > 0)).toBe(true);
       game.destroy();
     });
   }
+
+  it("a human who never taps is auto-dropped and the match still ends", () => {
+    const game = connectFour.create(context(["human", "bot"]));
+    let frames = 0;
+    for (; frames < 60 * 120 && !game.isFinished(); frames++) game.update(1 / 60);
+    expect(game.isFinished()).toBe(true);
+    expect(frames / 60).toBeLessThanOrEqual(100);
+    game.destroy();
+  });
+
+  it("bots vote on the tilt during a match", () => {
+    let called = 0;
+    for (let seed = 1; seed <= 4; seed++) {
+      const ctx = context(["bot", "bot", "bot"]);
+      ctx.rng = new Rng(seed);
+      const game = connectFour.create(ctx);
+      for (let f = 0; f < 60 * 120 && !game.isFinished(); f++) game.update(1 / 60);
+      called += (game as unknown as { seats: { tiltsCalled: number }[] }).seats.filter((s) => s.tiltsCalled > 0).length;
+      game.destroy();
+    }
+    expect(called).toBeGreaterThan(0);
+  });
 
   it("bots use powers over a few matches", () => {
     let used = 0;
@@ -157,7 +326,7 @@ describe("Drop Zone match", () => {
       const ctx = context(["bot", "bot"]);
       ctx.rng = new Rng(seed);
       const game = connectFour.create(ctx);
-      for (let f = 0; f < 60 * 60 * 20 && !game.isFinished(); f++) game.update(1 / 60);
+      for (let f = 0; f < 60 * 120 && !game.isFinished(); f++) game.update(1 / 60);
       used += game.getStats!().filter((s) => s.label === "Powers used").length;
       game.destroy();
     }

@@ -1,6 +1,6 @@
 import { Rng } from "../../core/rng";
 
-/** Pure rules for Block Brawl: board, pieces, bag, garbage, bot heuristic. */
+/** Pure rules for Block Brawl: board, pieces, bag, garbage, high stakes, tide, ghosts, bot heuristic. */
 
 export const COLS = 10;
 export const ROWS = 20;
@@ -116,6 +116,12 @@ export function clearLines(board: Board): number {
   return cleared;
 }
 
+/** Rows from the floor to the highest filled cell (0 = empty well). */
+export function stackHeight(board: Board): number {
+  for (let y = 0; y < ROWS; y++) if (board[y]!.some((c) => c !== 0)) return ROWS - y;
+  return 0;
+}
+
 /** 2/3/4 lines send 1/2/4 garbage. */
 export function garbageFor(lines: number): number {
   if (lines >= 4) return 4;
@@ -134,9 +140,99 @@ export function chainBonus(chain: number): number {
   return chain >= 2 ? Math.min(3, Math.floor(chain / 2)) : 0;
 }
 
-/** Garbage sent by a clear while on `chain` (chain already includes this clear). */
-export function attackFor(lines: number, chain: number): number {
-  return lines > 0 ? garbageFor(lines) + chainBonus(chain) : 0;
+// ---- high stakes ----
+
+/**
+ * The stakes line sits this many rows above the floor. A clear made while the stack
+ * (measured just before the clear) reaches it is HIGH STAKES: line garbage is doubled.
+ * Stack high to hit hard, stack low to stay safe.
+ */
+export const STAKES_HEIGHT = 10;
+
+export function isHighStakes(heightBeforeClear: number): boolean {
+  return heightBeforeClear >= STAKES_HEIGHT;
+}
+
+/**
+ * Garbage sent by a clear while on `chain` (chain already includes this clear).
+ * `stakes` doubles the line garbage, `bonus` is a flat extra (underdog).
+ */
+export function attackFor(lines: number, chain: number, stakes = false, bonus = 0): number {
+  if (lines <= 0) return 0;
+  const base = garbageFor(lines) * (stakes ? 2 : 1);
+  return base + chainBonus(chain) + bonus;
+}
+
+// ---- underdog ----
+
+/** Lines behind the leader before the underdog bonus kicks in. */
+export const UNDERDOG_GAP = 3;
+
+/**
+ * The living player strictly last on lines, at least UNDERDOG_GAP behind the leader,
+ * gets +1 on every attack. `rivalLines` = lines of the other living players.
+ */
+export function isUnderdog(myLines: number, rivalLines: readonly number[]): boolean {
+  if (rivalLines.length === 0) return false;
+  return rivalLines.every((l) => l > myLines) && Math.max(...rivalLines) - myLines >= UNDERDOG_GAP;
+}
+
+// ---- clock, overdrive and the tide ----
+
+export const TIME_LIMIT = 90;
+/** When the tide starts: a garbage row for every living well, again and again. */
+export const OVERDRIVE_AT = 50;
+export const GRAVITY_START = 0.8;
+export const GRAVITY_MIN = 0.1;
+
+export function isOverdrive(time: number): boolean {
+  return time >= OVERDRIVE_AT;
+}
+
+/** Seconds between tide rows: 3s when overdrive starts, 1.5s by the time limit. */
+export function tideInterval(time: number): number {
+  const t = Math.min(1, Math.max(0, (time - OVERDRIVE_AT) / (TIME_LIMIT - OVERDRIVE_AT)));
+  return 3 - 1.5 * t;
+}
+
+/** Gravity interval in seconds: ramps over the match, faster in overdrive and under RUSH. */
+export function gravityFor(time: number, rushed = false): number {
+  let base = Math.max(GRAVITY_MIN, GRAVITY_START - time / 160);
+  if (isOverdrive(time)) base = Math.max(GRAVITY_MIN, base * 0.7);
+  return rushed ? rushGravity(base) : base;
+}
+
+// ---- ghosts ----
+
+/** Seconds a knocked-out player waits between haunts (one garbage row each). */
+export const HAUNT_COOLDOWN = 5;
+
+export interface Rival {
+  lines: number;
+  height: number;
+}
+
+/**
+ * Which living rival a bot ghost haunts: usually the leader on lines, sometimes
+ * whoever is closest to the top (finish them), occasionally anyone.
+ */
+export function pickHauntTarget(rivals: readonly Rival[], roll: number): number {
+  if (rivals.length === 0) return -1;
+  if (roll < 0.55) {
+    let best = 0;
+    rivals.forEach((r, i) => {
+      if (r.lines > rivals[best]!.lines) best = i;
+    });
+    return best;
+  }
+  if (roll < 0.85) {
+    let best = 0;
+    rivals.forEach((r, i) => {
+      if (r.height > rivals[best]!.height) best = i;
+    });
+    return best;
+  }
+  return Math.min(rivals.length - 1, Math.floor(((roll - 0.85) / 0.15) * rivals.length));
 }
 
 // ---- powers ----
@@ -194,6 +290,21 @@ export function addGarbage(board: Board, holes: readonly number[]): boolean {
   return toppedOut;
 }
 
+/**
+ * Hole columns for `count` garbage rows landing together. Rows in one batch usually
+ * share a hole (so a well-placed I bar digs out several), sometimes it shifts.
+ * `roll` returns a float in [0,1).
+ */
+export function garbageHoles(count: number, roll: () => number): number[] {
+  const holes: number[] = [];
+  let hole = Math.floor(roll() * COLS);
+  for (let i = 0; i < count; i++) {
+    if (i > 0 && roll() < 0.3) hole = Math.floor(roll() * COLS);
+    holes.push(Math.min(COLS - 1, hole));
+  }
+  return holes;
+}
+
 /** Try rotating with small sideways kicks. Returns the new piece or null. */
 export function tryRotate(board: Board, p: Piece, dir = 1): Piece | null {
   const rot = (p.rot + dir + 4) & 3;
@@ -235,7 +346,34 @@ export class Bag {
   }
 }
 
-export function evaluateBoard(board: Board, lines: number, powers = 0): number {
+// ---- bots ----
+
+/** A bot's temperament. Greedy bots ride the stakes line; careful bots keep the well low. */
+export interface BotProfile {
+  name: string;
+  /** Penalty per row of aggregate height (more negative = plays lower). */
+  heightW: number;
+  /** Reward for finishing a drop with the stack inside the stakes band (not too tall). */
+  stakesW: number;
+  /** Chance per piece to pick a worse placement by mistake. */
+  mistake: number;
+  /** Seconds between bot inputs. */
+  step: number;
+}
+
+export const BOT_PROFILES: readonly BotProfile[] = [
+  { name: "careful", heightW: -0.6, stakesW: 0, mistake: 0.03, step: 0.16 },
+  { name: "greedy", heightW: -0.38, stakesW: 1.0, mistake: 0.05, step: 0.14 },
+  { name: "wild", heightW: -0.45, stakesW: 0.6, mistake: 0.08, step: 0.12 },
+] as const;
+
+export const DEFAULT_PROFILE: BotProfile = { name: "plain", heightW: -0.51, stakesW: 0, mistake: 0, step: 0.14 };
+
+/** Survival instinct: any bot plays it safe once the stack gets this tall. */
+export const PANIC_HEIGHT = 14;
+export const PANIC_PROFILE: BotProfile = { name: "panic", heightW: -0.7, stakesW: 0, mistake: 0, step: 0.12 };
+
+export function evaluateBoard(board: Board, lines: number, powers = 0, profile: BotProfile = DEFAULT_PROFILE): number {
   const heights: number[] = [];
   let holes = 0;
   for (let x = 0; x < COLS; x++) {
@@ -255,11 +393,14 @@ export function evaluateBoard(board: Board, lines: number, powers = 0): number {
   }
   let agg = 0;
   let bump = 0;
+  let top = 0;
   for (let x = 0; x < COLS; x++) {
     agg += heights[x]!;
+    top = Math.max(top, heights[x]!);
     if (x > 0) bump += Math.abs(heights[x]! - heights[x - 1]!);
   }
-  return -0.51 * agg + 0.76 * lines - 0.36 * holes - 0.18 * bump + 0.9 * powers;
+  const stakes = top >= STAKES_HEIGHT && top <= STAKES_HEIGHT + 2 ? profile.stakesW : 0;
+  return profile.heightW * agg + 0.76 * lines - 0.36 * holes - 0.18 * bump + 0.9 * powers + stakes;
 }
 
 export interface Placement {
@@ -269,24 +410,62 @@ export interface Placement {
 }
 
 /**
- * Try every rotation x column, hard-dropped from the spawn row. Bots like
- * clearing rows that hold power cells (including the piece's own, `power`).
+ * Every legal rotation x column, hard-dropped from row `fromY` (the spawn row by
+ * default), best first. Bots like clearing rows that hold power cells (including the
+ * piece's own, `power`). Only spots the piece can actually turn and slide to from
+ * (`fromX`, `fromY`) count. `onlyRot` limits the search to one rotation (re-planning a
+ * piece that is already too low to turn).
  */
-export function bestPlacement(board: Board, type: number, power = -1): Placement | null {
-  let best: Placement | null = null;
-  const spawn = spawnPiece(type);
+export function rankPlacements(
+  board: Board,
+  type: number,
+  power = -1,
+  profile: BotProfile = DEFAULT_PROFILE,
+  fromY = spawnPiece(type).y,
+  onlyRot = -1,
+  fromX = spawnPiece(type).x,
+): Placement[] {
+  const out: Placement[] = [];
   for (let rot = 0; rot < 4; rot++) {
+    if (onlyRot >= 0 && rot !== onlyRot) continue;
+    // The bot turns first, then slides: both must be possible at this row.
+    if (collides(board, { type, rot, x: fromX, y: fromY })) continue;
     for (let x = -3; x < COLS; x++) {
-      const p: Piece = { type, rot, x, y: spawn.y };
-      if (collides(board, p)) continue;
+      const p: Piece = { type, rot, x, y: fromY };
+      if (collides(board, p) || !slideClear(board, p, fromX)) continue;
       const landed = { ...p, y: dropY(board, p) };
       const copy = board.map((row) => row.slice());
       lockPiece(copy, landed, power);
       const powers = powersInFullRows(copy);
       const lines = clearLines(copy);
-      const score = evaluateBoard(copy, lines, powers);
-      if (!best || score > best.score) best = { rot, x, score };
+      out.push({ rot, x, score: evaluateBoard(copy, lines, powers, profile) });
     }
   }
-  return best;
+  return out.sort((a, b) => b.score - a.score);
+}
+
+/** True when the piece can slide along its row from column `fromX` to its own column. */
+export function slideClear(board: Board, p: Piece, fromX: number): boolean {
+  const step = Math.sign(p.x - fromX);
+  for (let x = fromX; x !== p.x; x += step) {
+    if (collides(board, { ...p, x })) return false;
+  }
+  return true;
+}
+
+export function bestPlacement(board: Board, type: number, power = -1, profile: BotProfile = DEFAULT_PROFILE): Placement | null {
+  return rankPlacements(board, type, power, profile)[0] ?? null;
+}
+
+/**
+ * The placement a bot actually goes for: the best one, or with probability
+ * `profile.mistake` the runner-up when it is nearly as good (a human-looking slip,
+ * never a blunder). `roll` in [0,1).
+ */
+export function pickPlacement(ranked: readonly Placement[], profile: BotProfile, roll: number): Placement | null {
+  const best = ranked[0];
+  if (!best) return null;
+  const second = ranked[1];
+  if (roll >= profile.mistake || !second || best.score - second.score > 1) return best;
+  return second;
 }

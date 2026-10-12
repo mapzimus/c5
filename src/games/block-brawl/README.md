@@ -17,8 +17,15 @@ Versus falling blocks for 2–4 players, all at once, each in their own 10x20 we
   - **INK** (5s): blots over their board and hides their NEXT preview.
   - **RUSH** (3.5s): their blocks fall 5x faster.
   - **FLIP** (5s): left/right and rotation are reversed.
-- Stack past the top and you're out. Last one standing wins. If 3 minutes pass, the most
-  lines cleared among those still in wins.
+- **High stakes:** a dashed line sits halfway up every well. Clear lines while your stack
+  reaches it and the line garbage doubles. Stack high to hit hard, stack low to stay safe.
+- **Underdog:** the living player strictly last on lines, 3+ behind the leader, sends +1 on
+  every attack.
+- **Overdrive and the tide:** at 50s blocks fall faster and the TIDE rises: a garbage row lands
+  in every living well every 3s, speeding up to every 1.5s by the 90s limit.
+- **Ghosts:** stack past the top and you're not done. Your lane becomes a ghost console: tap a
+  rival's name to drop one garbage row on them, every 5s. Bot ghosts usually haunt the leader.
+- Last one standing wins. At 90s the most lines cleared among those still in wins.
 
 ## Controls
 
@@ -27,6 +34,8 @@ Touch, inside your own lane:
 - **Tap** = rotate
 - **Drag left/right** = move one cell per cell-width dragged
 - **Swipe down** = hard drop
+
+Out of the game: tap a rival's name in your lane to haunt them.
 
 Keyboard (optional, per seat binds from the menu): left/right = move, up = rotate,
 down = soft drop, action key = hard drop.
