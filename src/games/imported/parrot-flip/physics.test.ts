@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Rng } from "../../../core/rng";
 import { ParrotPhysics } from "./physics";
+import { botFlick } from "./rules";
 
 function median(xs: number[]): number {
   const a = xs.filter((x) => Number.isFinite(x)).sort((p, q) => p - q);
@@ -76,6 +77,32 @@ describe("parrot physics", () => {
     const rate = makes / n;
     expect(rate).toBeGreaterThanOrEqual(0.4);
     expect(rate).toBeLessThanOrEqual(0.75);
+    physics.destroy();
+  });
+});
+
+describe("parrot landings always resolve", () => {
+  it("every bot flick on the party table gets a verdict within four seconds", () => {
+    const rng = new Rng(21);
+    const physics = new ParrotPhysics(() => rng.next());
+    physics.init(1280, 720, 8);
+    let longest = 0;
+    for (let i = 0; i < 200; i += 1) {
+      physics.resetBottle();
+      const aim = rng.next() < 0.45 ? { dx: rng.sign() * rng.float(120, 230), skill: rng.float(0.2, 0.8) } : null;
+      const flick = botFlick(rng, aim);
+      physics.applyFlick(flick.vx, flick.vy);
+      let t = 0;
+      let result: string | null = null;
+      while (t < 8 && !result) {
+        physics.step(1 / 60);
+        t += 1 / 60;
+        result = physics.checkLanding();
+      }
+      expect(result).not.toBeNull();
+      longest = Math.max(longest, t);
+    }
+    expect(longest).toBeLessThan(4);
     physics.destroy();
   });
 });

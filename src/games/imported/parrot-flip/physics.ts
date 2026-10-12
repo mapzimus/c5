@@ -7,6 +7,12 @@ export interface LandingInfo {
   tilt: number | null;
   perfect: boolean;
   reason: string;
+  /** Full turns completed when it first came down. */
+  turns: number;
+  /** Tilt from upright at touchdown (radians), null if it never touched down in flight. */
+  touchdownTilt: number | null;
+  /** Where it came to rest. */
+  x: number;
 }
 
 export interface LiquidState {
@@ -30,13 +36,22 @@ const SETTLE_FRAMES = 22;
 const SETTLE_RANGE = 0.03;
 const PERFECT_ANGLE = 0.16;
 const MISS_CAP_FRAMES = 300;
+const REST_BAND = 130;
 
-const FEEL = { makeAngle: 0.62, fallenAngle: 1.16, spinJitter: 0.28, launchJitter: 0.14, kickScale: 1.15 };
+/** driftJitter is small so a sideways flick aimed at the perch lands where it was aimed. */
+const FEEL = { makeAngle: 0.62, fallenAngle: 1.16, spinJitter: 0.28, launchJitter: 0.14, kickScale: 1.15, driftJitter: 2.0 };
 
 /**
  * Matter.js bottle-flip world from Whydah-Unit parrot-flip.
  * Same body, spin, landing, and liquid kick — painted as a parrot in the renderer.
  */
+/** Absolute tilt from upright, 0..PI. */
+function uprightTilt(angle: number): number {
+  let a = ((angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  if (a > Math.PI) a -= 2 * Math.PI;
+  return Math.abs(a);
+}
+
 export class ParrotPhysics {
   private engine: Matter.Engine | null = null;
   private world: Matter.World | null = null;
@@ -54,6 +69,8 @@ export class ParrotPhysics {
   private hasFlipped = false;
   private launchAngle = 0;
   private hasLanded = false;
+  private turnsAtTouchdown = 0;
+  private touchdownTilt: number | null = null;
   private lastLandingInfo: LandingInfo | null = null;
   private lastFlickInfo: { upSpeed: number; power: number; vx: number; vy: number } | null = null;
 
@@ -139,6 +156,8 @@ export class ParrotPhysics {
     this.hasFlipped = false;
     this.launchAngle = 0;
     this.hasLanded = false;
+    this.turnsAtTouchdown = 0;
+    this.touchdownTilt = null;
     this.lastLandingInfo = null;
     this.lastFlickInfo = null;
     this.liquid.reset();
@@ -154,7 +173,7 @@ export class ParrotPhysics {
 
     const jSpin = 1 + (this.rand() - 0.5) * FEEL.spinJitter;
     const jLaunch = 1 + (this.rand() - 0.5) * FEEL.launchJitter;
-    const jDrift = (this.rand() - 0.5) * 3.8;
+    const jDrift = (this.rand() - 0.5) * FEEL.driftJitter;
 
     const launchY = this.launchImpulse(power) * jLaunch;
     const launchX = Math.max(-6, Math.min(6, vx / 280)) + jDrift;
@@ -180,6 +199,8 @@ export class ParrotPhysics {
       this.bottle.position.y >= this.groundY - 55
     ) {
       this.hasLanded = true;
+      this.turnsAtTouchdown = Math.abs(this.bottle.angle - this.launchAngle) / (2 * Math.PI);
+      this.touchdownTilt = uprightTilt(this.bottle.angle);
       const kick = (this.liquid.vel * 0.06 + (this.rand() - 0.5) * 0.16) * FEEL.kickScale;
       Body.setAngularVelocity(this.bottle, this.bottle.angularVelocity + kick);
     }
@@ -191,7 +212,9 @@ export class ParrotPhysics {
     const angVel = Math.abs(this.bottle.angularVelocity);
     const linSpeed = Math.hypot(this.bottle.velocity.x, this.bottle.velocity.y);
     const restY = this.groundY - 76;
-    const grounded = this.bottle.position.y >= restY - 12;
+    // Anything at rest within REST_BAND of the ground counts as down, including a
+    // parrot balanced upside down on its head (centre ~115 px up), which otherwise never resolves.
+    const grounded = this.bottle.position.y >= restY - 12 || (this.bottle.position.y >= this.groundY - REST_BAND && angVel < 0.05 && linSpeed < 12);
 
     if (!grounded) {
       this.groundedFrames = 0;
@@ -204,20 +227,21 @@ export class ParrotPhysics {
 
     if (angVel < 0.01 && linSpeed < 7) {
       this.angleWin.push(this.bottle.angle);
-      if (this.angleWin.length > SETTLE_FRAMES) this.angleWin.shift();
+      if (this.angleWin.length > SETTLE_FRAMES * 2) this.angleWin.shift();
+      const recent = this.angleWin.slice(-SETTLE_FRAMES);
       let lo = Infinity;
       let hi = -Infinity;
-      for (const a of this.angleWin) {
+      for (const a of recent) {
         if (a < lo) lo = a;
         if (a > hi) hi = a;
       }
-      if (this.angleWin.length >= SETTLE_FRAMES && hi - lo < SETTLE_RANGE) {
+      if (recent.length >= SETTLE_FRAMES && hi - lo < SETTLE_RANGE) {
         if (!this.hasFlipped) return this.recordLanding("MISS", null, "underrotated");
-        let angle = ((this.bottle.angle % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-        if (angle > Math.PI) angle -= 2 * Math.PI;
-        const tilt = Math.abs(angle);
+        const tilt = uprightTilt(this.bottle.angle);
         if (tilt < FEEL.makeAngle) return this.recordLanding("MAKE", tilt, "upright");
         if (tilt >= FEEL.fallenAngle) return this.recordLanding("MISS", tilt, "fallen");
+        // Settled at a lean it cannot recover from: call it rather than waiting for the timeout.
+        if (this.angleWin.length >= SETTLE_FRAMES * 2) return this.recordLanding("MISS", tilt, "fallen");
       }
     } else {
       this.angleWin = [];
@@ -235,6 +259,11 @@ export class ParrotPhysics {
 
   getLastLandingInfo(): LandingInfo | null {
     return this.lastLandingInfo;
+  }
+
+  /** True once the flipped parrot has come down to the ground (bets lock here). */
+  hasTouchedDown(): boolean {
+    return this.hasLanded;
   }
 
   getLastFlickInfo(): { upSpeed: number; power: number; vx: number; vy: number } | null {
@@ -292,6 +321,9 @@ export class ParrotPhysics {
       tilt,
       perfect: result === "MAKE" && tilt != null && tilt <= PERFECT_ANGLE,
       reason,
+      turns: this.turnsAtTouchdown,
+      touchdownTilt: this.touchdownTilt,
+      x: this.bottle?.position.x ?? this.canvasW / 2,
     };
     return result;
   }

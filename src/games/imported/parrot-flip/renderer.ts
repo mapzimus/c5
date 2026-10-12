@@ -237,6 +237,8 @@ export class ParrotScene {
       aim?: number;
       showHint?: boolean;
       resultText?: string | null;
+      /** The perch target on the ground (classic mode). */
+      perch?: { x: number; halfWidth: number; label: string; wide: boolean; hot: boolean } | null;
     },
   ): void {
     this.updateParticles(dt);
@@ -280,6 +282,7 @@ export class ParrotScene {
       g.lineTo(this.shooting.x - this.shooting.vx * 0.12, this.shooting.y - this.shooting.vy * 0.12);
       g.stroke();
     }
+    if (state.perch) this.drawPerch(g, state.perch, state.groundY, dt);
     this.noteTrail(state.bottle, dt);
     this.drawTrail(g, state.liquidColor);
     this.drawFlickIndicator(g, state.drag, state.bottle, height);
@@ -475,6 +478,49 @@ export class ParrotScene {
         color: Math.random() < 0.5 ? "#fff3b0" : "#f2c14e",
       });
     }
+  }
+
+  private perchT = 0;
+
+  /** A glowing plank on the ground: land on it for a golden flip. */
+  private drawPerch(
+    g: CanvasRenderingContext2D,
+    perch: { x: number; halfWidth: number; label: string; wide: boolean; hot: boolean },
+    groundY: number,
+    dt: number,
+  ): void {
+    this.perchT += dt;
+    const pulse = 0.75 + 0.25 * Math.sin(this.perchT * (perch.hot ? 14 : 5));
+    const color = perch.wide ? "#B8FF3D" : "#f2c14e";
+    const rgb = perch.wide ? "184,255,61" : "242,193,78";
+    const left = perch.x - perch.halfWidth;
+    const w = perch.halfWidth * 2;
+    const glow = g.createRadialGradient(perch.x, groundY, 4, perch.x, groundY, perch.halfWidth * 1.3);
+    glow.addColorStop(0, `rgba(${rgb},${(0.42 * pulse).toFixed(3)})`);
+    glow.addColorStop(1, `rgba(${rgb},0)`);
+    g.fillStyle = glow;
+    fillEllipse(g, perch.x, groundY, perch.halfWidth * 1.3, 26);
+    g.fillStyle = `rgba(${rgb},${(0.55 + 0.35 * pulse).toFixed(3)})`;
+    g.beginPath();
+    g.roundRect(left, groundY - 7, w, 9, 4);
+    g.fill();
+    g.fillStyle = "rgba(255,255,255,0.55)";
+    g.fillRect(left + 6, groundY - 6, w - 12, 2);
+    g.strokeStyle = color;
+    g.lineWidth = 2;
+    g.globalAlpha = 0.45 + 0.4 * pulse;
+    for (const x of [left, left + w]) {
+      g.beginPath();
+      g.moveTo(x, groundY - 30);
+      g.lineTo(x, groundY + 2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    g.font = "700 15px Outfit, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "alphabetic";
+    g.fillStyle = color;
+    g.fillText(perch.label, perch.x, groundY + 26);
   }
 
   private drawLandingGlow(g: CanvasRenderingContext2D, bottle: Pose, groundY: number): void {
