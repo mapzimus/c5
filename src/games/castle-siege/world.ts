@@ -1,5 +1,5 @@
 import Matter from "matter-js";
-import { GOLDEN_BONUS, KING_HP, PIECE_SPECS, impactDamage, isHeavy, type Ammo, type PieceKind, type Team } from "./rules";
+import { GOLDEN_BONUS, KING_HP, NEAR_MISS_PX, PIECE_SPECS, gustFactor, impactDamage, isHeavy, type Ammo, type PieceKind, type Team } from "./rules";
 
 const { Engine, Events, Bodies, Body, Composite, Query } = Matter;
 
@@ -45,6 +45,12 @@ export interface Ball {
   touched: boolean;
   /** Seconds since fired. */
   age: number;
+  /** Closest this ball has flown to the enemy king (px, centre to centre) before touching anything. */
+  closest: number;
+  /** It touched or blew up the enemy king. */
+  kingHit: boolean;
+  /** Near-miss already judged. */
+  judged: boolean;
 }
 
 export type WorldEvent =
@@ -52,7 +58,22 @@ export type WorldEvent =
   | { type: "break"; x: number; y: number; team: Team; kind: PieceKind; angle: number }
   | { type: "boom"; x: number; y: number }
   | { type: "kingDown"; x: number; y: number; team: Team }
-  | { type: "thud"; x: number; y: number; speed: number };
+  | { type: "thud"; x: number; y: number; speed: number }
+  /** A shot from `team` flew within a whisker of the enemy king and missed. */
+  | { type: "nearMiss"; x: number; y: number; team: Team; distance: number };
+
+export interface Lot {
+  x0: number;
+  x1: number;
+}
+
+/** The part of a zone you may build in under a decree, centred in the zone. */
+export function lotOf(team: Team, fraction: number): Lot {
+  const zone = ZONES[team];
+  const mid = (zone.x0 + zone.x1) / 2;
+  const half = ((zone.x1 - zone.x0) / 2) * Math.max(0.2, Math.min(1, fraction));
+  return { x0: mid - half, x1: mid + half };
+}
 
 function teamFilter(team: Team): Matter.ICollisionFilter {
   return { category: CAT_TEAM[team], mask: CAT_GROUND | CAT_TEAM[0] | CAT_TEAM[1] | CAT_BALL[team === 0 ? 1 : 0], group: 0 };
@@ -82,6 +103,10 @@ export class SiegeWorld {
   kings: [Piece | null, Piece | null] = [null, null];
   balls: Ball[] = [];
   wind = 0;
+  /** Headwind each team's king is blowing at incoming shots right now (wind units, 0 when idle). */
+  gust: [number, number] = [0, 0];
+  /** Where each team may build this round. */
+  lots: [Lot, Lot] = [lotOf(0, 1), lotOf(1, 1)];
   /** Damage is off while building so dropping pieces never hurts. */
   damageOn = false;
   events: WorldEvent[] = [];
@@ -102,20 +127,42 @@ export class SiegeWorld {
     while (this.acc >= STEP_MS) {
       this.acc -= STEP_MS;
       for (const ball of this.balls) {
-        this.applyWind(ball.body);
+        this.applyWind(ball);
         ball.age += STEP_MS / 1000;
+        if (!ball.touched) this.trackClosest(ball);
       }
       Engine.update(this.engine, STEP_MS);
       for (const piece of this.pieces) piece.cooldown = Math.max(0, piece.cooldown - STEP_MS / 1000);
       for (const ball of this.balls) if (ball.ammo === "bomb" && ball.touched && !ball.exploded) this.explode(ball);
+      for (const ball of this.balls) if (ball.touched) this.judgeNearMiss(ball);
       this.checkOffscreen();
     }
   }
 
-  private applyWind(body: Matter.Body): void {
-    if (!this.wind) return;
-    const force = (body.mass * this.wind * WIND_ACCEL) / (STEP_MS * STEP_MS);
+  /** Natural wind plus the defender's gust, which blows back toward the shooter and bothers light ammo most. */
+  private applyWind(ball: Ball): void {
+    const defender: Team = ball.team === 0 ? 1 : 0;
+    const gust = this.gust[defender] * gustFactor(ball.ammo) * (defender === 0 ? 1 : -1);
+    const wind = this.wind + gust;
+    if (!wind) return;
+    const body = ball.body;
+    const force = (body.mass * wind * WIND_ACCEL) / (STEP_MS * STEP_MS);
     Body.applyForce(body, body.position, { x: force, y: 0 });
+  }
+
+  private trackClosest(ball: Ball): void {
+    const king = this.kings[ball.team === 0 ? 1 : 0];
+    if (!king) return;
+    const d = Math.hypot(ball.body.position.x - king.body.position.x, ball.body.position.y - king.body.position.y);
+    if (d < ball.closest) ball.closest = d;
+  }
+
+  private judgeNearMiss(ball: Ball): void {
+    if (ball.judged) return;
+    ball.judged = true;
+    if (ball.kingHit || ball.closest > NEAR_MISS_PX) return;
+    const { x, y } = ball.body.position;
+    this.events.push({ type: "nearMiss", x, y, team: ball.team, distance: ball.closest });
   }
 
   private pieceOf(body: Matter.Body): Piece | undefined {
@@ -145,7 +192,9 @@ export class SiegeWorld {
       const hitByBall = Boolean(ballA || ballB);
       for (const body of [a, b]) {
         const piece = this.pieceOf(body);
-        if (!piece || piece.cooldown > 0) continue;
+        if (!piece) continue;
+        if (piece.kind === "king" && hitByBall) for (const ball of [ballA, ballB]) if (ball) ball.kingHit = true;
+        if (piece.cooldown > 0) continue;
         // Kings are tougher to scratch: only real hits count.
         const damage = piece.kind === "king" ? (speed > 5 ? (speed > 12 || heavy ? 2 : 1) : 0) : impactDamage(speed, heavy && hitByBall);
         if (damage > 0) this.damage(piece, damage + (golden && piece.kind !== "king" ? GOLDEN_BONUS : 0));
@@ -195,9 +244,11 @@ export class SiegeWorld {
       Body.setAngularVelocity(piece.body, piece.body.angularVelocity + (Math.random() - 0.5) * 0.3 * falloff);
       if (piece.team !== ball.team) {
         piece.cooldown = 0;
+        if (piece.kind === "king") ball.kingHit = true;
         this.damage(piece, piece.kind === "king" ? (d < 70 ? 2 : 1) : Math.ceil(3 * falloff));
       }
     }
+    this.judgeNearMiss(ball);
   }
 
   private checkOffscreen(): void {
@@ -213,7 +264,7 @@ export class SiegeWorld {
   /** Where a piece dropped at x would appear: just above whatever is below it. Null if the column is stacked too high. */
   dropBody(kind: PieceKind, x: number, team: Team, rotation: number): Matter.Body | null {
     const body = makePieceBody(kind, x, 0, (rotation * Math.PI) / 2, team);
-    const zone = ZONES[team];
+    const zone = this.lots[team];
     const half = (body.bounds.max.x - body.bounds.min.x) / 2;
     const cx = Math.max(zone.x0 + half, Math.min(zone.x1 - half, x));
     const others = this.pieces.map((piece) => piece.body);
@@ -229,17 +280,16 @@ export class SiegeWorld {
     return body;
   }
 
-  spawnPiece(kind: PieceKind, x: number, team: Team, rotation: number): boolean {
+  spawnPiece(kind: PieceKind, x: number, team: Team, rotation: number, hp = PIECE_SPECS[kind].hp): boolean {
     const body = this.dropBody(kind, x, team, rotation);
     if (!body) return false;
-    const hp = PIECE_SPECS[kind].hp;
     this.pieces.push({ body, team, kind, hp, maxHp: hp, cooldown: 0 });
     Composite.add(this.engine.world, body);
     return true;
   }
 
   placeKing(team: Team, x: number): Piece {
-    const zone = ZONES[team];
+    const zone = this.lots[team];
     const cx = Math.max(zone.x0 + KING_SIZE, Math.min(zone.x1 - KING_SIZE, x));
     const body = Bodies.rectangle(cx, GROUND_Y - KING_SIZE / 2, KING_SIZE, KING_SIZE, {
       friction: 0.9,
@@ -274,7 +324,7 @@ export class SiegeWorld {
       });
       Body.setVelocity(body, { x: vx * cos - vy * sin, y: vx * sin + vy * cos });
       Composite.add(this.engine.world, body);
-      this.balls.push({ body, team, ammo, exploded: false, touched: false, age: 0 });
+      this.balls.push({ body, team, ammo, exploded: false, touched: false, age: 0, closest: Infinity, kingHit: false, judged: false });
     }
   }
 
@@ -305,13 +355,15 @@ export class SiegeWorld {
   }
 
   /** Wipe the board for a new round. */
-  reset(): void {
+  reset(lot = 1): void {
     for (const piece of this.pieces) Composite.remove(this.engine.world, piece.body);
     this.clearBalls();
     this.pieces = [];
     this.kings = [null, null];
     this.events = [];
     this.damageOn = false;
+    this.gust = [0, 0];
+    this.lots = [lotOf(0, lot), lotOf(1, lot)];
   }
 
   drainEvents(): WorldEvent[] {

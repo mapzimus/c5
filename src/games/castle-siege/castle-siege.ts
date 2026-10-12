@@ -5,26 +5,34 @@ import type { GameContext, GameDefinition, GameInstance, GameStat, Player } from
 import { ModePicker } from "../mode-picker";
 import {
   AMMO_LABELS,
-  AMMO_WEIGHTS,
-  BUILD_SECONDS,
+  BREATH_MAX,
+  DECREES,
+  GUST_STRENGTH,
   KING_HP,
   PIECE_SPECS,
   REALTIME_RELOAD_S,
   REALTIME_SUDDEN_DEATH_S,
   REALTIME_WIND_EVERY_S,
   ROUNDS_TO_WIN,
-  SUDDEN_DEATH_AFTER,
+  TURN_CLOCK_S,
   WIND_MAX,
+  botPick,
   comboCallout,
+  dealOffers,
   dealQueue,
   gaussian,
+  isFinalRound,
   matchWinner,
   other,
+  pieceHp,
   realtimeAmmo,
-  rollAmmo,
+  refillBreath,
+  rollDecree,
   rollWind,
+  suddenDeathAfter,
   teamOf,
   type Ammo,
+  type Decree,
   type PieceKind,
   type Team,
 } from "./rules";
@@ -42,17 +50,21 @@ import {
 } from "./world";
 
 type Phase = "build" | "siege" | "roundOver" | "matchOver";
-type TurnState = "intro" | "roll" | "aim" | "flight" | "settle";
+type TurnState = "intro" | "pick" | "aim" | "flight" | "settle";
 
 const W = 1280;
 const H = 720;
 const TRAY_Y = 612;
 const AIM_SCALE = 0.11;
 const DROP_COOLDOWN = 0.3;
-/** Kinds flashed during the roll animation. Golden stays hidden so its reveal is a surprise. */
-const AMMO_KINDS = (Object.keys(AMMO_WEIGHTS) as Ammo[]).filter((ammo) => ammo !== "golden");
 const GOLD = "#FFD54A";
 const BEST_KEY = "castle-siege-combo";
+/** Records changed meaning with ammo picks and decrees, so they live under a new version. */
+const BEST_VERSION = "v2";
+/** The two ammo cards in the centre of the tray. */
+const CARD_W = 180;
+const CARD_H = 84;
+const CARD_GAP = 14;
 
 interface Pt {
   x: number;
@@ -79,6 +91,14 @@ interface TeamState {
   botTimer: number;
   smashed: number;
   bestCombo: number;
+  /** Seconds of gust left in the king's lungs. */
+  breath: number;
+  /** A human finger holding this side down to blow (turn mode, while defending). */
+  blowing: { pointerId: number } | null;
+  /** Bot defender: seconds until it starts blowing (negative = decided not to this turn). */
+  blowDelay: number;
+  /** Enemy shots this team blew off course for nothing. */
+  blownOff: number;
 }
 
 interface Particle {
@@ -130,9 +150,17 @@ export class CastleSiege implements GameInstance {
   private turn: TurnState = "intro";
   private turnTimer = 0;
   private ammo: Ammo = "ball";
-  private rollShown: Ammo = "ball";
-  private rollTick = 0;
+  /** The exchange's two public ammo offers; both shooters pick from the same pair. */
+  private offers: [Ammo, Ammo] = ["ball", "bomb"];
+  /** Human shooter's clock for picking and firing. */
+  private turnClock = TURN_CLOCK_S;
+  private hurried = false;
   private shotSmashed = 0;
+  private kingHurt = false;
+  private gustUsed = false;
+  private suddenShown = false;
+  private decree: Decree = "none";
+  private usedDecrees: Decree[] = [];
   private done = false;
   private elapsed = 0;
 
@@ -147,7 +175,7 @@ export class CastleSiege implements GameInstance {
   private readonly juice = new Juice();
   private readonly callouts = new Callouts();
   /** Most enemy blocks one human shot has smashed on this device. */
-  private best = loadBest(BEST_KEY);
+  private best = loadBest(BEST_KEY, BEST_VERSION);
 
   // Last-shot ghost: each team's previous flight path, shown while they aim.
   private ghost: [Pt[] | null, Pt[] | null] = [null, null];
@@ -187,6 +215,10 @@ export class CastleSiege implements GameInstance {
         botTimer: 0,
         smashed: 0,
         bestCombo: 0,
+        breath: BREATH_MAX,
+        blowing: null,
+        blowDelay: 0,
+        blownOff: 0,
       };
     };
     this.teams = [makeTeam(0), makeTeam(1)];
@@ -203,20 +235,29 @@ export class CastleSiege implements GameInstance {
 
   private startRound(): void {
     this.round += 1;
-    this.world.reset();
-    this.queue = dealQueue(this.ctx.rng);
+    // Real-time stays the unrestricted classic; turn mode draws a build decree from round 2.
+    this.decree = this.realtime ? "none" : rollDecree(this.ctx.rng, this.round, this.usedDecrees);
+    if (this.decree !== "none") this.usedDecrees.push(this.decree);
+    const spec = DECREES[this.decree];
+    this.world.reset(spec.lot);
+    this.queue = dealQueue(this.ctx.rng, spec.length, spec.kinds);
     for (const team of this.teams) {
       team.next = 0;
       team.rotation = 0;
       team.kingPlaced = false;
       team.cooldown = 0;
       team.botTimer = 0.4 + this.ctx.rng.float(0, 0.3);
+      team.breath = BREATH_MAX;
+      team.blowing = null;
     }
     this.held = [null, null];
     this.shots = [0, 0];
+    this.suddenShown = false;
     this.phase = "build";
-    this.timer = BUILD_SECONDS;
-    this.showBanner(`ROUND ${this.round}`, "Place your king, then stack a fortress!", "#F4F7FB", 1.8);
+    this.timer = spec.buildSeconds;
+    const final = isFinalRound(this.round);
+    const title = final ? "FINAL ROUND" : `ROUND ${this.round}`;
+    this.showBanner(spec.title ? `${title} · ${spec.title}` : title, final && !spec.title ? "Winner takes the match!" : spec.line, final ? "#FF3D7A" : "#F4F7FB", 2);
     this.ctx.sfx.go();
   }
 
@@ -226,7 +267,9 @@ export class CastleSiege implements GameInstance {
     this.phase = "siege";
     this.shooter = this.firstShooter;
     this.turn = "intro";
-    this.turnTimer = 1.2;
+    this.turnTimer = 0.9;
+    this.kingHurt = false;
+    this.gustUsed = false;
     if (this.realtime) {
       const rt = this.rt;
       this.world.damageOn = true;
@@ -251,20 +294,86 @@ export class CastleSiege implements GameInstance {
     this.ctx.sfx.go();
   }
 
-  private beginRoll(): void {
+  /** A turn: the exchange's two offers go up (or straight to bombs in sudden death), the defender takes a breath. */
+  private beginTurn(): void {
     this.world.damageOn = true;
-    this.turn = "roll";
-    this.turnTimer = 0.75;
-    this.rollTick = 0;
     this.shotSmashed = 0;
-    this.ammo = rollAmmo(this.ctx.rng, this.shots[this.shooter]);
+    this.kingHurt = false;
+    this.gustUsed = false;
+    this.hurried = false;
+    this.turnClock = TURN_CLOCK_S;
     this.world.wind = rollWind(this.ctx.rng);
+    const shooter = this.teams[this.shooter];
+    const defender = this.teams[other(this.shooter)];
+    const sudden = this.shots[this.shooter] >= suddenDeathAfter(this.round);
+    if (this.shooter === this.firstShooter) this.offers = dealOffers(this.ctx.rng, this.shots[this.shooter], suddenDeathAfter(this.round));
+    // Underdog lungs: trailing in rounds refills the bellows fully every defence.
+    defender.breath = refillBreath(defender.breath, this.wins[other(this.shooter)] < this.wins[this.shooter]);
+    defender.blowing = null;
+    defender.blowDelay = this.ctx.rng.next() < 0.22 ? -1 : 0.2 + this.ctx.rng.float(0, 0.8);
+    if (sudden) {
+      this.ammo = "bomb";
+      this.turn = "aim";
+      this.turnTimer = shooter.human ? 0 : 0.7 + this.ctx.rng.float(0, 0.4);
+      if (!this.suddenShown) {
+        this.suddenShown = true;
+        this.showBanner("SUDDEN DEATH", "Every shot is a bomb now", "#FF3D7A", 1.4);
+        this.juice.shake(0.3);
+        this.ctx.sfx.hit();
+      }
+      return;
+    }
+    this.turn = "pick";
+    this.turnTimer = shooter.human ? 0 : 0.5 + this.ctx.rng.float(0, 0.6);
+    this.ctx.sfx.tick();
+    if (this.shooter === this.firstShooter && this.offers.includes("golden")) {
+      this.callouts.show("GOLDEN EXCHANGE!", GOLD, { life: 1.4 });
+      this.juice.burst(W / 2, TRAY_Y + 50, [GOLD, "#FFF3B0", "#FFFFFF"], { count: 36, speed: 320, gravity: 200 });
+      this.ctx.sfx.streak(6);
+    }
+  }
+
+  /** The shooter takes one of the two offers. */
+  private pick(index: 0 | 1): void {
+    if (this.turn !== "pick") return;
+    this.ammo = this.offers[index];
+    this.turn = "aim";
+    const shooter = this.teams[this.shooter];
+    this.turnTimer = shooter.human ? 0 : 0.6 + this.ctx.rng.float(0, 0.4);
+    this.ctx.sfx.collect();
+    const cx = W / 2 + (index === 0 ? -1 : 1) * (CARD_W + CARD_GAP) / 2;
+    this.juice.burst(cx, TRAY_Y + 52, [shooter.color, "#FFFFFF"], { count: 14, speed: 220, gravity: 300, size: 4 });
+    if (this.ammo === "golden") {
+      this.callouts.show("GOLDEN SHOT!", GOLD, { life: 1.4 });
+      const c = CANNONS[this.shooter];
+      this.juice.burst(c.x, c.y - 20, [GOLD, "#FFF3B0", "#FFFFFF"], { count: 36, speed: 320, gravity: 200 });
+      this.juice.shake(0.2);
+      this.ctx.sfx.streak(6);
+      if (!shooter.human) this.taunt(this.shooter, "OH YES!");
+    }
   }
 
   private endTurn(): void {
     this.finishCombo(this.shooter, this.shotSmashed);
-    this.shooter = other(this.shooter);
-    this.beginRoll();
+    const defender = other(this.shooter);
+    if (this.gustUsed && !this.kingHurt && this.shotSmashed === 0) {
+      this.teams[defender].blownOff += 1;
+      this.callouts.show("BLOWN OFF!", this.teams[defender].color, { y: 0.25, size: 52, life: 1.1 });
+      this.ctx.sfx.whoosh();
+      if (!this.teams[defender].human) this.taunt(defender, "HA!");
+    }
+    this.teams[defender].blowing = null;
+    this.world.gust = [0, 0];
+    this.shooter = defender;
+    this.beginTurn();
+  }
+
+  /** A bot's little remark, floating over its king. */
+  private taunt(team: Team, text: string): void {
+    const king = this.world.kings[team];
+    const x = king?.body.position.x ?? CANNONS[team].x;
+    const y = (king?.body.position.y ?? CANNONS[team].y) - 70;
+    this.floaters.push({ text, x, y, life: 1.1, color: this.teams[team].color, size: 28 });
   }
 
   /** Combo callout + personal best for blocks smashed by one shot (or one real-time burst). */
@@ -274,7 +383,7 @@ export class CastleSiege implements GameInstance {
     state.bestCombo = Math.max(state.bestCombo, smashed);
     let sub = `${smashed} blocks`;
     if (state.human && smashed > 0) {
-      const newBest = saveBest(BEST_KEY, smashed);
+      const newBest = saveBest(BEST_KEY, smashed, BEST_VERSION);
       if (newBest && smashed >= 2) {
         this.callouts.show("NEW BEST!", GOLD, { y: 0.26, size: 58, life: 1.5 });
         this.juice.burst(W / 2, H * 0.26, [GOLD, "#FFFFFF", state.color], { count: 40, speed: 420, life: 0.9 });
@@ -286,6 +395,7 @@ export class CastleSiege implements GameInstance {
     if (callout) {
       this.showBanner(callout, sub, state.color, 1.1);
       this.ctx.sfx.streak(smashed);
+      if (!state.human && smashed >= 3) this.taunt(team, "BOOM!");
     }
   }
 
@@ -294,13 +404,15 @@ export class CastleSiege implements GameInstance {
     const winner = other(team);
     this.commitGhost();
     this.rt.aim = [null, null];
+    this.world.gust = [0, 0];
+    for (const state of this.teams) state.blowing = null;
     this.juice.hitStop(0.12);
     // Both kings gone in the same moment: nobody scores, replay the round.
     const bothGone = !this.world.kings[winner] && this.teams[winner].kingPlaced;
     if (!bothGone) this.wins[winner] += 1;
     this.firstShooter = team;
     this.phase = "roundOver";
-    this.timer = 3;
+    this.timer = 2.4;
     this.slowmo = 1.3;
     this.shake = 22;
     this.flash = 0.8;
@@ -324,7 +436,7 @@ export class CastleSiege implements GameInstance {
     const state = this.teams[team];
     const kind = this.queue[state.next];
     if (!kind || state.cooldown > 0) return;
-    if (this.world.spawnPiece(kind, x, team, state.rotation)) {
+    if (this.world.spawnPiece(kind, x, team, state.rotation, pieceHp(kind, this.decree))) {
       state.next += 1;
       state.cooldown = DROP_COOLDOWN;
       this.ctx.sfx.tick();
@@ -373,7 +485,7 @@ export class CastleSiege implements GameInstance {
       }
     } else if (this.phase === "matchOver") {
       this.timer -= dt;
-      if (this.timer < -4 && !this.teams.some((team) => team.human)) this.done = true;
+      if (this.timer < -2.5 && !this.teams.some((team) => team.human)) this.done = true;
     }
   }
 
@@ -382,17 +494,18 @@ export class CastleSiege implements GameInstance {
     for (const t of [0, 1] as const) {
       const state = this.teams[t];
       state.cooldown = Math.max(0, state.cooldown - dt);
+      const lot = this.world.lots[t];
       if (state.human) {
         // Nobody tapped a spot: put the king in the middle so the round keeps moving.
-        if (!state.kingPlaced && this.timer < BUILD_SECONDS - 6) this.placeKing(t, (ZONES[t].x0 + ZONES[t].x1) / 2);
+        if (!state.kingPlaced && this.timer < DECREES[this.decree].buildSeconds - 6) this.placeKing(t, (lot.x0 + lot.x1) / 2);
         continue;
       }
       state.botTimer -= dt;
       if (state.botTimer > 0) continue;
       state.botTimer = 0.55 + this.ctx.rng.float(0, 0.25);
-      const zone = ZONES[t];
       if (!state.kingPlaced) {
-        this.placeKing(t, this.ctx.rng.float(zone.x0 + 120, zone.x1 - 120));
+        const margin = Math.min(120, (lot.x1 - lot.x0) * 0.3);
+        this.placeKing(t, this.ctx.rng.float(lot.x0 + margin, lot.x1 - margin));
         continue;
       }
       const king = this.world.kings[t];
@@ -417,51 +530,85 @@ export class CastleSiege implements GameInstance {
     const shooter = this.teams[this.shooter];
     if (this.turn === "intro") {
       this.turnTimer -= dt;
-      if (this.turnTimer <= 0) this.beginRoll();
+      if (this.turnTimer <= 0) this.beginTurn();
       return;
     }
-    if (this.turn === "roll") {
-      this.turnTimer -= dt;
-      this.rollTick -= dt;
-      if (this.rollTick <= 0) {
-        this.rollTick = 0.07;
-        this.rollShown = this.ctx.rng.pick(AMMO_KINDS);
-        this.ctx.sfx.tick();
-      }
-      if (this.turnTimer <= 0) {
-        this.rollShown = this.ammo;
-        this.turn = "aim";
-        this.turnTimer = shooter.human ? 0 : 0.7 + this.ctx.rng.float(0, 0.4);
-        this.ctx.sfx.collect();
-        if (this.ammo === "golden") {
-          this.callouts.show("GOLDEN SHOT!", GOLD, { life: 1.4 });
-          const c = CANNONS[this.shooter];
-          this.juice.burst(c.x, c.y - 20, [GOLD, "#FFF3B0", "#FFFFFF"], { count: 36, speed: 320, gravity: 200 });
-          this.juice.shake(0.2);
-          this.ctx.sfx.streak(6);
-        }
-      }
-      return;
-    }
-    if (this.turn === "aim") {
-      if (!shooter.human) {
+    if (this.turn === "pick" || this.turn === "aim") {
+      if (shooter.human) this.runTurnClock(dt);
+      else {
         this.turnTimer -= dt;
-        if (this.turnTimer <= 0) this.botShoot();
+        if (this.turnTimer <= 0) {
+          if (this.turn === "pick") this.pick(botPick(this.offers, this.botContext()));
+          else this.botShoot();
+        }
       }
       return;
     }
     if (this.turn === "flight") {
       this.turnTimer += worldDt;
-      if ((this.world.ballsSettled() && this.turnTimer > 0.4) || this.turnTimer > 7) {
+      this.updateGust(dt);
+      if ((this.world.ballsSettled() && this.turnTimer > 0.4) || this.turnTimer > 6) {
         this.commitGhost();
         this.world.clearBalls();
+        this.world.gust = [0, 0];
         this.turn = "settle";
         this.turnTimer = 0;
       }
       return;
     }
     this.turnTimer += dt;
-    if ((this.world.maxPieceSpeed() < 0.3 && this.turnTimer > 0.5) || this.turnTimer > 2.2) this.endTurn();
+    if ((this.world.maxPieceSpeed() < 0.3 && this.turnTimer > 0.5) || this.turnTimer > 1.8) this.endTurn();
+  }
+
+  /** Humans get a few seconds to pick and fire; the cannon fires itself when it runs out. */
+  private runTurnClock(dt: number): void {
+    this.turnClock -= dt;
+    if (this.turnClock <= 3 && !this.hurried) {
+      this.hurried = true;
+      this.floaters.push({ text: "HURRY!", x: W / 2, y: TRAY_Y - 30, life: 1, color: "#FF3D7A", size: 30 });
+      this.ctx.sfx.countdown();
+    }
+    if (this.turnClock > 0) return;
+    if (this.turn === "pick") this.pick(botPick(this.offers, this.botContext()));
+    this.aim = null;
+    this.botShoot();
+  }
+
+  private botContext(): { blocks: number; kingHp: number; wind: number; breath: number } {
+    const enemy = other(this.shooter);
+    return {
+      blocks: this.world.pieces.filter((piece) => piece.team === enemy && piece.kind !== "king").length,
+      kingHp: this.world.kings[enemy]?.hp ?? 0,
+      wind: Math.abs(this.world.wind),
+      breath: this.teams[enemy].breath / BREATH_MAX,
+    };
+  }
+
+  /** The defending king blows at the shot while a finger holds its side (or a bot decides to). */
+  private updateGust(dt: number): void {
+    const defender = other(this.shooter);
+    const state = this.teams[defender];
+    const inFlight = this.world.balls.some((ball) => !ball.touched && ball.team === this.shooter);
+    let blowing = false;
+    if (state.human) blowing = state.blowing !== null;
+    else if (state.blowDelay >= 0) {
+      state.blowDelay -= dt;
+      // Bots hesitate, then blow until the ball lands or they run out of puff.
+      blowing = state.blowDelay <= 0 && state.breath > 0.12;
+    }
+    const active = blowing && inFlight && state.breath > 0;
+    const was = this.world.gust[defender] > 0;
+    if (active) {
+      state.breath = Math.max(0, state.breath - dt);
+      if (!was) this.ctx.sfx.whoosh();
+      this.gustUsed = true;
+      const king = this.world.kings[defender];
+      if (king) {
+        const dir = defender === 0 ? 1 : -1;
+        this.juice.burst(king.body.position.x + dir * 22, king.body.position.y - 6, ["#dbeafe", "#9ad9ff"], { count: 2, speed: 520, angle: dir > 0 ? -0.35 : Math.PI + 0.35, spread: 0.5, size: 3, life: 0.5, gravity: -60 });
+      }
+    }
+    this.world.gust[defender] = active ? GUST_STRENGTH : 0;
   }
 
   private updateRealtime(dt: number): void {
@@ -548,7 +695,13 @@ export class CastleSiege implements GameInstance {
       if (event.type === "thud") {
         if (event.speed > 8) this.burst(event.x, event.y, 4, "#a8a29e", 120, 2);
         if (event.speed > 12) this.shake = Math.max(this.shake, 4);
+      } else if (event.type === "nearMiss") {
+        this.callouts.show("SO CLOSE!", this.teams[event.team].color, { y: 0.25, size: 52, life: 0.9 });
+        this.juice.burst(event.x, event.y, ["#FFFFFF", this.teams[event.team].color], { count: 10, speed: 200, size: 3, life: 0.5 });
+        this.ctx.sfx.miss();
+        if (!this.teams[event.team].human && !this.realtime) this.taunt(event.team, "ARGH!");
       } else if (event.type === "hit") {
+        if (event.king) this.kingHurt = true;
         const color = event.king ? "#FFD54A" : this.teams[event.team].color;
         this.burst(event.x, event.y, event.king ? 22 : 8, color, event.king ? 320 : 180, event.king ? 4 : 3);
         // Screen shake scaled by how hard the hit was.
@@ -686,6 +839,11 @@ export class CastleSiege implements GameInstance {
     return { x: ZONES[team].x1 - 100, y: TRAY_Y, w: 100, h: 100 };
   }
 
+  private cardButton(index: 0 | 1): Button {
+    const x = W / 2 + (index === 0 ? -CARD_W - CARD_GAP / 2 : CARD_GAP / 2);
+    return { x, y: TRAY_Y + 10, w: CARD_W, h: CARD_H };
+  }
+
   private readonly onDown = (event: PointerEvent): void => {
     event.preventDefault();
     this.ctx.sfx.unlock();
@@ -718,8 +876,26 @@ export class CastleSiege implements GameInstance {
     }
 
     if (this.phase === "siege") {
-      if (this.turn !== "aim" || team !== this.shooter || !this.teams[team].human || this.aim) return;
-      this.aim = { pointerId: event.pointerId, sx: x, sy: y, x, y };
+      const shooter = this.teams[this.shooter];
+      // The two ammo cards sit in the centre, so either finger of the shooting team may pick.
+      if (this.turn === "pick" && shooter.human) {
+        for (const i of [0, 1] as const) {
+          if (inside(this.cardButton(i), x, y)) {
+            this.pick(i);
+            return;
+          }
+        }
+      }
+      if (team === this.shooter) {
+        if (this.turn !== "aim" || !shooter.human || this.aim) return;
+        this.aim = { pointerId: event.pointerId, sx: x, sy: y, x, y };
+        this.capture(event);
+        return;
+      }
+      // Defender: hold your side to blow at the incoming shot.
+      const defender = this.teams[team];
+      if (!defender.human || defender.blowing || this.turn === "intro" || this.turn === "settle") return;
+      defender.blowing = { pointerId: event.pointerId };
       this.capture(event);
       return;
     }
@@ -749,6 +925,7 @@ export class CastleSiege implements GameInstance {
         this.held[t] = null;
         if (this.phase === "build") this.drop(t, held.x);
       }
+      if (this.teams[t].blowing?.pointerId === event.pointerId) this.teams[t].blowing = null;
     }
     for (const t of [0, 1] as const) {
       const aim = this.rt.aim[t];
@@ -770,7 +947,10 @@ export class CastleSiege implements GameInstance {
   };
 
   private readonly onCancel = (event: PointerEvent): void => {
-    for (const t of [0, 1] as const) if (this.held[t]?.pointerId === event.pointerId) this.held[t] = null;
+    for (const t of [0, 1] as const) {
+      if (this.held[t]?.pointerId === event.pointerId) this.held[t] = null;
+      if (this.teams[t].blowing?.pointerId === event.pointerId) this.teams[t].blowing = null;
+    }
     if (this.aim?.pointerId === event.pointerId) this.aim = null;
     for (const t of [0, 1] as const) if (this.rt.aim[t]?.pointerId === event.pointerId) this.rt.aim[t] = null;
   };
@@ -888,7 +1068,7 @@ export class CastleSiege implements GameInstance {
       for (const t of [0, 1] as const) if (this.teams[t].human) this.drawGhostFor(g, t);
       return;
     }
-    if (this.turn !== "aim" && this.turn !== "roll") return;
+    if (this.turn !== "aim" && this.turn !== "pick") return;
     this.drawGhostFor(g, this.shooter);
   }
 
@@ -937,6 +1117,24 @@ export class CastleSiege implements GameInstance {
     g.fillRect(-40, GROUND_Y, W + 80, H - GROUND_Y + 40);
     g.fillStyle = "#4d7c3a";
     g.fillRect(-40, GROUND_Y, W + 80, 8);
+    // A narrow lot: the buildable strip is lit, the rest of the zone is fenced off.
+    if (this.phase === "build" && DECREES[this.decree].lot < 1) {
+      for (const t of [0, 1] as const) {
+        const lot = this.world.lots[t];
+        g.fillStyle = this.teams[t].color + "44";
+        g.fillRect(lot.x0, GROUND_Y, lot.x1 - lot.x0, 8);
+        g.strokeStyle = this.teams[t].color + "66";
+        g.lineWidth = 2;
+        g.setLineDash([8, 10]);
+        for (const x of [lot.x0, lot.x1]) {
+          g.beginPath();
+          g.moveTo(x, TOP_Y - 40);
+          g.lineTo(x, GROUND_Y);
+          g.stroke();
+        }
+        g.setLineDash([]);
+      }
+    }
   }
 
   private tracePath(g: CanvasRenderingContext2D, vertices: readonly { x: number; y: number }[]): void {
@@ -1015,17 +1213,27 @@ export class CastleSiege implements GameInstance {
     g.strokeStyle = "#7c4a03";
     g.lineWidth = 1.5;
     g.stroke();
-    // Face: worried once hurt.
+    // Face: worried once hurt, cheeks puffed while blowing.
     g.fillStyle = "#1f2937";
     const hurt = king.hp < king.maxHp;
+    const blowing = this.world.gust[king.team] > 0;
     g.beginPath();
-    g.arc(-6, -2, hurt ? 2 : 3, 0, Math.PI * 2);
-    g.arc(6, -2, hurt ? 2 : 3, 0, Math.PI * 2);
+    g.arc(-6, -2, hurt || blowing ? 2 : 3, 0, Math.PI * 2);
+    g.arc(6, -2, hurt || blowing ? 2 : 3, 0, Math.PI * 2);
     g.fill();
     g.beginPath();
     g.lineWidth = 2;
     g.strokeStyle = "#1f2937";
-    if (hurt) g.arc(0, 10, 5, Math.PI * 1.15, Math.PI * 1.85);
+    if (blowing) {
+      const dir = king.team === 0 ? 1 : -1;
+      g.fillStyle = "#fde68a";
+      g.arc(-dir * 9, 6, 6, 0, Math.PI * 2);
+      g.fill();
+      g.beginPath();
+      g.fillStyle = "#1f2937";
+      g.arc(dir * 7, 7, 3.5, 0, Math.PI * 2);
+      g.fill();
+    } else if (hurt) g.arc(0, 10, 5, Math.PI * 1.15, Math.PI * 1.85);
     else g.arc(0, 4, 6, Math.PI * 0.15, Math.PI * 0.85);
     g.stroke();
     g.restore();
@@ -1033,7 +1241,7 @@ export class CastleSiege implements GameInstance {
 
   private drawCannon(g: CanvasRenderingContext2D, t: Team): void {
     const c = CANNONS[t];
-    const active = this.phase === "siege" && (this.realtime ? this.rt.reload[t] === 0 : this.shooter === t && (this.turn === "aim" || this.turn === "roll"));
+    const active = this.phase === "siege" && (this.realtime ? this.rt.reload[t] === 0 : this.shooter === t && (this.turn === "aim" || this.turn === "pick"));
     g.save();
     g.translate(c.x, c.y);
     let angle = t === 0 ? -0.8 : Math.PI + 0.8;
@@ -1249,35 +1457,146 @@ export class CastleSiege implements GameInstance {
       return;
     }
     const shooter = this.teams[this.shooter];
-    // Ammo box.
-    const ammo = this.turn === "roll" ? this.rollShown : this.ammo;
-    const bx = W / 2 - 130;
-    const by = TRAY_Y + 14;
-    const golden = ammo === "golden" && this.turn !== "roll";
-    g.fillStyle = "rgba(7,11,20,0.75)";
-    g.strokeStyle = golden ? GOLD : shooter.color;
-    g.lineWidth = golden ? 5 : 3;
-    if (golden) {
-      g.shadowColor = GOLD;
-      g.shadowBlur = 18 + Math.sin(this.elapsed * 8) * 8;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    if (this.turn === "pick") {
+      this.drawCards(g);
+    } else if (this.turn !== "intro") {
+      // Chosen ammo box.
+      const ammo = this.ammo;
+      const bx = W / 2 - 130;
+      const by = TRAY_Y + 14;
+      const golden = ammo === "golden";
+      g.fillStyle = "rgba(7,11,20,0.75)";
+      g.strokeStyle = golden ? GOLD : shooter.color;
+      g.lineWidth = golden ? 5 : 3;
+      if (golden) {
+        g.shadowColor = GOLD;
+        g.shadowBlur = 18 + Math.sin(this.elapsed * 8) * 8;
+      }
+      g.beginPath();
+      g.roundRect(bx, by, 260, 74, 14);
+      g.fill();
+      g.stroke();
+      g.shadowBlur = 0;
+      this.drawAmmoIcon(g, ammo, bx + 34, by + 30, shooter.color);
+      g.fillStyle = golden ? GOLD : "#F4F7FB";
+      g.font = "700 32px Bebas Neue, Impact, sans-serif";
+      g.fillText(AMMO_LABELS[ammo], W / 2 + 18, by + 28);
+      g.font = "600 15px Outfit, sans-serif";
+      g.fillStyle = "#cbd5e1";
+      const sudden = this.shots[this.shooter] >= suddenDeathAfter(this.round);
+      const hint = this.turn === "aim" ? (shooter.human ? "drag back & let go" : "aiming…") : this.turn === "flight" ? "incoming!" : "";
+      g.fillText(sudden ? `SUDDEN DEATH · ${hint}` : hint, W / 2 + 18, by + 56);
     }
+    if (this.turn !== "intro") this.drawBellows(g, other(this.shooter));
+    this.drawWind(g, false);
+  }
+
+  /** The exchange's two ammo cards: tap one. */
+  private drawCards(g: CanvasRenderingContext2D): void {
+    const shooter = this.teams[this.shooter];
+    const pulse = 1 + Math.sin(this.elapsed * 6) * 0.02;
+    for (const i of [0, 1] as const) {
+      const b = this.cardButton(i);
+      const ammo = this.offers[i];
+      const golden = ammo === "golden";
+      g.save();
+      g.translate(b.x + b.w / 2, b.y + b.h / 2);
+      g.scale(pulse, pulse);
+      g.fillStyle = "rgba(7,11,20,0.8)";
+      g.strokeStyle = golden ? GOLD : shooter.color;
+      g.lineWidth = golden ? 5 : 3;
+      if (golden) {
+        g.shadowColor = GOLD;
+        g.shadowBlur = 18;
+      }
+      g.beginPath();
+      g.roundRect(-b.w / 2, -b.h / 2, b.w, b.h, 14);
+      g.fill();
+      g.stroke();
+      g.shadowBlur = 0;
+      this.drawAmmoIcon(g, ammo, -b.w / 2 + 32, 0, shooter.color);
+      g.fillStyle = golden ? GOLD : "#F4F7FB";
+      g.font = "700 28px Bebas Neue, Impact, sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(AMMO_LABELS[ammo], 16, 0);
+      g.restore();
+    }
+    const label = shooter.human ? "PICK YOUR AMMO" : `${shooter.name.toUpperCase()} IS CHOOSING…`;
+    g.font = "700 20px Bebas Neue, Impact, sans-serif";
+    g.textAlign = "center";
+    const lw = g.measureText(label).width + 28;
+    g.fillStyle = "rgba(7,11,20,0.85)";
     g.beginPath();
-    g.roundRect(bx, by, 260, 74, 14);
+    g.roundRect(W / 2 - lw / 2, TRAY_Y - 22, lw, 30, 8);
+    g.fill();
+    g.fillStyle = shooter.color;
+    g.fillText(label, W / 2, TRAY_Y - 7);
+  }
+
+  private drawAmmoIcon(g: CanvasRenderingContext2D, ammo: Ammo, x: number, y: number, color: string): void {
+    const draw = (cx: number, cy: number, r: number) => {
+      g.fillStyle = ammo === "bomb" ? "#111827" : ammo === "boulder" ? "#78716c" : ammo === "golden" ? GOLD : "#e5e7eb";
+      g.strokeStyle = ammo === "golden" ? "#FFF3B0" : color;
+      g.lineWidth = 2.5;
+      g.beginPath();
+      g.arc(cx, cy, r, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+    };
+    if (ammo === "triple") {
+      draw(x - 9, y + 5, 6);
+      draw(x + 9, y + 5, 6);
+      draw(x, y - 7, 6);
+      return;
+    }
+    draw(x, y, ammo === "boulder" ? 16 : 12);
+    if (ammo === "bomb") {
+      g.fillStyle = Math.sin(this.elapsed * 30) > 0 ? "#FF8A3D" : "#FFE08A";
+      g.beginPath();
+      g.arc(x + 6, y - 11, 3.5, 0, Math.PI * 2);
+      g.fill();
+    }
+    if (ammo === "golden") {
+      g.fillStyle = "rgba(255,255,255,0.8)";
+      g.beginPath();
+      g.arc(x - 4, y - 4, 3.5, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+
+  /** The defender's lungs: how much gust they have left, and the hold hint. */
+  private drawBellows(g: CanvasRenderingContext2D, team: Team): void {
+    const state = this.teams[team];
+    const w = 250;
+    const bx = team === 0 ? ZONES[0].x0 + 20 : ZONES[1].x1 - 20 - w;
+    const by = TRAY_Y + 14;
+    const blowing = this.world.gust[team] > 0;
+    const canBlow = this.turn === "aim" || this.turn === "flight";
+    g.fillStyle = "rgba(7,11,20,0.75)";
+    g.strokeStyle = blowing ? "#9ad9ff" : state.color;
+    g.lineWidth = blowing ? 4 : 2;
+    g.beginPath();
+    g.roundRect(bx, by, w, 74, 14);
     g.fill();
     g.stroke();
     g.textAlign = "center";
     g.textBaseline = "middle";
-    g.shadowBlur = 0;
-    g.fillStyle = this.turn === "roll" ? "#94a3b8" : golden ? GOLD : "#F4F7FB";
-    g.font = "700 34px Bebas Neue, Impact, sans-serif";
-    g.fillText(AMMO_LABELS[ammo], W / 2, by + 28);
-    g.font = "600 15px Outfit, sans-serif";
+    g.fillStyle = blowing ? "#9ad9ff" : "#F4F7FB";
+    g.font = "700 26px Bebas Neue, Impact, sans-serif";
+    g.fillText(blowing ? "WHOOSH!" : "BELLOWS", bx + w / 2, by + 22);
+    // Breath bar.
+    g.fillStyle = "#1e293b";
+    g.fillRect(bx + 16, by + 42, w - 32, 10);
+    const frac = Math.max(0, Math.min(1, state.breath / BREATH_MAX));
+    g.fillStyle = frac > 0.3 ? "#9ad9ff" : "#FF3D7A";
+    g.fillRect(bx + 16, by + 42, (w - 32) * frac, 10);
+    g.font = "600 13px Outfit, sans-serif";
     g.fillStyle = "#cbd5e1";
-    const sudden = this.shots[this.shooter] >= SUDDEN_DEATH_AFTER;
-    const hint = this.turn === "aim" ? (shooter.human ? "drag back & let go" : "aiming…") : this.turn === "roll" ? "rolling…" : "";
-    g.fillText(sudden ? `SUDDEN DEATH · ${hint}` : hint, W / 2, by + 56);
-
-    this.drawWind(g, this.turn === "roll");
+    const hint = state.human ? (canBlow ? "HOLD YOUR SIDE TO BLOW IT BACK" : "your king blows at their shots") : canBlow ? "defending" : "";
+    g.fillText(frac <= 0 ? "OUT OF BREATH" : hint, bx + w / 2, by + 64);
   }
 
   private drawRealtimeHud(g: CanvasRenderingContext2D): void {
@@ -1375,14 +1694,28 @@ export class CastleSiege implements GameInstance {
     if (this.phase === "build") {
       const s = Math.max(0, Math.ceil(this.timer));
       g.fillStyle = s <= 5 ? "#FF3D7A" : "#F4F7FB";
-      g.fillText(`BUILD ${s}`, W / 2, 42);
+      const spec = DECREES[this.decree];
+      g.fillText(spec.title ? `BUILD ${s} · ${spec.title}` : `BUILD ${s}`, W / 2, 42);
+      if (spec.title) {
+        g.font = "600 14px Outfit, sans-serif";
+        g.fillStyle = "#94a3b8";
+        g.fillText(spec.line, W / 2, 68);
+      }
     } else if (this.phase === "siege" && this.realtime) {
       const left = Math.max(0, Math.ceil(REALTIME_SUDDEN_DEATH_S - this.rt.siegeTime));
       g.fillStyle = this.rt.sudden ? "#FF3D7A" : "#FFB020";
       g.fillText(this.rt.sudden ? "SUDDEN DEATH · BOMBS" : `FIRE AT WILL · ${left}`, W / 2, 42);
     } else if (this.phase === "siege") {
-      g.fillStyle = this.teams[this.shooter].color;
-      g.fillText(`${this.teams[this.shooter].name.toUpperCase()}'S SHOT`, W / 2, 42);
+      const shooter = this.teams[this.shooter];
+      g.fillStyle = shooter.color;
+      g.fillText(isFinalRound(this.round) ? `FINAL · ${shooter.name.toUpperCase()}'S SHOT` : `${shooter.name.toUpperCase()}'S SHOT`, W / 2, 42);
+      if (shooter.human && (this.turn === "pick" || this.turn === "aim")) {
+        const frac = Math.max(0, this.turnClock / TURN_CLOCK_S);
+        g.fillStyle = "rgba(255,255,255,0.12)";
+        g.fillRect(W / 2 - 100, 64, 200, 6);
+        g.fillStyle = frac < 0.3 ? "#FF3D7A" : shooter.color;
+        g.fillRect(W / 2 - 100, 64, 200 * frac, 6);
+      }
     } else {
       g.fillText(`ROUND ${this.round}`, W / 2, 42);
     }
@@ -1439,6 +1772,7 @@ export class CastleSiege implements GameInstance {
       g.font = "500 20px Outfit, sans-serif";
       g.fillText(`${s.smashed} blocks smashed`, x, 468);
       g.fillText(`best shot: ${s.bestCombo}`, x, 498);
+      if (!this.realtime) g.fillText(`blew off ${s.blownOff} shot${s.blownOff === 1 ? "" : "s"}`, x, 528);
     }
     if (this.timer <= 0 && this.teams.some((team) => team.human)) {
       g.fillStyle = "#94a3b8";
@@ -1470,6 +1804,7 @@ export class CastleSiege implements GameInstance {
       const s = this.teams[t];
       stats.push({ playerId: id, label: "Smashed", value: String(s.smashed) });
       if (s.bestCombo > 0) stats.push({ playerId: id, label: "Best shot", value: `${s.bestCombo} blocks` });
+      if (s.blownOff > 0) stats.push({ playerId: id, label: "Blown off", value: String(s.blownOff) });
       stats.push({ playerId: id, label: "Shots", value: String(this.shots[t]) });
     }
     return stats;
@@ -1503,17 +1838,17 @@ function drawCrown(g: CanvasRenderingContext2D, x: number, y: number, size: numb
 export const castleSiege: GameDefinition = {
   id: "castle-siege",
   name: "Castle Siege",
-  tagline: "Stack a fortress. Bomb their king.",
+  tagline: "Stack a fortress. Pick your ammo. Blow their shots back.",
   description:
-    "Hide your king, then drop pieces from the sky to wall him in. When the timer ends, fire random ammo (cannonballs, bombs, triple shots, boulders, and the rare golden ball) through the wind. Your last shot's path stays as a ghost so you can adjust. Blocks crack and shatter. Three hits and a king is done. First to two rounds wins. Real-time mode: no turns, both cannons fire whenever they're reloaded.",
+    "Hide your king, then drop pieces from the sky to wall him in. Each exchange deals two ammo cards (cannonball, bomb, triple shot, boulder, or the rare golden ball); both sides pick from the same pair and fire through the wind. While their shot flies, hold your side and your king blows it back: light ammo gets swept away, boulders push through. Later rounds come with a build decree (brittle blocks, a narrow lot, pillars only, big blocks). Three hits and a king is done. First to two rounds wins. Real-time mode: no turns, both cannons fire whenever they're reloaded.",
   durationMs: 0,
-  controls: "Pick Turns or Real-time · Tap to place king · hold & slide, release to drop · ⟳ rotates · drag back & release to fire",
+  controls: "Pick Turns or Real-time · Tap to place king · hold & slide, release to drop · ⟳ rotates · tap an ammo card · drag back & release to fire · hold your side to blow",
   create: (ctx) =>
     new ModePicker(
       ctx,
       "CASTLE SIEGE",
       [
-        { title: "TAKE TURNS", line1: "Aim, fire, watch.", line2: "One cannon at a time.", color: "#3EE0FF", create: (c) => new CastleSiege(c) },
+        { title: "TAKE TURNS", line1: "Pick your ammo, fire, and blow", line2: "their shots back. Build decrees.", color: "#3EE0FF", create: (c) => new CastleSiege(c) },
         { title: "REAL-TIME", line1: "Both cannons fire whenever", line2: "they're reloaded. No turns.", color: "#FF3D7A", create: (c) => new CastleSiege(c, true) },
       ],
       !ctx.players.some((p) => p.kind === "human"),
