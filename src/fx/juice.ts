@@ -68,6 +68,7 @@ export class Juice {
     const speed = options.speed ?? 260;
     const colors = typeof color === "string" ? [color] : color;
     for (let i = 0; i < count; i += 1) {
+      if (this.particles.length >= 500) break;
       const a = options.angle === undefined
         ? this.random() * Math.PI * 2
         : options.angle + (this.random() - 0.5) * (options.spread ?? 1);
@@ -97,7 +98,13 @@ export class Juice {
       p.x += p.vx * dt;
       p.y += p.vy * dt;
     }
-    this.particles = this.particles.filter((p) => p.life > 0);
+    let write = 0;
+    for (let read = 0; read < this.particles.length; read++) {
+      if (this.particles[read]!.life > 0) {
+        this.particles[write++] = this.particles[read]!;
+      }
+    }
+    this.particles.length = write;
 
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
     const power = this.trauma * this.trauma * 18;

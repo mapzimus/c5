@@ -47,6 +47,7 @@ export class Sky {
 
   start(): void {
     if (this.running) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
     this.running = true;
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.tick);

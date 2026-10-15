@@ -104,44 +104,53 @@ export class Engine {
     this.last = now;
     const dt = Math.min(raw, 0.05);
 
-    if (this.phase === "countdown") {
-      this.countdown -= dt;
-      if (this.countdown <= 0) {
-        this.phase = "playing";
-        this.goTimer = 0.7;
-        this.sfx.go();
-      } else if (this.countdown <= 2 && this.countdown + dt > 2) {
-        this.sfx.countdown();
-      } else if (this.countdown <= 1 && this.countdown + dt > 1) {
-        this.sfx.countdown();
+    try {
+      if (this.phase === "countdown") {
+        this.countdown -= dt;
+        if (this.countdown <= 0) {
+          this.phase = "playing";
+          this.goTimer = 0.7;
+          this.sfx.go();
+        } else if (this.countdown <= 2 && this.countdown + dt > 2) {
+          this.sfx.countdown();
+        } else if (this.countdown <= 1 && this.countdown + dt > 1) {
+          this.sfx.countdown();
+        }
+      } else if (this.phase === "playing" && this.instance && this.definition) {
+        this.elapsed += dt;
+        if (this.goTimer > 0) this.goTimer -= dt;
+        if (this.definition.durationMs > 0) {
+          this.remaining = Math.max(0, this.definition.durationMs / 1000 - this.elapsed);
+        }
+        this.instance.update(dt);
+        const timedOut = this.definition.durationMs > 0 && this.remaining <= 0;
+        if (timedOut || this.instance.isFinished()) {
+          this.finish();
+        }
+      } else if (this.phase === "finished" && this.pendingScores) {
+        this.finishDelay -= dt;
+        if (this.finishDelay <= 0) {
+          const scores = this.pendingScores;
+          const stats = this.pendingStats;
+          this.pendingScores = null;
+          this.pendingStats = [];
+          this.onDone?.(scores, stats);
+        }
       }
-    } else if (this.phase === "playing" && this.instance && this.definition) {
-      this.elapsed += dt;
-      if (this.goTimer > 0) this.goTimer -= dt;
-      if (this.definition.durationMs > 0) {
-        this.remaining = Math.max(0, this.definition.durationMs / 1000 - this.elapsed);
+
+      this.instance?.render(this.ctx);
+      if (this.phase === "playing" && this.definition && this.definition.durationMs > 0) {
+        drawTimerBar(this.ctx, this.logical.width, this.remaining, this.definition.durationMs / 1000);
       }
-      this.instance.update(dt);
-      const timedOut = this.definition.durationMs > 0 && this.remaining <= 0;
-      if (timedOut || this.instance.isFinished()) {
-        this.finish();
-      }
-    } else if (this.phase === "finished" && this.pendingScores) {
-      this.finishDelay -= dt;
-      if (this.finishDelay <= 0) {
-        const scores = this.pendingScores;
-        const stats = this.pendingStats;
-        this.pendingScores = null;
-        this.pendingStats = [];
-        this.onDone?.(scores, stats);
-      }
+      this.drawOverlay();
+    } catch (err) {
+      console.error("Game crashed:", err);
+      this.phase = "finished";
+      this.onDone?.(this.instance?.getScores() ?? [], []);
+      this.stop();
+      return;
     }
 
-    this.instance?.render(this.ctx);
-    if (this.phase === "playing" && this.definition && this.definition.durationMs > 0) {
-      drawTimerBar(this.ctx, this.logical.width, this.remaining, this.definition.durationMs / 1000);
-    }
-    this.drawOverlay();
     this.input.endFrame();
     if (!(this.phase === "finished" && !this.pendingScores)) {
       this.raf = requestAnimationFrame(this.tick);

@@ -2,21 +2,30 @@ import { describe, expect, it } from "vitest";
 import { allGames, createRegistry } from "./index";
 
 describe("game catalog", () => {
+  const EXPECTED_IDS = [
+    "pairs", "parrot-flip", "castle-siege", "lucky-drop", "eye-of-the-storm",
+    "booty-haul", "chaos-derby", "bug-wars", "kaboom-isle", "fling", "whack",
+    "flappy-race", "connect-four", "curve-clash", "tower-topple", "quick-draw",
+    "rope-skip", "hungry-hoppers", "block-brawl", "mash-dash", "big-blast",
+    "hot-potato", "flag-flash", "sumo-rings", "stampede", "hot-tiles",
+    "slot-cars", "scribble-race", "mug-match", "ice-luge", "hive-heist",
+    "micro-mayhem",
+  ];
+
   it("lists registered games for the main menu", () => {
     const ids = allGames.map((game) => game.id);
-    expect(ids).toContain("pairs");
-    expect(ids).toContain("parrot-flip");
-    expect(ids).toContain("castle-siege");
-    expect(ids).toContain("lucky-drop");
-    expect(ids).toContain("eye-of-the-storm");
-    expect(ids).toContain("booty-haul");
-    expect(ids).toContain("chaos-derby");
-    expect(ids).toContain("bug-wars");
-    expect(ids).toContain("kaboom-isle");
+    for (const id of EXPECTED_IDS) {
+      expect(ids, `missing game: ${id}`).toContain(id);
+    }
+    expect(ids.length).toBe(EXPECTED_IDS.length);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(createRegistry().get("pairs").name).toBe("Flag Snap");
-    expect(createRegistry().get("parrot-flip").name).toBe("Parrot Flip");
-    expect(createRegistry().get("lucky-drop").durationMs).toBe(0);
-    expect(createRegistry().get("chaos-derby").durationMs).toBe(0);
+  });
+
+  it("registry lookups work", () => {
+    const registry = createRegistry();
+    expect(registry.get("pairs").name).toBe("Flag Snap");
+    expect(registry.get("parrot-flip").name).toBe("Parrot Flip");
+    expect(registry.get("lucky-drop").durationMs).toBe(0);
+    expect(registry.get("chaos-derby").durationMs).toBe(0);
   });
 });

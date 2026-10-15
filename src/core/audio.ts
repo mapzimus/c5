@@ -1,7 +1,16 @@
 /** Tiny Web Audio synth so the repo stays asset-free. */
 export class Sfx {
   private ctx: AudioContext | null = null;
-  muted = false;
+  muted: boolean;
+
+  constructor() {
+    try { this.muted = localStorage.getItem("c5-muted") === "1"; } catch { this.muted = false; }
+  }
+
+  toggle(): void {
+    this.muted = !this.muted;
+    try { localStorage.setItem("c5-muted", this.muted ? "1" : "0"); } catch { /* optional */ }
+  }
 
   unlock(): void {
     this.ensure();

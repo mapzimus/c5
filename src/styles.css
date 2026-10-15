@@ -326,7 +326,8 @@ footer.fine {
   display: none;
 }
 
-#screen-play .hud-bar .btn {
+#screen-play .hud-bar .btn,
+#screen-play .hud-bar .mute-btn {
   padding: 6px 12px;
   font-size: 13px;
   min-height: 44px;
@@ -390,6 +391,12 @@ footer.fine {
 #screen-menu.active {
   max-width: 1240px;
   margin: 0 auto;
+}
+
+.menu-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .wordmark {
@@ -614,6 +621,79 @@ footer.fine {
   background: var(--card);
   color: var(--ink);
   box-shadow: none;
+}
+
+.stat-line {
+  grid-column: 2 / -1;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Mute toggle */
+.mute-btn {
+  appearance: none;
+  cursor: pointer;
+  min-height: 36px;
+  min-width: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.mute-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.mute-btn:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.mute-btn[aria-pressed="true"] {
+  color: var(--magenta);
+  border-color: var(--magenta);
+}
+
+/* Focus-visible for interactive elements missing it */
+.fighter-kind:focus-visible,
+.fighter-x:focus-visible,
+.add-fighter:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.fighter-name:focus-visible {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .screen.active {
+    animation: none;
+  }
+
+  .result {
+    animation: none;
+  }
+
+  .card {
+    transition: none;
+  }
+
+  .btn {
+    transition: none;
+  }
+
+  #sky {
+    display: none;
+  }
 }
 
 @media (max-width: 600px) {

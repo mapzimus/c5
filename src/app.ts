@@ -58,6 +58,11 @@ export class App {
     for (const [key, node] of this.screens) {
       node.classList.toggle("active", key === name);
     }
+    requestAnimationFrame(() => {
+      const active = this.screens.get(name);
+      const target = active?.querySelector<HTMLElement>("button, [href], input, [tabindex]");
+      target?.focus();
+    });
   }
 
   private renderMenu(): void {
@@ -65,6 +70,7 @@ export class App {
     clear(screen);
     const head = el("header", { class: "menu-head" },
       el("h1", { class: "wordmark", text: "Category Five" }),
+      this.muteButton(),
     );
     screen.append(head, this.matchup(), this.gameCards());
   }
@@ -171,6 +177,24 @@ export class App {
     return box;
   }
 
+  private muteButton(): HTMLButtonElement {
+    const btn = el("button", {
+      class: "mute-btn",
+      text: this.sfx.muted ? "\u{1F507}" : "\u{1F50A}",
+      "aria-label": this.sfx.muted ? "Unmute" : "Mute",
+      "aria-pressed": String(this.sfx.muted),
+      title: this.sfx.muted ? "Unmute" : "Mute",
+    });
+    btn.addEventListener("click", () => {
+      this.sfx.toggle();
+      btn.textContent = this.sfx.muted ? "\u{1F507}" : "\u{1F50A}";
+      btn.setAttribute("aria-label", this.sfx.muted ? "Unmute" : "Mute");
+      btn.setAttribute("aria-pressed", String(this.sfx.muted));
+      btn.title = this.sfx.muted ? "Unmute" : "Mute";
+    });
+    return btn;
+  }
+
   private launch(game: GameDefinition): void {
     this.selected = game;
     const screen = this.screens.get("play")!;
@@ -197,6 +221,7 @@ export class App {
     const bar = el("div", { class: "hud-bar" });
     bar.append(
       el("strong", { text: game.name }),
+      this.muteButton(),
       ghost("Menu", () => {
         this.engine?.abort();
         exitFullscreen();
