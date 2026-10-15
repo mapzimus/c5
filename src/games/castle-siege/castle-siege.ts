@@ -967,10 +967,10 @@ export class CastleSiege implements GameInstance {
 
   private burst(x: number, y: number, count: number, color: string, speed: number, size: number): void {
     for (let i = 0; i < count; i += 1) {
-      const a = Math.random() * Math.PI * 2;
-      const s = speed * (0.3 + Math.random() * 0.7);
-      const life = 0.4 + Math.random() * 0.6;
-      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - speed * 0.3, life, max: life, color, size: size * (0.6 + Math.random() * 0.8), spin: (Math.random() - 0.5) * 12, angle: 0 });
+      const a = this.ctx.rng.next() * Math.PI * 2;
+      const s = speed * (0.3 + this.ctx.rng.next() * 0.7);
+      const life = 0.4 + this.ctx.rng.next() * 0.6;
+      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - speed * 0.3, life, max: life, color, size: size * (0.6 + this.ctx.rng.next() * 0.8), spin: (this.ctx.rng.next() - 0.5) * 12, angle: 0 });
     }
   }
 
@@ -979,20 +979,20 @@ export class CastleSiege implements GameInstance {
     const spec = PIECE_SPECS[kind];
     const count = Math.round(6 + (spec.w * spec.h) / 400);
     for (let i = 0; i < count; i += 1) {
-      const a = Math.random() * Math.PI * 2;
-      const s = 120 + Math.random() * 320;
-      const life = 0.7 + Math.random() * 0.7;
+      const a = this.ctx.rng.next() * Math.PI * 2;
+      const s = 120 + this.ctx.rng.next() * 320;
+      const life = 0.7 + this.ctx.rng.next() * 0.7;
       this.particles.push({
-        x: x + (Math.random() - 0.5) * spec.w * 0.6,
-        y: y + (Math.random() - 0.5) * spec.h * 0.6,
+        x: x + (this.ctx.rng.next() - 0.5) * spec.w * 0.6,
+        y: y + (this.ctx.rng.next() - 0.5) * spec.h * 0.6,
         vx: Math.cos(a) * s,
         vy: Math.sin(a) * s - 200,
         life,
         max: life,
         color,
-        size: 6 + Math.random() * 8,
-        spin: (Math.random() - 0.5) * 16,
-        angle: Math.random() * 6,
+        size: 6 + this.ctx.rng.next() * 8,
+        spin: (this.ctx.rng.next() - 0.5) * 16,
+        angle: this.ctx.rng.next() * 6,
       });
     }
     this.burst(x, y, 10, "#a8a29e", 160, 3);
@@ -1033,7 +1033,7 @@ export class CastleSiege implements GameInstance {
   render(g: CanvasRenderingContext2D): void {
     fillArena(g, W, H);
     g.save();
-    if (this.shake > 0) g.translate((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake);
+    if (this.shake > 0) g.translate((this.ctx.rng.next() - 0.5) * this.shake, (this.ctx.rng.next() - 0.5) * this.shake);
     this.juice.begin(g);
     this.drawStage(g);
     if (this.phase === "siege") this.drawGhost(g);

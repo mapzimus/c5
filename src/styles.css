@@ -577,6 +577,19 @@ footer.fine {
   color: var(--ink);
 }
 
+.menu-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.keys-hint {
+  font-family: "Outfit", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
 /* Game tiles: flat, chunky, pressable. */
 .cards {
   display: grid;

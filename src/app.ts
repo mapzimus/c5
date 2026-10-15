@@ -1,6 +1,6 @@
 import { Sfx } from "./core/audio";
 import { Engine } from "./core/engine";
-import { InputManager } from "./core/input";
+import { BIND_LABELS, InputManager } from "./core/input";
 import { GameRegistry } from "./core/registry";
 import { rankResults } from "./core/session";
 import { PLAYER_COLORS, type GameDefinition, type GameStat, type Player } from "./core/types";
@@ -17,6 +17,7 @@ export class App {
   private readonly sfx = new Sfx();
   private readonly screens = new Map<ScreenName, HTMLElement>();
   private players: Player[];
+  private readonly wins = new Map<string, number>();
   private selected: GameDefinition | null = null;
   private engine: Engine | null = null;
   private sky: Sky | null = null;
@@ -62,6 +63,7 @@ export class App {
             overlay.remove();
             this.engine?.abort();
             exitFullscreen();
+            this.sky?.start();
             this.renderMenu();
             this.show("menu");
           }),
@@ -89,12 +91,33 @@ export class App {
       el("h1", { class: "wordmark", text: "Category Five" }),
       this.muteButton(),
     );
-    screen.append(head, this.matchup(), this.gameCards());
+    screen.append(head, this.matchup(), this.menuActions(), this.gameCards());
   }
 
   private rerenderMenu(): void {
     this.renderMenu();
     this.show("menu");
+  }
+
+  private menuActions(): HTMLElement {
+    const row = el("div", { class: "menu-actions" });
+    const surprise = button("Surprise Me", () => {
+      this.sfx.unlock();
+      this.sfx.select();
+      const games = this.registry.list();
+      const pick = games[Math.floor(Math.random() * games.length)];
+      if (pick) this.launch(pick);
+    });
+    row.append(surprise);
+    const total = [...this.wins.values()].reduce((a, b) => a + b, 0);
+    if (total > 0) {
+      const reset = ghost("Reset Scores", () => {
+        this.wins.clear();
+        this.rerenderMenu();
+      });
+      row.append(reset);
+    }
+    return row;
   }
 
   private gameCards(): HTMLElement {
@@ -190,6 +213,8 @@ export class App {
       });
       meta.append(remove);
     }
+    const w = this.wins.get(player.id) ?? 0;
+    if (w > 0) meta.prepend(el("span", { class: "fighter-pts", text: `${w}W` }));
     box.append(name, meta);
     return box;
   }
@@ -218,11 +243,16 @@ export class App {
     clear(screen);
 
     const info = el("div", { class: "pregame" });
+    const humans = this.players.filter((p) => p.kind === "human");
+    const bindsHint = humans.length > 1
+      ? humans.map((p) => `${p.name}: ${BIND_LABELS[p.slot]}`).join("   ")
+      : "";
     info.append(
       el("p", { class: "brand", text: game.durationMs > 0 ? `${game.durationMs / 1000}s` : "Turn-based" }),
       el("h2", { class: "display", text: game.name }),
       el("p", { class: "lede", text: game.description }),
       el("p", { class: "controls-hint", text: game.controls }),
+      ...(bindsHint ? [el("p", { class: "controls-hint keys-hint", text: bindsHint })] : []),
       el("div", { class: "row" },
         button("Play", () => { this.sfx.select(); this.startPlay(game); }),
         ghost("Back", () => { this.renderMenu(); this.show("menu"); }),
@@ -233,6 +263,7 @@ export class App {
   }
 
   private startPlay(game: GameDefinition): void {
+    this.sky?.stop();
     const screen = this.screens.get("play")!;
     clear(screen);
     const bar = el("div", { class: "hud-bar" });
@@ -242,6 +273,7 @@ export class App {
       ghost("Menu", () => {
         this.engine?.abort();
         exitFullscreen();
+        this.sky?.start();
         this.renderMenu();
         this.show("menu");
       }),
@@ -261,8 +293,13 @@ export class App {
   }
 
   private finishGame(scores: { playerId: string; score: number }[], stats: GameStat[] = []): void {
+    exitFullscreen();
+    this.sky?.start();
     const game = this.selected;
     const ranked = rankResults(scores);
+    for (const r of ranked) {
+      if (r.won) this.wins.set(r.playerId, (this.wins.get(r.playerId) ?? 0) + 1);
+    }
     const screen = this.screens.get("results")!;
     clear(screen);
     const list = el("div", { class: "results" });
@@ -295,6 +332,13 @@ export class App {
         this.show("play");
       }));
     }
+    actions.append(button("Next Game", () => {
+      this.sfx.unlock();
+      this.sfx.select();
+      const games = this.registry.list().filter((g) => g.id !== game?.id);
+      const pick = games[Math.floor(Math.random() * games.length)];
+      if (pick) this.launch(pick);
+    }, "ghost"));
     actions.append(ghost("Menu", () => this.rerenderMenu()));
 
     if (top) {
@@ -370,5 +414,6 @@ function confetti(color: string): HTMLElement {
     piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]!;
     container.append(piece);
   }
+  setTimeout(() => container.remove(), 2500);
   return container;
 }
