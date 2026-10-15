@@ -48,9 +48,26 @@ export class App {
 
   private readonly onGlobalKey = (event: KeyboardEvent): void => {
     if (event.code === "Escape" && this.screens.get("play")?.classList.contains("active")) {
-      this.engine?.abort();
-      this.renderMenu();
-      this.show("menu");
+      const existing = this.screens.get("play")!.querySelector(".pause-overlay");
+      if (existing) {
+        existing.remove();
+        return;
+      }
+      const overlay = el("div", { class: "pause-overlay" });
+      overlay.append(
+        el("h2", { class: "display", text: "Paused" }),
+        el("div", { class: "row" },
+          button("Resume", () => overlay.remove()),
+          ghost("Quit to Menu", () => {
+            overlay.remove();
+            this.engine?.abort();
+            exitFullscreen();
+            this.renderMenu();
+            this.show("menu");
+          }),
+        ),
+      );
+      this.screens.get("play")!.append(overlay);
     }
   };
 
@@ -280,12 +297,19 @@ export class App {
     }
     actions.append(ghost("Menu", () => this.rerenderMenu()));
 
+    if (top) {
+      const first = list.querySelector(".result");
+      first?.classList.add("winner");
+      (first as HTMLElement | null)?.style.setProperty("--winner-color", top.color);
+    }
+
     screen.append(
       el("p", { class: "brand", text: game?.name ?? "Results" }),
       el("h2", { class: "display", text: headline, style: top ? `color:${top.color}` : "" }),
       list,
       actions,
     );
+    if (top) screen.append(confetti(top.color));
     this.show("results");
   }
 }
@@ -332,4 +356,19 @@ function enterLandscape(): void {
 
 function exitFullscreen(): void {
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+function confetti(color: string): HTMLElement {
+  const container = el("div", { class: "confetti" });
+  const colors = [color, "#FFB020", "#B8FF3D", "#A78BFA", "#FF8A3D", "#3EE0FF"];
+  for (let i = 0; i < 40; i++) {
+    const piece = el("div", { class: "confetti-piece" });
+    piece.style.setProperty("--x", `${Math.random() * 100}vw`);
+    piece.style.setProperty("--delay", `${Math.random() * 0.5}s`);
+    piece.style.setProperty("--drift", `${(Math.random() - 0.5) * 200}px`);
+    piece.style.setProperty("--spin", `${Math.random() * 720 - 360}deg`);
+    piece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]!;
+    container.append(piece);
+  }
+  return container;
 }

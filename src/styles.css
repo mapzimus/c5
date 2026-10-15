@@ -238,9 +238,57 @@ input {
 .result:nth-child(3) { animation-delay: 0.34s; }
 .result:nth-child(4) { animation-delay: 0.46s; }
 
+.result.winner {
+  border-color: var(--winner-color, var(--cyan));
+  box-shadow: 0 0 24px color-mix(in srgb, var(--winner-color, var(--cyan)) 35%, transparent);
+}
+
 .rank {
   font-family: "Bebas Neue", Impact, sans-serif;
   font-size: 28px;
+}
+
+/* Confetti */
+.confetti {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+  overflow: hidden;
+}
+
+.confetti-piece {
+  position: absolute;
+  top: -10px;
+  left: var(--x, 50vw);
+  width: 8px;
+  height: 12px;
+  border-radius: 2px;
+  opacity: 0;
+  animation: confettiFall 2s var(--delay, 0s) ease-out forwards;
+}
+
+@keyframes confettiFall {
+  0% { opacity: 1; transform: translateY(0) translateX(0) rotate(0deg); }
+  100% { opacity: 0; transform: translateY(100vh) translateX(var(--drift, 0px)) rotate(var(--spin, 360deg)); }
+}
+
+/* Pause overlay */
+.pause-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: rgba(7, 11, 20, 0.85);
+  animation: fadeIn 0.15s ease-out;
+}
+
+.pause-overlay .row {
+  justify-content: center;
 }
 
 .title-screen {
@@ -693,6 +741,15 @@ footer.fine {
 
   #sky {
     display: none;
+  }
+
+  .confetti-piece {
+    animation: none;
+    display: none;
+  }
+
+  .pause-overlay {
+    animation: none;
   }
 }
 
