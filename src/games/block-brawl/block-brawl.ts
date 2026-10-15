@@ -863,7 +863,7 @@ class BlockBrawl implements GameInstance {
     }
 
     if (w.alive) {
-      g.font = `700 ${w.stakes ? 16 : 12}px ${FONT}`;
+      g.font = `700 ${Math.min(w.stakes ? 16 : 12, Math.floor(ww * 0.055))}px ${FONT}`;
       g.textAlign = "right";
       g.textBaseline = "bottom";
       g.lineWidth = 4;
@@ -962,13 +962,15 @@ class BlockBrawl implements GameInstance {
     }
 
     // header
+    const nameSize = Math.min(22, Math.floor(ww * 0.08));
+    const statSize = Math.min(18, Math.floor(ww * 0.065));
     g.textBaseline = "top";
     g.textAlign = "left";
     g.fillStyle = w.alive ? player.color : GHOST_COLOR;
-    g.font = `700 22px ${FONT}`;
+    g.font = `700 ${nameSize}px ${FONT}`;
     g.fillText(w.alive ? player.name : `${player.name} (GHOST)`, wellX, 6);
     g.fillStyle = "#F4F7FB";
-    g.font = `700 18px ${FONT}`;
+    g.font = `700 ${statSize}px ${FONT}`;
     let hx = wellX;
     g.fillText(`LINES ${w.lines}`, hx, 30);
     hx += g.measureText(`LINES ${w.lines}`).width + 10;

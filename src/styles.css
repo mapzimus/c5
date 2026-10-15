@@ -433,6 +433,11 @@ footer.fine {
   .btn {
     min-height: 44px;
   }
+
+  .fighter-kind,
+  .fighter-x {
+    min-height: 44px;
+  }
 }
 
 /* ---------- Main menu ---------- */
