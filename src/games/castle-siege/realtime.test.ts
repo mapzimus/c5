@@ -84,7 +84,7 @@ describe("real-time siege rules", () => {
   });
 
   it("retires finished balls one at a time", () => {
-    const world = new SiegeWorld();
+    const world = new SiegeWorld(new Rng(1));
     world.fire(0, "ball", 20, -5);
     world.fire(1, "ball", -20, -5);
     expect(world.balls).toHaveLength(2);

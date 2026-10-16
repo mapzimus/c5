@@ -1,4 +1,5 @@
 import Matter from "matter-js";
+import type { Rng } from "../../core/rng";
 import { GOLDEN_BONUS, KING_HP, NEAR_MISS_PX, PIECE_SPECS, gustFactor, impactDamage, isHeavy, type Ammo, type PieceKind, type Team } from "./rules";
 
 const { Engine, Events, Bodies, Body, Composite, Query } = Matter;
@@ -111,8 +112,10 @@ export class SiegeWorld {
   damageOn = false;
   events: WorldEvent[] = [];
   private acc = 0;
+  private readonly rng: Rng;
 
-  constructor() {
+  constructor(rng: Rng) {
+    this.rng = rng;
     this.ground = Bodies.rectangle(640, GROUND_Y + 200, 1900, 400, {
       isStatic: true,
       friction: 1,
@@ -241,7 +244,7 @@ export class SiegeWorld {
         x: piece.body.velocity.x + (dx / (d || 1)) * push,
         y: piece.body.velocity.y + (dy / (d || 1)) * push - 3 * falloff,
       });
-      Body.setAngularVelocity(piece.body, piece.body.angularVelocity + (Math.random() - 0.5) * 0.3 * falloff);
+      Body.setAngularVelocity(piece.body, piece.body.angularVelocity + (this.rng.next() - 0.5) * 0.3 * falloff);
       if (piece.team !== ball.team) {
         piece.cooldown = 0;
         if (piece.kind === "king") ball.kingHit = true;

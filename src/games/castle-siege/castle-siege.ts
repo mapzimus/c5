@@ -135,7 +135,7 @@ function inside(b: Button, x: number, y: number): boolean {
 }
 
 export class CastleSiege implements GameInstance {
-  private readonly world = new SiegeWorld();
+  private world!: SiegeWorld;
   private readonly teams: [TeamState, TeamState];
   private phase: Phase = "build";
   private round = 0;
@@ -200,6 +200,7 @@ export class CastleSiege implements GameInstance {
 
   constructor(private readonly ctx: GameContext, realtime = false) {
     this.realtime = realtime;
+    this.world = new SiegeWorld(ctx.rng);
     const makeTeam = (team: Team): TeamState => {
       const players = ctx.players.filter((_, index) => teamOf(index) === team);
       const first = players[0];

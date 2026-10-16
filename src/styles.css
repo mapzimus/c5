@@ -435,8 +435,11 @@ footer.fine {
   }
 
   .fighter-kind,
-  .fighter-x {
+  .fighter-x,
+  .add-fighter,
+  .mute-btn {
     min-height: 44px;
+    min-width: 44px;
   }
 }
 
@@ -693,6 +696,26 @@ footer.fine {
   grid-column: 2 / -1;
   font-size: 13px;
   color: var(--muted);
+}
+
+.session-tally {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 12px 0 4px;
+  font-family: "Outfit", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+.tally-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 12px;
+}
+
+.tally-entry {
+  font-weight: 700;
 }
 
 /* Mute toggle */

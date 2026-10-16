@@ -156,7 +156,7 @@ describe("castle siege world", () => {
   };
 
   it("drops pieces from the sky without hurting anything while building", () => {
-    const world = new SiegeWorld();
+    const world = new SiegeWorld(new Rng(1));
     world.placeKing(1, cx);
     expect(world.spawnPiece("block", cx, 1, 0)).toBe(true);
     run(world, 180);
@@ -166,7 +166,7 @@ describe("castle siege world", () => {
   });
 
   it("narrow lots clamp kings and drops into the middle of the zone", () => {
-    const world = new SiegeWorld();
+    const world = new SiegeWorld(new Rng(1));
     world.reset(0.5);
     const lot = lotOf(1, 0.5);
     expect(lot.x1 - lot.x0).toBeCloseTo((ZONES[1].x1 - ZONES[1].x0) / 2);
@@ -180,7 +180,7 @@ describe("castle siege world", () => {
 
   it("the defender's gust pushes a light ball back further than a boulder", () => {
     const flight = (ammo: "ball" | "boulder", gust: number) => {
-      const world = new SiegeWorld();
+      const world = new SiegeWorld(new Rng(1));
       world.gust = [0, gust];
       world.fire(0, ammo, 22, -12);
       run(world, 40);
@@ -197,7 +197,7 @@ describe("castle siege world", () => {
   });
 
   it("reports a near miss when a shot whistles past the king without touching it", () => {
-    const world = new SiegeWorld();
+    const world = new SiegeWorld(new Rng(1));
     const king = world.placeKing(1, cx);
     run(world, 30);
     world.damageOn = true;
@@ -214,7 +214,7 @@ describe("castle siege world", () => {
   });
 
   it("a bomb next to the king knocks it out of HP", () => {
-    const world = new SiegeWorld();
+    const world = new SiegeWorld(new Rng(1));
     const king = world.placeKing(1, cx);
     run(world, 30);
     world.damageOn = true;

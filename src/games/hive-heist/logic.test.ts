@@ -119,11 +119,13 @@ describe("hive heist logic", () => {
       expect(canRelease(t, 2)).toBe(false);
       expect(releaseWasp(t, 2, rng)).toBeNull();
     }
-    // A short queue gets the wasp at its end, in view.
+    // A short queue gets the wasp appended at the end (never spliced into the visible window).
     const short = newHive([H, H], 2, 0);
     short.status[1] = "stung";
     short.wasp[1] = true;
     expect(releaseWasp(short, 1, rng)).toBe(2);
+    expect(short.queue.length).toBe(3);
+    expect(short.queue[2]).toEqual({ kind: "wasp", owner: 1 });
     take(short, 2);
     expect(short.turn).toBe(0);
     const r = take(short, 1);

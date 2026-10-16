@@ -176,10 +176,15 @@ export function canRelease(s: HiveState, seat: number): boolean {
   return !s.done && s.status[seat] !== "in" && s.wasp[seat] === true;
 }
 
-/** A swarm member drops its wasp into a random hidden slot (or at the end when the queue is short). */
+/** A swarm member drops its wasp into a random hidden slot. When the queue is too short to hide it, append at the end. */
 export function releaseWasp(s: HiveState, seat: number, rng: Rng): number | null {
   if (!canRelease(s, seat)) return null;
   const lo = Math.min(VISIBLE, s.queue.length);
+  if (lo >= s.queue.length) {
+    s.queue.push({ kind: "wasp", owner: seat });
+    s.wasp[seat] = false;
+    return s.queue.length - 1;
+  }
   const idx = rng.int(lo, s.queue.length);
   s.queue.splice(idx, 0, { kind: "wasp", owner: seat });
   s.wasp[seat] = false;

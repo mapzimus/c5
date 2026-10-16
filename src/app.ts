@@ -125,7 +125,13 @@ export class App {
     const cards = el("div", { class: "cards" });
     games.forEach((game, index) => {
       const accent = ACCENTS[index % ACCENTS.length]!;
-      const card = el("button", { class: "card", style: `--accent:${accent}`, "data-game": game.id });
+      const duration = game.durationMs > 0 ? `${game.durationMs / 1000} seconds` : "Turn-based";
+      const card = el("button", {
+        class: "card",
+        style: `--accent:${accent}`,
+        "data-game": game.id,
+        "aria-label": `${game.name} — ${game.tagline} (${duration})`,
+      });
       const thumb = el("img", {
         class: "card-thumb",
         src: `${import.meta.env.BASE_URL}thumbs/${game.id}.jpg`,
@@ -292,6 +298,21 @@ export class App {
     requestAnimationFrame(() => this.engine?.fit());
   }
 
+  private sessionTally(): HTMLElement {
+    const total = [...this.wins.values()].reduce((a, b) => a + b, 0);
+    const wrap = el("div", { class: "session-tally" });
+    if (total === 0) return wrap;
+    const sorted = this.players
+      .map((p) => ({ player: p, w: this.wins.get(p.id) ?? 0 }))
+      .filter((e) => e.w > 0)
+      .sort((a, b) => b.w - a.w);
+    wrap.append(el("span", { class: "tally-label", text: "Session" }));
+    for (const { player, w } of sorted) {
+      wrap.append(el("span", { class: "tally-entry", style: `color:${player.color}`, text: `${player.name} ${w}` }));
+    }
+    return wrap;
+  }
+
   private finishGame(scores: { playerId: string; score: number }[], stats: GameStat[] = []): void {
     exitFullscreen();
     this.sky?.start();
@@ -347,10 +368,15 @@ export class App {
       (first as HTMLElement | null)?.style.setProperty("--winner-color", top.color);
     }
 
+    const h2 = el("h2", { class: "display", text: headline, style: top ? `color:${top.color}` : "" });
+    h2.setAttribute("role", "status");
+    h2.setAttribute("aria-live", "polite");
+
     screen.append(
       el("p", { class: "brand", text: game?.name ?? "Results" }),
-      el("h2", { class: "display", text: headline, style: top ? `color:${top.color}` : "" }),
+      h2,
       list,
+      this.sessionTally(),
       actions,
     );
     if (top) screen.append(confetti(top.color));
