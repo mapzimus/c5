@@ -159,7 +159,8 @@ export class App {
 
   private gameCards(): HTMLElement {
     const games = this.filteredGames();
-    const cards = el("div", { class: "cards" });
+    const cards = el("div", { class: "cards", role: "grid", "aria-label": "Games" });
+    const buttons: HTMLButtonElement[] = [];
     games.forEach((game, index) => {
       const accent = ACCENTS[index % ACCENTS.length]!;
       const duration = game.durationMs > 0 ? `${game.durationMs / 1000} seconds` : "Turn-based";
@@ -168,6 +169,7 @@ export class App {
         style: `--accent:${accent}`,
         "data-game": game.id,
         "aria-label": `${game.name} — ${game.tagline} (${duration})`,
+        tabindex: index === 0 ? "0" : "-1",
       });
       const thumb = el("img", {
         class: "card-thumb",
@@ -188,7 +190,24 @@ export class App {
         this.sfx.select();
         this.launch(game);
       });
+      buttons.push(card);
       cards.append(card);
+    });
+    cards.addEventListener("keydown", (e) => {
+      const idx = buttons.indexOf(e.target as HTMLButtonElement);
+      if (idx < 0) return;
+      let next = -1;
+      const cols = Math.max(1, Math.floor(cards.clientWidth / (buttons[0]?.offsetWidth ?? 220)));
+      if (e.key === "ArrowRight") next = Math.min(idx + 1, buttons.length - 1);
+      else if (e.key === "ArrowLeft") next = Math.max(idx - 1, 0);
+      else if (e.key === "ArrowDown") next = Math.min(idx + cols, buttons.length - 1);
+      else if (e.key === "ArrowUp") next = Math.max(idx - cols, 0);
+      if (next >= 0 && next !== idx) {
+        e.preventDefault();
+        buttons[idx]!.tabIndex = -1;
+        buttons[next]!.tabIndex = 0;
+        buttons[next]!.focus();
+      }
     });
     if (games.length === 0) {
       cards.append(
