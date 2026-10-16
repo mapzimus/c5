@@ -18,6 +18,7 @@ export class Engine {
   private definition: GameDefinition | null = null;
   private context: GameContext | null = null;
   private fill = false;
+  private readonly reduceMotion = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   private logical = { width: GAME_WIDTH, height: GAME_HEIGHT };
   private raf = 0;
   private last = 0;
@@ -162,23 +163,37 @@ export class Engine {
     if (this.phase === "countdown") {
       ctx.fillStyle = "rgba(7,11,20,0.45)";
       ctx.fillRect(0, 0, this.logical.width, this.logical.height);
+      const cx = this.logical.width / 2;
+      const cy = this.logical.height / 2;
+      const n = Math.max(1, Math.ceil(this.countdown));
+      const age = n - this.countdown;
+      const pulse = !this.reduceMotion && age < 0.25 ? 1 + 0.3 * (1 - age / 0.25) : 1;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(pulse, pulse);
       ctx.fillStyle = "#F4F7FB";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.font = "700 140px Bebas Neue, Impact, sans-serif";
-      const n = Math.max(1, Math.ceil(this.countdown));
-      ctx.fillText(String(n), this.logical.width / 2, this.logical.height / 2);
+      ctx.fillText(String(n), 0, 0);
+      ctx.restore();
       ctx.font = "600 28px Outfit, sans-serif";
       ctx.fillStyle = "#3EE0FF";
-      ctx.fillText(this.definition?.name ?? "", this.logical.width / 2, this.logical.height / 2 + 110);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(this.definition?.name ?? "", cx, cy + 110);
     } else if (this.goTimer > 0) {
+      const elapsed = 0.7 - this.goTimer;
+      const goPulse = !this.reduceMotion && elapsed < 0.15 ? 1 + 0.4 * (1 - elapsed / 0.15) : 1;
       ctx.save();
       ctx.globalAlpha = Math.min(1, this.goTimer / 0.3);
+      ctx.translate(this.logical.width / 2, this.logical.height / 2);
+      ctx.scale(goPulse, goPulse);
       ctx.fillStyle = "#B8FF3D";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.font = "700 100px Bebas Neue, Impact, sans-serif";
-      ctx.fillText("GO!", this.logical.width / 2, this.logical.height / 2);
+      ctx.fillText("GO!", 0, 0);
       ctx.restore();
     } else if (this.phase === "finished" && this.pendingScores) {
       ctx.save();
