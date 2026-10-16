@@ -218,10 +218,11 @@ export class App {
       }
     });
     if (games.length === 0) {
+      const label = this.filter === "timed" ? "timed" : this.filter === "turns" ? "turn-based" : "";
       cards.append(
         el("div", { class: "card empty-card" },
-          el("h3", { text: "No games yet" }),
-          el("p", { text: "Register a game and it will land here." }),
+          el("h3", { text: `No ${label} games`.trim() }),
+          el("p", { text: "Try a different filter." }),
         ),
       );
     }
@@ -447,7 +448,10 @@ export class App {
       this.sessionTally(),
       actions,
     );
-    if (top) screen.append(confetti(top.color));
+    if (top) {
+      screen.append(confetti(top.color));
+      this.sfx.streak(3);
+    }
     this.show("results");
   }
 }

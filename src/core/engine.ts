@@ -201,7 +201,6 @@ export class Engine {
     this.pendingScores = this.instance?.getScores() ?? [];
     this.pendingStats = this.instance?.getStats?.() ?? [];
     this.finishDelay = 1.4;
-    this.sfx.win();
   }
 
   abort(): void {
