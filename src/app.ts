@@ -105,7 +105,7 @@ export class App {
     const surprise = button("Surprise Me", () => {
       this.sfx.unlock();
       this.sfx.select();
-      const games = this.registry.list();
+      const games = this.filteredGames();
       const pick = games[Math.floor(Math.random() * games.length)];
       if (pick) this.launch(pick);
     });
@@ -123,6 +123,12 @@ export class App {
 
   private filterBar(): HTMLElement {
     const bar = el("div", { class: "filter-bar", role: "radiogroup", "aria-label": "Filter games" });
+    const all = this.registry.list();
+    const counts = {
+      all: all.length,
+      timed: all.filter((g) => g.durationMs > 0).length,
+      turns: all.filter((g) => g.durationMs === 0).length,
+    };
     const filters = [
       { key: "all" as const, label: "All" },
       { key: "timed" as const, label: "Timed" },
@@ -131,7 +137,7 @@ export class App {
     for (const f of filters) {
       const btn = el("button", {
         class: `filter-chip${this.filter === f.key ? " active" : ""}`,
-        text: f.label,
+        text: `${f.label} (${counts[f.key]})`,
         role: "radio",
         "aria-checked": String(this.filter === f.key),
       });
@@ -144,11 +150,15 @@ export class App {
     return bar;
   }
 
+  private filteredGames(): GameDefinition[] {
+    const all = this.registry.list();
+    if (this.filter === "timed") return all.filter((g) => g.durationMs > 0);
+    if (this.filter === "turns") return all.filter((g) => g.durationMs === 0);
+    return all;
+  }
+
   private gameCards(): HTMLElement {
-    const allGames = this.registry.list();
-    const games = this.filter === "all"
-      ? allGames
-      : allGames.filter((g) => this.filter === "timed" ? g.durationMs > 0 : g.durationMs === 0);
+    const games = this.filteredGames();
     const cards = el("div", { class: "cards" });
     games.forEach((game, index) => {
       const accent = ACCENTS[index % ACCENTS.length]!;
@@ -383,7 +393,7 @@ export class App {
     actions.append(button("Next Game", () => {
       this.sfx.unlock();
       this.sfx.select();
-      const games = this.registry.list().filter((g) => g.id !== game?.id);
+      const games = this.filteredGames().filter((g) => g.id !== game?.id);
       const pick = games[Math.floor(Math.random() * games.length)];
       if (pick) this.launch(pick);
     }, "ghost"));
