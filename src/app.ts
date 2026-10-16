@@ -114,6 +114,7 @@ export class App {
     if (total > 0) {
       const reset = ghost("Reset Scores", () => {
         this.wins.clear();
+        this.recent.length = 0;
         this.rerenderMenu();
       });
       row.append(reset);
@@ -371,7 +372,10 @@ export class App {
       .map((p) => ({ player: p, w: this.wins.get(p.id) ?? 0 }))
       .filter((e) => e.w > 0)
       .sort((a, b) => b.w - a.w);
-    wrap.append(el("span", { class: "tally-label", text: "Session" }));
+    const topW = sorted[0]?.w ?? 0;
+    const leaders = sorted.filter((e) => e.w === topW);
+    const label = total >= 3 && leaders.length === 1 ? `${leaders[0]!.player.name} leads` : "Session";
+    wrap.append(el("span", { class: "tally-label", text: label }));
     for (const { player, w } of sorted) {
       wrap.append(el("span", { class: "tally-entry", style: `color:${player.color}`, text: `${player.name} ${w}` }));
     }
