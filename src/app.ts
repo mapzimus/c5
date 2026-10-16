@@ -19,6 +19,7 @@ export class App {
   private players: Player[];
   private readonly wins = new Map<string, number>();
   private selected: GameDefinition | null = null;
+  private filter: "all" | "timed" | "turns" = "all";
   private engine: Engine | null = null;
   private sky: Sky | null = null;
 
@@ -91,7 +92,7 @@ export class App {
       el("h1", { class: "wordmark", text: "Category Five" }),
       this.muteButton(),
     );
-    screen.append(head, this.matchup(), this.menuActions(), this.gameCards());
+    screen.append(head, this.matchup(), this.menuActions(), this.filterBar(), this.gameCards());
   }
 
   private rerenderMenu(): void {
@@ -120,8 +121,34 @@ export class App {
     return row;
   }
 
+  private filterBar(): HTMLElement {
+    const bar = el("div", { class: "filter-bar", role: "radiogroup", "aria-label": "Filter games" });
+    const filters = [
+      { key: "all" as const, label: "All" },
+      { key: "timed" as const, label: "Timed" },
+      { key: "turns" as const, label: "Turn-based" },
+    ];
+    for (const f of filters) {
+      const btn = el("button", {
+        class: `filter-chip${this.filter === f.key ? " active" : ""}`,
+        text: f.label,
+        role: "radio",
+        "aria-checked": String(this.filter === f.key),
+      });
+      btn.addEventListener("click", () => {
+        this.filter = f.key;
+        this.rerenderMenu();
+      });
+      bar.append(btn);
+    }
+    return bar;
+  }
+
   private gameCards(): HTMLElement {
-    const games = this.registry.list();
+    const allGames = this.registry.list();
+    const games = this.filter === "all"
+      ? allGames
+      : allGames.filter((g) => this.filter === "timed" ? g.durationMs > 0 : g.durationMs === 0);
     const cards = el("div", { class: "cards" });
     games.forEach((game, index) => {
       const accent = ACCENTS[index % ACCENTS.length]!;

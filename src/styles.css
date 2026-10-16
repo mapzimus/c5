@@ -240,7 +240,9 @@ input {
 
 .result.winner {
   border-color: var(--winner-color, var(--cyan));
+  background: color-mix(in srgb, var(--winner-color, var(--cyan)) 8%, var(--card));
   box-shadow: 0 0 24px color-mix(in srgb, var(--winner-color, var(--cyan)) 35%, transparent);
+  transform: scale(1.02);
 }
 
 .rank {
@@ -598,6 +600,36 @@ footer.fine {
   letter-spacing: 0.04em;
 }
 
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-chip {
+  appearance: none;
+  cursor: pointer;
+  padding: 6px 16px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--muted);
+  font-family: "Outfit", system-ui, sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+.filter-chip:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.filter-chip.active {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
 /* Game tiles: flat, chunky, pressable. */
 .cards {
   display: grid;
@@ -837,5 +869,16 @@ footer.fine {
 
   .card p {
     font-size: 12.5px;
+  }
+
+  .stat-line {
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 400px) {
+  .cards {
+    grid-template-columns: 1fr;
   }
 }
