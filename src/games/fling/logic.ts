@@ -178,7 +178,7 @@ export function resolveCollision(
   const imp = -(1 + RESTITUTION) * velN / (1 / a.mass + 1 / b.mass);
   a.vel = vadd(a.vel, vmul(n, imp / a.mass));
   b.vel = vsub(b.vel, vmul(n, imp / b.mass));
-  const attacker = velN >= STEAL_FORCE ? (vlen(a.vel) > vlen(b.vel) ? "a" : "b") : null;
+  const attacker = velN >= STEAL_FORCE ? "a" : null;
   return { force: velN, attacker, shieldPopped: null };
 }
 

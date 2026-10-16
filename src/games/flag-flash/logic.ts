@@ -107,6 +107,7 @@ export interface SeatState {
   hitMs: number | null;
   /** First tap of a BOTH response, waiting for its partner. */
   pendingAt: number | null;
+  pendingHalf: Half | null;
   outReason: OutReason | null;
   /** Consecutive correct answers this heat. */
   streak: number;
@@ -178,7 +179,7 @@ export function newRound(seatCount: number, heat: number, rng: Rng, shields: rea
     lastSwapCall: -SWAP_SPACING,
     feintsThisGap: 0,
     seats: Array.from({ length: seatCount }, (_, i) => ({
-      alive: true, hitMs: null, pendingAt: null, outReason: null, streak: 0, shield: shields[i] ?? false,
+      alive: true, hitMs: null, pendingAt: null, pendingHalf: null, outReason: null, streak: 0, shield: shields[i] ?? false,
       saved: false, points: 0, heckleCooldown: 0, heckleArmed: false, bites: 0,
     })),
     showdown: null,
@@ -204,6 +205,7 @@ function knockOut(s: RoundState, idx: number, reason: OutReason, by: number | nu
   const st = s.seats[idx];
   if (!st || !st.alive) return false;
   st.pendingAt = null;
+  st.pendingHalf = null;
   st.hitMs = null;
   st.streak = 0;
   if (st.shield) {
@@ -228,6 +230,7 @@ function onHit(s: RoundState, idx: number): void {
   const st = s.seats[idx]!;
   st.hitMs = Math.round(s.t);
   st.pendingAt = null;
+  st.pendingHalf = null;
   st.streak += 1;
   if (s.showdown && s.showdown.seat === idx) return; // the pot grows at resolve instead
   award(s, idx, s.cfg.mult, "hit");
@@ -367,6 +370,7 @@ export function advanceRound(s: RoundState, dtMs: number, rng: Rng): RoundEvent[
     for (const seat of s.seats) {
       seat.hitMs = null;
       seat.pendingAt = null;
+      seat.pendingHalf = null;
       seat.saved = false;
     }
     s.events.push({ type: "call" });
@@ -442,9 +446,10 @@ export function tap(s: RoundState, seat: number, half: Half): TapResult {
     case "BOTH":
       if (st.pendingAt === null) {
         st.pendingAt = s.t;
+        st.pendingHalf = half;
         return "pending";
       }
-      if (s.t - st.pendingAt <= BOTH_GRACE_MS) {
+      if (half !== st.pendingHalf && s.t - st.pendingAt <= BOTH_GRACE_MS) {
         onHit(s, seat);
         return "hit";
       }

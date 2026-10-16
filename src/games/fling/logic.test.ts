@@ -65,7 +65,7 @@ describe("physics", () => {
     const b = body(130, 100);
     const hit = resolveCollision(a, b);
     expect(hit.force).toBeCloseTo(400);
-    expect(hit.attacker).toBe("b");
+    expect(hit.attacker).toBe("a");
     expect(vdist(a.pos, b.pos)).toBeGreaterThanOrEqual(40 - 1e-6);
     expect(b.vel.x).toBeGreaterThan(a.vel.x);
     expect(b.vel.x).toBeCloseTo(400 * (1 + RESTITUTION) / 2);
