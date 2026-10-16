@@ -19,6 +19,7 @@ export class App {
   private players: Player[];
   private readonly wins = new Map<string, number>();
   private selected: GameDefinition | null = null;
+  private readonly recent: string[] = [];
   private filter: "all" | "timed" | "turns" = "all";
   private engine: Engine | null = null;
   private sky: Sky | null = null;
@@ -105,8 +106,7 @@ export class App {
     const surprise = button("Surprise Me", () => {
       this.sfx.unlock();
       this.sfx.select();
-      const games = this.filteredGames();
-      const pick = games[Math.floor(Math.random() * games.length)];
+      const pick = this.randomGame();
       if (pick) this.launch(pick);
     });
     row.append(surprise);
@@ -148,6 +148,13 @@ export class App {
       bar.append(btn);
     }
     return bar;
+  }
+
+  private randomGame(exclude?: string): GameDefinition | undefined {
+    const pool = this.filteredGames().filter((g) => g.id !== exclude);
+    const fresh = pool.filter((g) => !this.recent.includes(g.id));
+    const candidates = fresh.length > 0 ? fresh : pool;
+    return candidates[Math.floor(Math.random() * candidates.length)];
   }
 
   private filteredGames(): GameDefinition[] {
@@ -301,6 +308,8 @@ export class App {
 
   private launch(game: GameDefinition): void {
     this.selected = game;
+    this.recent.push(game.id);
+    if (this.recent.length > 5) this.recent.shift();
     const screen = this.screens.get("play")!;
     clear(screen);
 
@@ -412,8 +421,7 @@ export class App {
     actions.append(button("Next Game", () => {
       this.sfx.unlock();
       this.sfx.select();
-      const games = this.filteredGames().filter((g) => g.id !== game?.id);
-      const pick = games[Math.floor(Math.random() * games.length)];
+      const pick = this.randomGame(game?.id);
       if (pick) this.launch(pick);
     }, "ghost"));
     actions.append(ghost("Menu", () => this.rerenderMenu()));
