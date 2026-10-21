@@ -28,4 +28,10 @@ describe("game catalog", () => {
     expect(registry.get("lucky-drop").durationMs).toBe(0);
     expect(registry.get("chaos-derby").durationMs).toBe(0);
   });
+
+  it("ids are safe to use as ?game= deep links", () => {
+    for (const game of allGames) {
+      expect(game.id, game.name).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
+    }
+  });
 });
