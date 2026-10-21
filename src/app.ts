@@ -1,5 +1,6 @@
 import { Sfx } from "./core/audio";
 import { Engine } from "./core/engine";
+import { gameIdFromSearch, searchWithGame } from "./core/deeplink";
 import { BIND_LABELS, InputManager } from "./core/input";
 import { GameRegistry } from "./core/registry";
 import { rankResults } from "./core/session";
@@ -45,7 +46,9 @@ export class App {
     }
 
     this.renderMenu();
-    this.show("menu");
+    const linked = gameIdFromSearch(location.search, this.registry.ids());
+    if (linked) this.launch(this.registry.get(linked));
+    else this.show("menu");
     window.addEventListener("keydown", this.onGlobalKey);
   }
 
@@ -79,11 +82,19 @@ export class App {
     for (const [key, node] of this.screens) {
       node.classList.toggle("active", key === name);
     }
+    this.syncUrl(name === "menu" ? null : this.selected?.id ?? null);
     requestAnimationFrame(() => {
       const active = this.screens.get(name);
       const target = active?.querySelector<HTMLElement>("button, [href], input, [tabindex]");
       target?.focus();
     });
+  }
+
+  // replaceState, not pushState: Back should leave C5, not step through every screen.
+  private syncUrl(gameId: string | null): void {
+    const search = searchWithGame(location.search, gameId);
+    if (search === location.search) return;
+    history.replaceState(history.state, "", `${location.pathname}${search}${location.hash}`);
   }
 
   private renderMenu(): void {
